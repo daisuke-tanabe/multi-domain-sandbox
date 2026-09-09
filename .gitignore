@@ -1,0 +1,15 @@
+# OS files
+.DS_Store
+
+# API keys and secrets
+*.pem
+
+# Logs
+logs/
+*.log
+
+# Editor files
+.idea
+
+# Claude
+.claude/settings.local.json

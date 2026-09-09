@@ -1,0 +1,5 @@
+interface:
+  display_name: "shadcn/ui"
+  short_description: "shadcn/ui コンポーネントを管理する — 追加・検索・修正・デバッグ・スタイリング・UI のコンポジションをサポート。"
+  icon_small: "./assets/shadcn-small.png"
+  icon_large: "./assets/shadcn.png"
