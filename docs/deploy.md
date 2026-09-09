@@ -73,7 +73,15 @@ cd terraform && terraform output urls
 ```
 
 ブラウザで `https://tenant-a.sandbox.daisuke-tanabe.dev/projects` を開き、alice でログインする。
-`SANDBOX_BASE_URL` を指定すれば smoke と chrome-check を本番 URL に向けられる。
+`SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。
+
+```bash
+export SANDBOX_DOMAIN=sandbox.daisuke-tanabe.dev
+export SEED_USER_PASSWORD=$(aws secretsmanager get-secret-value --secret-id multi-domain-sandbox/seed \
+  --query SecretString --output text | jq -r .user_password)
+pnpm smoke
+pnpm chrome-check
+```
 
 ## 撤去
 
