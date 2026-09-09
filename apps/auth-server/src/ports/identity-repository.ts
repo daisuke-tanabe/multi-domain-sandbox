@@ -29,6 +29,8 @@ export interface OidcClient {
   readonly status: "active" | "disabled";
   /** テナント用 Client のみ持つ。別ドメインサービスや管理画面は null */
   readonly tenant: Tenant | null;
+  /** Back-Channel Logout の通知先。未設定なら通知しない */
+  readonly backchannelLogoutUri: string | null;
 }
 
 export interface Membership {

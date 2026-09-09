@@ -4,7 +4,13 @@ export { oidcRoutes, readSessionCookie, clearSessionCookie } from "./routes.ts";
 export type { OidcRouteHooks } from "./routes.ts";
 export { tenantContext, requireSession } from "./middleware.ts";
 export type { OidcEnv, OidcVariables } from "./middleware.ts";
-export { loadSession, createSession, saveSession, destroySession } from "./session.ts";
+export {
+  loadSession,
+  createSession,
+  saveSession,
+  destroySession,
+  destroySessionsBySid,
+} from "./session.ts";
 export { apiFetch, ensureFreshAccessToken } from "./api-client.ts";
 export type { ApiAccessError } from "./api-client.ts";
 export {

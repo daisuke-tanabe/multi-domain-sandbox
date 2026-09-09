@@ -7,7 +7,7 @@ import {
 import { OidcProvider, type OidcClientDeps, type OidcEnv } from "@sandbox/oidc-client";
 import { MemoryKeyValueStore, silentLogger } from "@sandbox/shared";
 import { createTenantApp } from "./app.ts";
-import { createClientResolver } from "./config.ts";
+import { createClientResolvers } from "./config.ts";
 
 export const AUTH_HOST = "auth.localhost:3000";
 export const AUTH_BACKCHANNEL_HOST = "127.0.0.1:3000";
@@ -33,9 +33,7 @@ export interface SandboxHarness {
 }
 
 export async function createSandbox(): Promise<SandboxHarness> {
-  const auth = await createAuthHarness();
-  const api = await createApiHarness({ signingKey: auth.deps.signingKey, clock: auth.clock });
-
+  // apps は後から埋める。auth-server の Back-Channel Logout もこの dispatch を通る
   const apps = new Map<string, Requestable>();
   const dispatch = async (url: URL, init: RequestInit = {}): Promise<Response> => {
     const app = apps.get(url.host);
@@ -45,12 +43,15 @@ export async function createSandbox(): Promise<SandboxHarness> {
     return Promise.resolve(app.request(url.toString(), { ...init, headers }));
   };
 
+  const auth = await createAuthHarness({ fetch: (input, init) => dispatch(new URL(input), init) });
+  const api = await createApiHarness({ signingKey: auth.deps.signingKey, clock: auth.clock });
+
   const tenantDeps: OidcClientDeps = {
     provider: {
       issuer: `http://${AUTH_HOST}`,
       backchannelBaseUrl: `http://${AUTH_BACKCHANNEL_HOST}`,
     },
-    resolveClient: createClientResolver({
+    ...createClientResolvers({
       PUBLIC_SCHEME: "http",
       PUBLIC_BASE_HOST: TENANT_BASE_HOST,
       TENANT_CLIENTS: [
@@ -59,6 +60,7 @@ export async function createSandbox(): Promise<SandboxHarness> {
       ],
     }),
     sessions: new MemoryKeyValueStore(auth.clock),
+    sessionsBySid: new MemoryKeyValueStore(auth.clock),
     preAuth: new MemoryKeyValueStore(auth.clock),
     clock: auth.clock,
     cookiePolicy: { secure: false },

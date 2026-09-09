@@ -13,5 +13,6 @@ export function createMemoryStores(clock: Clock): AuthStores {
     refreshTokens: new MemoryKeyValueStore(clock),
     refreshTokenFamilies: new MemoryKeyValueStore(clock),
     csrfTokens: new MemoryKeyValueStore(clock),
+    sidRefreshFamilies: new MemoryKeyValueStore(clock),
   };
 }

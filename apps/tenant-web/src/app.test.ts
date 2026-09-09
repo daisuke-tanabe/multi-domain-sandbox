@@ -257,3 +257,60 @@ describe("session lifetimes", () => {
     expect(refreshTokens.size()).toBe(2);
   });
 });
+
+describe("E11 global logout via auth.localhost", () => {
+  let sandbox: SandboxHarness;
+  let browser: Browser;
+
+  beforeEach(async () => {
+    sandbox = await createSandbox();
+    browser = new Browser(sandbox.dispatch);
+    await loginThrough(browser, `${TENANT_A_ORIGIN}/projects`, ALICE);
+    await browser.navigate(`${TENANT_B_ORIGIN}/projects`);
+  });
+
+  test("tenant logout page links to global logout for this client", async () => {
+    const page = await browser.navigate(`${TENANT_A_ORIGIN}/projects`);
+    const loggedOut = await browser.submitForm(`${TENANT_A_ORIGIN}/auth/logout`, {
+      csrf: readPageCsrf(page.body),
+    });
+
+    expect(loggedOut.body).toContain(`http://${AUTH_HOST}/logout?client_id=tenant-a`);
+  });
+
+  test("logs out of every tenant at once and requires a password afterwards", async () => {
+    // Arrange
+    const confirm = await browser.navigate(`http://${AUTH_HOST}/logout?client_id=tenant-a`);
+    expect(confirm.body).toContain("Sandbox 全体からログアウトしますか");
+
+    // Act
+    const done = await browser.submitForm(`http://${AUTH_HOST}/logout`, {
+      csrf: readPageCsrf(confirm.body),
+      client_id: "tenant-a",
+    });
+    const tenantA = await browser.navigate(`${TENANT_A_ORIGIN}/projects`);
+    const tenantB = await browser.navigate(`${TENANT_B_ORIGIN}/projects`);
+
+    // Assert
+    expect(done.body).toContain("Sandbox からログアウトしました");
+    expect(done.body).toContain("tenant-a に戻る");
+    expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(false);
+    // Back-Channel Logout でテナント側セッションが消えているため、Cookie があってもログイン画面になる
+    expect(tenantA.finalUrl.host).toBe(AUTH_HOST);
+    expect(tenantA.finalUrl.pathname).toBe("/login");
+    expect(tenantB.finalUrl.host).toBe(AUTH_HOST);
+    expect(tenantB.finalUrl.pathname).toBe("/login");
+  });
+
+  test("backchannel logout endpoint rejects a forged token", async () => {
+    const res = await sandbox.dispatch(new URL(`${TENANT_A_ORIGIN}/auth/backchannel-logout`), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ logout_token: "forged" }).toString(),
+    });
+    const stillLoggedIn = await browser.navigate(`${TENANT_A_ORIGIN}/projects`);
+
+    expect(res.status).toBe(400);
+    expect(visitedPaths(stillLoggedIn)).toEqual([`${new URL(TENANT_A_ORIGIN).host}/projects`]);
+  });
+});

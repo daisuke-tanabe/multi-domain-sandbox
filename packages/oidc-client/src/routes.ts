@@ -10,7 +10,7 @@ import {
   shortLivedCookieAttributes,
 } from "@sandbox/shared";
 import type { OidcProvider } from "./provider.ts";
-import { createSession, destroySession, loadSession } from "./session.ts";
+import { createSession, destroySession, destroySessionsBySid, loadSession } from "./session.ts";
 import {
   COOKIE_PRE_AUTH,
   COOKIE_SESSION,
@@ -239,7 +239,30 @@ export function oidcRoutes(
       tenantSlug: client.tenantSlug,
       userId: session.userId,
     });
-    return c.redirect("/");
+    return c.redirect("/?logged_out=1");
+  });
+
+  /**
+   * OIDC Back-Channel Logout。Auth Server からのサーバー間 POST。Host ヘッダに依存せず aud で Client を決める。
+   */
+  app.post("/auth/backchannel-logout", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const form = await c.req.parseBody();
+    const logoutToken = form.logout_token;
+    if (typeof logoutToken !== "string" || logoutToken === "") {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const verified = await provider.verifyLogoutToken(logoutToken);
+    if (!verified.ok) {
+      deps.logger.warn("logout token rejected", { reason: verified.error.kind });
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const client = deps.resolveClientById(verified.value.audience);
+    if (client === undefined) return c.json({ error: "invalid_request" }, 400);
+
+    const removed = await destroySessionsBySid(deps, client.tenantSlug, verified.value.sid);
+    deps.logger.info("backchannel logout applied", { tenantSlug: client.tenantSlug, removed });
+    return c.body(null, 200);
   });
 
   return app;

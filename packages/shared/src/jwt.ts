@@ -83,7 +83,8 @@ export type VerifyError = { kind: "invalid_token"; reason: string };
 
 export interface VerifyOptions {
   readonly issuer: string;
-  readonly audience: string;
+  /** 省略時は aud を検証しない。呼び出し側で aud を別途検証すること */
+  readonly audience?: string;
   readonly currentDate?: Date;
   readonly clockToleranceSeconds?: number;
 }
@@ -103,7 +104,7 @@ export async function verifyJwt(
     const { payload } = await jwtVerify(token, keySet, {
       algorithms: [SIGNING_ALGORITHM],
       issuer: options.issuer,
-      audience: options.audience,
+      ...(options.audience !== undefined && { audience: options.audience }),
       clockTolerance: options.clockToleranceSeconds ?? DEFAULT_CLOCK_TOLERANCE_SECONDS,
       ...(options.currentDate !== undefined && { currentDate: options.currentDate }),
     });

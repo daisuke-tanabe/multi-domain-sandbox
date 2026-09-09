@@ -56,7 +56,16 @@ function layout(tenantSlug: string, title: string, viewer: Viewer | undefined, b
     </html>`;
 }
 
-export function homePage(tenantSlug: string, viewer: Viewer | undefined): Html {
+export interface HomePageProps {
+  readonly tenantSlug: string;
+  readonly viewer: Viewer | undefined;
+  /** Tenant Logout 直後に true。Global Logout への導線を出す */
+  readonly justLoggedOut: boolean;
+  readonly globalLogoutUrl: string;
+}
+
+export function homePage(props: HomePageProps): Html {
+  const { tenantSlug, viewer } = props;
   return layout(
     tenantSlug,
     "Home",
@@ -64,13 +73,27 @@ export function homePage(tenantSlug: string, viewer: Viewer | undefined): Html {
     html`
       <h2>Tenant ${tenantSlug}</h2>
       ${
+        props.justLoggedOut
+          ? html`<p>
+              ${tenantSlug} からログアウトしました。auth.sandbox の SSO Session
+              は残っているため、Projects を開くとパスワードなしで再ログインされます。
+              すべてのテナントからログアウトするには
+              <a href="${props.globalLogoutUrl}">Sandbox 全体からログアウト</a>
+              を使います。
+            </p>`
+          : ""
+      }
+      ${
         viewer === undefined
           ? html`<p>
               未ログインです。<a href="/auth/login?return_to=/projects"
                 >ログインして Projects を見る</a
               >
             </p>`
-          : html`<p>ログイン済みです。<a href="/projects">Projects</a> へ進めます。</p>`
+          : html`<p>
+              ログイン済みです。<a href="/projects">Projects</a> へ進めます。
+              <a href="${props.globalLogoutUrl}">Sandbox 全体からログアウト</a>
+            </p>`
       }
       <p class="muted">
         このテナントのセッション Cookie はこのホストにだけ発行されます。別テナントへ移動すると

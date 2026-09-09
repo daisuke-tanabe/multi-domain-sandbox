@@ -9,7 +9,9 @@ const logger = createLogger("api-server");
 const config = loadConfig();
 
 const jwksUrl = `${config.AUTH_BACKCHANNEL_URL ?? config.ISSUER}/jwks`;
-const pool = createPool(config.DATABASE_URL);
+const pool = createPool(config.DATABASE_URL, (error) =>
+  logger.error("database pool error", { message: error.message }),
+);
 
 const app = createApiApp({
   issuer: config.ISSUER,

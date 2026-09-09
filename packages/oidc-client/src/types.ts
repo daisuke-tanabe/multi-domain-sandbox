@@ -56,6 +56,10 @@ export interface OidcClientDeps {
   readonly provider: OidcProviderConfig;
   /** Host ヘッダから Client 設定を解決する。未知のホストは undefined */
   readonly resolveClient: (host: string | undefined) => OidcClientConfig | undefined;
+  /** logout_token の aud から Client を解決する。Back-Channel Logout は Host に依存しない */
+  readonly resolveClientById: (clientId: string) => OidcClientConfig | undefined;
+  /** sid → Tenant Session ID の一覧。Back-Channel Logout で一括削除する */
+  readonly sessionsBySid: KeyValueStore<ReadonlyArray<string>>;
   readonly sessions: KeyValueStore<TenantSession>;
   readonly preAuth: KeyValueStore<PreAuthState>;
   readonly clock: Clock;

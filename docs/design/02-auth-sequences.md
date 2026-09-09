@@ -366,7 +366,7 @@ sequenceDiagram
 
 SSO Session が残るため、tenant-a で再度 `/auth/login` を踏むとパスワードなしで再ログインされる。これは仕様書19.1が定める挙動である。
 
-## 11. Global Logout。フェーズ2
+## 11. Global Logout
 
 ```mermaid
 sequenceDiagram

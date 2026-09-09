@@ -80,3 +80,52 @@ export function errorPage(
     `,
   );
 }
+
+export interface LogoutConfirmPageProps {
+  readonly csrfToken: string;
+  readonly clientId: string | undefined;
+}
+
+export function logoutConfirmPage(
+  props: LogoutConfirmPageProps,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  return layout(
+    "Sandbox からログアウト",
+    html`
+      <h1>Sandbox 全体からログアウトしますか</h1>
+      <p class="muted">
+        SSO Session を破棄し、ログイン済みのすべてのテナントからログアウトします。
+      </p>
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf" value="${props.csrfToken}" />
+        ${
+          props.clientId === undefined
+            ? ""
+            : html`<input type="hidden" name="client_id" value="${props.clientId}" />`
+        }
+        <button type="submit">ログアウトする</button>
+      </form>
+    `,
+  );
+}
+
+export interface LogoutDonePageProps {
+  readonly returnTo: { readonly label: string; readonly href: string } | undefined;
+}
+
+export function logoutDonePage(
+  props: LogoutDonePageProps,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  return layout(
+    "ログアウトしました",
+    html`
+      <h1>Sandbox からログアウトしました</h1>
+      <p class="muted">すべてのテナントのセッションを無効化しました。</p>
+      ${
+        props.returnTo === undefined
+          ? ""
+          : html`<p><a href="${props.returnTo.href}">${props.returnTo.label} に戻る</a></p>`
+      }
+    `,
+  );
+}

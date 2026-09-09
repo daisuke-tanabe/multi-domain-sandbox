@@ -72,7 +72,7 @@
 | 追加 | ID Token の sub は内部の users.id |
 | 追加 | 検証実装の Cognito はモックアダプタのみ。本番アダプタは雛形のみ |
 | 追加 | 検証実装の DB は PostgreSQL on Docker。RLS を検証する |
-| 追加 | Global Logout と MFA はフェーズ2 |
+| 追加 | MFA はフェーズ2。Global Logout は当初フェーズ2としたが、Tenant Logout 後に再ログインされる挙動が分かりにくいため 2026-09-09 に前倒しで実装 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -150,7 +150,7 @@
 
 ### D12. Global Logoutの実装フェーズ
 
-推奨。初期実装では `sid` の発行とTenant Sessionへの保存までを行い、Back-Channel Logoutによる通知はフェーズ2とする。
+推奨は初期実装で `sid` の発行と保存までとしていたが、Tenant Logout 後にリロードで再ログインされる挙動の分かりにくさから、Back-Channel Logout を含む Global Logout を前倒しで実装した。
 
 ## 5. 移行計画
 

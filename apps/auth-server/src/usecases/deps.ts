@@ -17,4 +17,6 @@ export interface AuthDeps {
   /** 先頭が現行鍵。残りは復号のみに使う旧鍵 */
   readonly encryptionKeys: ReadonlyArray<EncryptionKey>;
   readonly logger: Logger;
+  /** Back-Channel Logout の送信に使う。テストで差し替える */
+  readonly fetch: (input: string, init?: RequestInit) => Promise<Response>;
 }

@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 import { OidcProvider, type OidcClientDeps } from "@sandbox/oidc-client";
 import { createLogger, MemoryKeyValueStore, systemClock } from "@sandbox/shared";
 import { createTenantApp } from "./app.ts";
-import { createClientResolver, loadConfig } from "./config.ts";
+import { createClientResolvers, loadConfig } from "./config.ts";
 
 const logger = createLogger("tenant-web");
 const config = loadConfig();
@@ -14,8 +14,9 @@ const deps: OidcClientDeps = {
       backchannelBaseUrl: config.AUTH_BACKCHANNEL_URL,
     }),
   },
-  resolveClient: createClientResolver(config),
+  ...createClientResolvers(config),
   sessions: new MemoryKeyValueStore(systemClock),
+  sessionsBySid: new MemoryKeyValueStore(systemClock),
   preAuth: new MemoryKeyValueStore(systemClock),
   clock: systemClock,
   cookiePolicy: { secure: config.COOKIE_SECURE },

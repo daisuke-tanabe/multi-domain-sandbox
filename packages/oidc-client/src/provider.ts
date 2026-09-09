@@ -158,6 +158,37 @@ export class OidcProvider {
     return ok(verified.value);
   }
 
+  /**
+   * OIDC Back-Channel Logout 1.0 の logout_token を検証する。
+   * aud は呼び出し側で Client に解決するため、ここでは署名 / iss / exp と必須 claim のみ確認する。
+   */
+  public async verifyLogoutToken(
+    logoutToken: string,
+  ): Promise<Result<{ sid: string; audience: string }, ProviderError>> {
+    const jwks = await this.getJwks(true);
+    if (!jwks.ok) return jwks;
+    const verified = await verifyJwt(logoutToken, jwks.value, {
+      issuer: this.config.issuer,
+      currentDate: new Date(this.clock.nowSeconds() * 1000),
+    });
+    if (!verified.ok) return err({ kind: "id_token_invalid", reason: verified.error.reason });
+    const payload = verified.value;
+    const events = payload.events;
+    const hasLogoutEvent =
+      typeof events === "object" &&
+      events !== null &&
+      "http://schemas.openid.net/event/backchannel-logout" in events;
+    if (!hasLogoutEvent) return err({ kind: "id_token_invalid", reason: "events missing" });
+    if (payload.nonce !== undefined)
+      return err({ kind: "id_token_invalid", reason: "nonce present" });
+    if (typeof payload.sid !== "string")
+      return err({ kind: "id_token_invalid", reason: "sid missing" });
+    const audience = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+    if (typeof audience !== "string")
+      return err({ kind: "id_token_invalid", reason: "aud missing" });
+    return ok({ sid: payload.sid, audience });
+  }
+
   public async exchangeCode(
     client: OidcClientConfig,
     code: string,

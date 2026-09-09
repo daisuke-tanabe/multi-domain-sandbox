@@ -18,3 +18,4 @@ export type Scope = (typeof SUPPORTED_SCOPES)[number];
 
 export const COOKIE_SSO_SESSION = "sso_session";
 export const COOKIE_CSRF = "auth_csrf";
+export const LOGOUT_TOKEN_TTL_SECONDS = 2 * 60;

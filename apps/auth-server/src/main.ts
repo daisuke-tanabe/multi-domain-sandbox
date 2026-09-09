@@ -37,11 +37,16 @@ const deps: AuthDeps = {
   apiAudience: config.API_AUDIENCE,
   clock: systemClock,
   stores: createMemoryStores(systemClock),
-  identity: new PgIdentityRepository(createPool(config.DATABASE_URL)),
+  identity: new PgIdentityRepository(
+    createPool(config.DATABASE_URL, (error) =>
+      logger.error("database pool error", { message: error.message }),
+    ),
+  ),
   cognito: new MockCognitoAuthenticator(config.MOCK_COGNITO_USERS, systemClock),
   signingKey,
   encryptionKeys: [encryptionKey.value],
   logger,
+  fetch: (input, init) => fetch(input, init),
 };
 
 const app = createAuthApp({ deps, cookiePolicy: { secure: config.COOKIE_SECURE } });

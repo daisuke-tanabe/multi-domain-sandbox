@@ -86,4 +86,6 @@ export interface AuthStores {
   readonly refreshTokens: KeyValueStore<RefreshToken>;
   readonly refreshTokenFamilies: KeyValueStore<RefreshTokenFamily>;
   readonly csrfTokens: KeyValueStore<CsrfToken>;
+  /** sid → Refresh Token 系列 ID の一覧。Global Logout で一括失効する */
+  readonly sidRefreshFamilies: KeyValueStore<ReadonlyArray<string>>;
 }

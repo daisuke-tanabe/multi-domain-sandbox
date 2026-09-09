@@ -23,7 +23,7 @@ Sandbox 認証・マルチテナントSSO基盤の設計ドキュメント。
 
 ## 実装状況
 
-設計に対応する検証実装を `apps/` と `packages/` に置いている。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA と Global Logout は未実装。
+設計に対応する検証実装を `apps/` と `packages/` に置いている。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。
 
 ## 前提
 

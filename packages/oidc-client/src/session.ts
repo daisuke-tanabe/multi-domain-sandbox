@@ -74,7 +74,33 @@ export async function createSession(
     session,
     SESSION_ABSOLUTE_SECONDS,
   );
+  const existing = (await deps.sessionsBySid.get(sidKey(session.tenantSlug, session.sid))) ?? [];
+  await deps.sessionsBySid.set(
+    sidKey(session.tenantSlug, session.sid),
+    [...existing, session.id],
+    SESSION_ABSOLUTE_SECONDS,
+  );
   return session;
+}
+
+function sidKey(tenantSlug: string, sid: string): string {
+  return `${tenantSlug}:sid:${sid}`;
+}
+
+/**
+ * Back-Channel Logout。同じ sid で作られたこのテナントのセッションをすべて削除する。
+ */
+export async function destroySessionsBySid(
+  deps: OidcClientDeps,
+  tenantSlug: string,
+  sid: string,
+): Promise<number> {
+  const ids = (await deps.sessionsBySid.get(sidKey(tenantSlug, sid))) ?? [];
+  for (const id of ids) {
+    await deps.sessions.delete(sessionKey(tenantSlug, id));
+  }
+  await deps.sessionsBySid.delete(sidKey(tenantSlug, sid));
+  return ids.length;
 }
 
 export async function saveSession(

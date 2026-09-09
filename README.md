@@ -59,8 +59,9 @@ Cognito はモックアダプタで代替している。`apps/auth-server/.env.e
 1. tenant-a に未ログインでアクセスすると auth.localhost のログイン画面へ遷移する
 2. alice でログインすると tenant-a の Projects が表示される。Cookie は tenant-a.localhost と auth.localhost にだけ発行される
 3. そのまま tenant-b を開くとログイン画面なしで入れる。role は viewer になり Project 作成は拒否される
-4. tenant-a でログアウトしても tenant-b はログイン済みのまま
-5. bob で tenant-a を開くとアクセス権なしの画面になる。ログイン自体は成功しており tenant-b には入れる
+4. tenant-a でログアウトしても tenant-b はログイン済みのまま。tenant-a の Projects を開き直すと SSO Session によりパスワードなしで再ログインされる
+5. ログアウト後の画面にある「Sandbox 全体からログアウト」を押すと auth.localhost の確認画面に移り、SSO Session とすべてのテナントのセッションが無効化される
+6. bob で tenant-a を開くとアクセス権なしの画面になる。ログイン自体は成功しており tenant-b には入れる
 
 ## ローカル運用の注意
 
@@ -98,6 +99,5 @@ pnpm smoke
 ## フェーズ2
 
 - MFA チャレンジ。`/login/challenge`
-- Global Logout。`/logout` と Back-Channel Logout
 - Refresh Token 系列の永続化と監視
 - 管理 API と `admin` scope

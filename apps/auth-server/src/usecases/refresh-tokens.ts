@@ -19,6 +19,12 @@ export async function createRefreshTokenFamily(
     { familyId, tokens: [token.token], revoked: false },
     REFRESH_TOKEN_TTL_SECONDS,
   );
+  const families = (await deps.stores.sidRefreshFamilies.get(input.sid)) ?? [];
+  await deps.stores.sidRefreshFamilies.set(
+    input.sid,
+    [...families, familyId],
+    REFRESH_TOKEN_TTL_SECONDS,
+  );
   return token;
 }
 

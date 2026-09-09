@@ -134,6 +134,9 @@ export class PgProjectRepository implements ProjectRepository {
   }
 }
 
-export function createPool(connectionString: string): Pool {
-  return new Pool({ connectionString, max: 10 });
+export function createPool(connectionString: string, onError: (error: Error) => void): Pool {
+  const pool = new Pool({ connectionString, max: 10 });
+  // アイドル接続が切れたときの error イベントを拾わないとプロセスごと落ちる
+  pool.on("error", onError);
+  return pool;
 }

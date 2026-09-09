@@ -5,6 +5,7 @@ import {
   API_AUDIENCE,
   authorizeUrl,
   basicAuth,
+  cookieHeaderFrom,
   createHarness,
   exchangeCode,
   ISSUER,
@@ -482,5 +483,102 @@ describe("discovery and userinfo", () => {
       tenant_id: "tenant-a-id",
     });
     expect(withIdToken.status).toBe(401);
+  });
+});
+
+describe("global logout", () => {
+  test("shows the completion page when no SSO session exists", async () => {
+    const harness = await createHarness();
+
+    const res = await harness.app.request(`${ISSUER}/logout?client_id=tenant-a`);
+    const body = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(body).toContain("Sandbox からログアウトしました");
+    expect(body).toContain("http://tenant-a.localhost:3001/");
+  });
+
+  test("destroys the SSO session, revokes refresh tokens and notifies every authorized client", async () => {
+    // Arrange: tenant-a と tenant-b に code を発行した状態。Back-Channel の送信先を記録する
+    const received: Array<{ url: string; logoutToken: string }> = [];
+    const harness = await createHarness({
+      fetch: async (url, init) => {
+        const form = new URLSearchParams(String(init?.body ?? ""));
+        received.push({ url, logoutToken: form.get("logout_token") ?? "" });
+        return new Response(null, { status: 200 });
+      },
+    });
+    const first = await runLoginFlow(harness, ALICE);
+    const tokens = await readTokenBody(
+      await exchangeCode(harness, {
+        code: first.redirect.searchParams.get("code") ?? "",
+        codeVerifier: first.codeVerifier,
+      }),
+    );
+    await runLoginFlow(
+      harness,
+      ALICE,
+      { clientId: "tenant-b", redirectUri: TENANT_B_REDIRECT, state: "s2", nonce: "n2" },
+      first.cookie,
+    );
+
+    const confirm = await harness.app.request(`${ISSUER}/logout?client_id=tenant-a`, {
+      headers: { Cookie: first.cookie },
+    });
+    const csrf = /name="csrf" value="([^"]+)"/.exec(await confirm.text())?.[1] ?? "";
+    const cookie = cookieHeaderFrom(confirm, first.cookie);
+
+    // Act
+    const done = await harness.app.request(`${ISSUER}/logout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      body: new URLSearchParams({ csrf, client_id: "tenant-a" }).toString(),
+    });
+    const afterLogout = await harness.app.request(authorizeUrl({ state: "s3" }).url, {
+      headers: { Cookie: cookie },
+    });
+    const refreshAfterLogout = await refresh(harness, tokens.refresh_token);
+
+    // Assert
+    expect(done.status).toBe(200);
+    expect(await done.text()).toContain("Sandbox からログアウトしました");
+    expect(done.headers.getSetCookie().some((c) => c.startsWith("sso_session=;"))).toBe(true);
+    expect(afterLogout.headers.get("Location")).toMatch(/^\/login\?rid=/);
+    expect(refreshAfterLogout.status).toBe(400);
+
+    expect(received.map((r) => r.url).toSorted()).toEqual([
+      "http://tenant-a.localhost:3001/auth/backchannel-logout",
+      "http://tenant-b.localhost:3001/auth/backchannel-logout",
+    ]);
+    const logoutToken = received.find((r) => r.url.includes("tenant-a"))?.logoutToken ?? "";
+    const claims = await verifyJwt(logoutToken, toJwks([harness.deps.signingKey]), {
+      issuer: ISSUER,
+      audience: "tenant-a",
+      currentDate: new Date(harness.clock.nowSeconds() * 1000),
+    });
+    expect(claims.ok).toBe(true);
+    if (!claims.ok) return;
+    expect(typeof claims.value.sid).toBe("string");
+    expect(claims.value.nonce).toBeUndefined();
+    expect(claims.value.events).toEqual({
+      "http://schemas.openid.net/event/backchannel-logout": {},
+    });
+  });
+
+  test("rejects logout POST without a matching csrf token", async () => {
+    const harness = await createHarness();
+    const first = await runLoginFlow(harness, ALICE);
+
+    const res = await harness.app.request(`${ISSUER}/logout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: first.cookie },
+      body: new URLSearchParams({ csrf: "forged" }).toString(),
+    });
+    const stillLoggedIn = await harness.app.request(authorizeUrl({ state: "s4" }).url, {
+      headers: { Cookie: first.cookie },
+    });
+
+    expect(res.status).toBe(403);
+    expect(stillLoggedIn.headers.get("Location")).toContain("code=");
   });
 });

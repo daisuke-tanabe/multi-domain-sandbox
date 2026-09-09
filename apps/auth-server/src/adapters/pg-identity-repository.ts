@@ -21,6 +21,7 @@ const clientRow = z.object({
   client_secret_hash: z.string(),
   allowed_scopes: z.array(z.string()),
   status: z.enum(["active", "disabled"]),
+  backchannel_logout_uri: z.string().nullable(),
   tenant_id: z.string().nullable(),
   tenant_slug: z.string().nullable(),
   tenant_status: z.enum(["active", "suspended"]).nullable(),
@@ -50,7 +51,7 @@ export class PgIdentityRepository implements IdentityRepository {
 
   public async findClient(clientId: string): Promise<OidcClient | undefined> {
     const result = await this.pool.query(
-      `SELECT c.client_id, c.client_secret_hash, c.allowed_scopes, c.status,
+      `SELECT c.client_id, c.client_secret_hash, c.allowed_scopes, c.status, c.backchannel_logout_uri,
               t.id AS tenant_id, t.slug AS tenant_slug, t.status AS tenant_status,
               COALESCE(array_agg(r.redirect_uri) FILTER (WHERE r.redirect_uri IS NOT NULL), '{}') AS redirect_uris
          FROM identity.oidc_clients c
@@ -72,6 +73,7 @@ export class PgIdentityRepository implements IdentityRepository {
       clientSecretHash: row.client_secret_hash,
       redirectUris: row.redirect_uris,
       allowedScopes: row.allowed_scopes,
+      backchannelLogoutUri: row.backchannel_logout_uri,
       status: row.status,
       tenant,
     };
@@ -115,6 +117,9 @@ export class PgIdentityRepository implements IdentityRepository {
   }
 }
 
-export function createPool(connectionString: string): Pool {
-  return new Pool({ connectionString, max: 10 });
+export function createPool(connectionString: string, onError: (error: Error) => void): Pool {
+  const pool = new Pool({ connectionString, max: 10 });
+  // アイドル接続が切れたときの error イベントを拾わないとプロセスごと落ちる
+  pool.on("error", onError);
+  return pool;
 }

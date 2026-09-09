@@ -171,6 +171,21 @@ try {
     String(await cdp.evaluate("location.href")),
   );
 
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TENANT_B }));
+  await cdp.navigateWith(() =>
+    cdp.send("Page.navigate", { url: "http://auth.localhost:3000/logout?client_id=tenant-b" }),
+  );
+  await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
+  const afterGlobal = String(await cdp.evaluate("document.body.innerText"));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TENANT_B }));
+  const tenantBAfterGlobal = String(await cdp.evaluate("location.href"));
+  check(
+    "global logout ends the SSO session and tenant-b asks for a password again",
+    afterGlobal.includes("Sandbox からログアウトしました") &&
+      tenantBAfterGlobal.startsWith("http://auth.localhost:3000/login"),
+    tenantBAfterGlobal,
+  );
+
   if (consoleErrors.length > 0) console.log("browser console errors:\n" + consoleErrors.join("\n"));
   ws.close();
 } finally {

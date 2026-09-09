@@ -61,7 +61,12 @@ export interface TestHarness {
   readonly identity: MemoryIdentityRepository;
 }
 
-export async function createHarness(): Promise<TestHarness> {
+export interface HarnessOptions {
+  /** Back-Channel Logout の送信先。省略時は 502 を返す */
+  readonly fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+}
+
+export async function createHarness(options: HarnessOptions = {}): Promise<TestHarness> {
   const clock = new FakeClock(1_700_000_000);
   const secretHash = hashSecret(CLIENT_SECRET);
   const identity = new MemoryIdentityRepository({
@@ -73,6 +78,7 @@ export async function createHarness(): Promise<TestHarness> {
         allowedScopes: ["openid", "profile", "email"],
         status: "active",
         tenant: { id: TENANT_A_ID, slug: "tenant-a", status: "active" },
+        backchannelLogoutUri: "http://tenant-a.localhost:3001/auth/backchannel-logout",
       },
       {
         clientId: "tenant-b",
@@ -81,6 +87,7 @@ export async function createHarness(): Promise<TestHarness> {
         allowedScopes: ["openid", "profile", "email"],
         status: "active",
         tenant: { id: TENANT_B_ID, slug: "tenant-b", status: "active" },
+        backchannelLogoutUri: "http://tenant-b.localhost:3001/auth/backchannel-logout",
       },
     ],
     users: [
@@ -118,6 +125,7 @@ export async function createHarness(): Promise<TestHarness> {
     signingKey: await generateSigningKey(),
     encryptionKeys: [encryptionKey.value],
     logger: silentLogger,
+    fetch: options.fetch ?? (async () => new Response(null, { status: 502 })),
   };
   return { app: createAuthApp({ deps, cookiePolicy: { secure: false } }), deps, clock, identity };
 }

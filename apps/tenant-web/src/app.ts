@@ -32,10 +32,6 @@ const projectsSchema = z.object({
 
 type ErrorStatus = 400 | 401 | 403 | 500 | 503;
 
-function slugOf(c: Context<OidcEnv>): string {
-  return c.get("tenantClient")?.tenantSlug ?? "unknown";
-}
-
 function toViewer(session: TenantSession): Viewer {
   return { name: session.name, email: session.email, csrfToken: session.csrfToken };
 }
@@ -77,7 +73,17 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
 
   app.get("/", (c) => {
     const session = c.get("tenantSession");
-    return c.html(homePage(slugOf(c), session === undefined ? undefined : toViewer(session)));
+    const client = c.get("tenantClient");
+    const globalLogoutUrl = new URL("/logout", provider.issuer);
+    globalLogoutUrl.searchParams.set("client_id", client.clientId);
+    return c.html(
+      homePage({
+        tenantSlug: client.tenantSlug,
+        viewer: session === undefined ? undefined : toViewer(session),
+        justLoggedOut: c.req.query("logged_out") === "1",
+        globalLogoutUrl: globalLogoutUrl.toString(),
+      }),
+    );
   });
 
   app.get("/projects", requireSession(), async (c) => {

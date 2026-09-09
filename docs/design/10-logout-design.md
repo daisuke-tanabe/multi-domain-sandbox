@@ -4,7 +4,7 @@
 
 Logout は Tenant Logout と Global Logout の2種類に分離する。
 Tenant Logout は自テナントの Session と Refresh Token のみを失効させ、SSO Session を維持する。
-Global Logout は OIDC Back-Channel Logout で実現し、初期実装では `sid` の発行と保存までを行う。
+Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout で実現する。Tenant Logout 後の画面から Global Logout へ誘導する。
 
 ## 失効対象の対応表
 
@@ -46,7 +46,7 @@ token=<refresh_token>&token_type_hint=refresh_token
 - 存在しない token でも 200 を返す
 - Access Token の失効は行わない。15分の寿命で自然失効させる
 
-## Global Logout。フェーズ2
+## Global Logout
 
 シーケンスは [02-auth-sequences.md](./02-auth-sequences.md) の11。
 
@@ -97,4 +97,4 @@ OIDC RP-Initiated Logout は Tenant から Auth Server の `/logout` へリダ�
 
 ## Cognito 側のセッション
 
-Cognito の Refresh Token は Auth Server の SSO Session に閉じている。Global Logout では `RevokeToken` で失効させる。Cognito 管理者による `AdminUserGlobalSignOut` が実行された場合、Auth Server の SSO Session は独立して残るため、管理操作として Auth Server 側の SSO Session 失効 API も用意する。フェーズ2。
+Cognito の Refresh Token は Auth Server の SSO Session に閉じている。Global Logout では `RevokeToken` で失効させる。Cognito 管理者による `AdminUserGlobalSignOut` が実行された場合、Auth Server の SSO Session は独立して残るため、管理操作として Auth Server 側の SSO Session 失効 API も用意する。管理用 API はフェーズ2。
