@@ -2,6 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  AUTH_ORIGIN,
+  SEED_USER_PASSWORD,
+  TENANT_A_ORIGIN,
+  TENANT_B_ORIGIN,
+} from "../apps/tenant-web/src/test-support.ts";
 
 /**
  * 実際の Chrome を headless で起動し、CDP 経由でログインから tenant-b の SSO までを操作する。
@@ -9,8 +15,9 @@ import { join } from "node:path";
  */
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 9223;
-const TENANT_A = "http://tenant-a.localhost:3001/projects";
-const TENANT_B = "http://tenant-b.localhost:3001/projects";
+const TENANT_A = `${TENANT_A_ORIGIN}/projects`;
+const TENANT_B = `${TENANT_B_ORIGIN}/projects`;
+const LOGIN_URL_PREFIX = `${AUTH_ORIGIN}/login`;
 
 type CdpMessage = {
   id?: number;
@@ -136,12 +143,14 @@ try {
   const loginUrl = String(await cdp.evaluate("location.href"));
   check(
     "anonymous access reaches the auth login page",
-    loginUrl.startsWith("http://auth.localhost:3000/login"),
+    loginUrl.startsWith(LOGIN_URL_PREFIX),
     loginUrl,
   );
 
   await cdp.evaluate(`document.querySelector('input[name=username]').value = 'alice'`);
-  await cdp.evaluate(`document.querySelector('input[name=password]').value = 'alice-password'`);
+  await cdp.evaluate(
+    `document.querySelector('input[name=password]').value = ${JSON.stringify(SEED_USER_PASSWORD)}`,
+  );
   await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
   const afterLogin = String(await cdp.evaluate("location.href"));
   const afterLoginBody = String(await cdp.evaluate("document.body.innerText"));
@@ -171,7 +180,7 @@ try {
     String(await cdp.evaluate("location.href")),
   );
 
-  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: "http://auth.localhost:3000/" }));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/` }));
   const portalBody = String(await cdp.evaluate("document.body.innerText"));
   check(
     "portal lists the tenants the user belongs to",
@@ -181,19 +190,17 @@ try {
     String(await cdp.evaluate("location.href")),
   );
   await cdp.navigateWith(() =>
-    cdp.evaluate(
-      "document.querySelector('a[href$=\"tenant-b.localhost:3001/auth/login\"]').click()",
-    ),
+    cdp.evaluate(`document.querySelector('a[href="${TENANT_B_ORIGIN}/auth/login"]').click()`),
   );
   const viaPortal = String(await cdp.evaluate("location.href"));
   check(
     "portal link enters tenant-b via SSO",
-    viaPortal.startsWith("http://tenant-b.localhost:3001/"),
+    viaPortal.startsWith(`${TENANT_B_ORIGIN}/`),
     viaPortal,
   );
 
   await cdp.navigateWith(() =>
-    cdp.send("Page.navigate", { url: "http://auth.localhost:3000/logout?client_id=tenant-b" }),
+    cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/logout?client_id=tenant-b` }),
   );
   await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
   const afterGlobal = String(await cdp.evaluate("document.body.innerText"));
@@ -202,7 +209,7 @@ try {
   check(
     "global logout ends the SSO session and tenant-b asks for a password again",
     afterGlobal.includes("Sandbox からログアウトしました") &&
-      tenantBAfterGlobal.startsWith("http://auth.localhost:3000/login"),
+      tenantBAfterGlobal.startsWith(LOGIN_URL_PREFIX),
     tenantBAfterGlobal,
   );
 

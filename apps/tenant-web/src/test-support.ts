@@ -9,12 +9,23 @@ import { MemoryKeyValueStore, silentLogger } from "@sandbox/shared";
 import { createTenantApp } from "./app.ts";
 import { createClientResolvers } from "./config.ts";
 
-export const AUTH_HOST = "auth.localhost:3000";
+/**
+ * SANDBOX_DOMAIN を設定すると smoke / chrome-check を AWS 上の環境に向けられる。
+ * 例: SANDBOX_DOMAIN=sandbox.daisuke-tanabe.dev
+ * 未設定ならローカルの localhost 構成。vitest はこちらを使う
+ */
+const remoteDomain = process.env.SANDBOX_DOMAIN;
+export const PUBLIC_SCHEME = remoteDomain === undefined ? "http" : "https";
+export const AUTH_HOST =
+  remoteDomain === undefined ? "auth.localhost:3000" : `auth.${remoteDomain}`;
 export const AUTH_BACKCHANNEL_HOST = "127.0.0.1:3000";
 export const API_BACKCHANNEL_HOST = "127.0.0.1:3002";
-export const TENANT_BASE_HOST = "localhost:3001";
-export const TENANT_A_ORIGIN = `http://tenant-a.${TENANT_BASE_HOST}`;
-export const TENANT_B_ORIGIN = `http://tenant-b.${TENANT_BASE_HOST}`;
+export const TENANT_BASE_HOST = remoteDomain ?? "localhost:3001";
+export const TENANT_A_ORIGIN = `${PUBLIC_SCHEME}://tenant-a.${TENANT_BASE_HOST}`;
+export const TENANT_B_ORIGIN = `${PUBLIC_SCHEME}://tenant-b.${TENANT_BASE_HOST}`;
+export const AUTH_ORIGIN = `${PUBLIC_SCHEME}://${AUTH_HOST}`;
+/** smoke / chrome-check が使うテストユーザーのパスワード。AWS では Secrets Manager の値を渡す */
+export const SEED_USER_PASSWORD = process.env.SEED_USER_PASSWORD ?? "alice-password";
 
 interface Requestable {
   request(input: string, init?: RequestInit): Response | Promise<Response>;
@@ -203,7 +214,7 @@ export async function loginThrough(
   const first = await browser.navigate(startUrl);
   if (!first.finalUrl.pathname.startsWith("/login")) return first;
   const form = readLoginForm(first.body);
-  return browser.submitForm(`http://${AUTH_HOST}/login`, {
+  return browser.submitForm(`${AUTH_ORIGIN}/login`, {
     rid: form.rid,
     csrf: form.csrf,
     username: credentials.username,

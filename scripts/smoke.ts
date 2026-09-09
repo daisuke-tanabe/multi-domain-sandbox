@@ -1,8 +1,10 @@
 import {
   AUTH_HOST,
+  AUTH_ORIGIN,
   Browser,
   loginThrough,
   readPageCsrf,
+  SEED_USER_PASSWORD,
   TENANT_A_ORIGIN,
   TENANT_B_ORIGIN,
   visitedPaths,
@@ -22,7 +24,7 @@ function check(name: string, ok: boolean, detail?: string): void {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail === undefined ? "" : `  (${detail})`}`);
 }
 
-const discovery = await fetch(`http://${AUTH_HOST}/.well-known/openid-configuration`);
+const discovery = await fetch(`${AUTH_ORIGIN}/.well-known/openid-configuration`);
 check("discovery document is served", discovery.status === 200);
 
 const browser = new Browser(dispatch);
@@ -36,7 +38,7 @@ check(
 
 const loggedIn = await loginThrough(browser, `${TENANT_A_ORIGIN}/projects`, {
   username: "alice",
-  password: "alice-password",
+  password: SEED_USER_PASSWORD,
 });
 check(
   "alice logs in and sees tenant-a projects as owner",

@@ -95,16 +95,18 @@ pnpm test
 pnpm smoke
 ```
 
-## 本番へ持ち出すときに差し替えるもの
+## AWS へのデプロイ
 
-| 項目 | 検証実装 | 本番 |
+`terraform/` と `scripts/deploy.sh` で ECS Fargate に載せる。手順と構成は [docs/deploy.md](./docs/deploy.md) を参照する。ローカルとの差分は環境変数で切り替える。
+
+| 項目 | ローカル | AWS |
 | --- | --- | --- |
-| Cognito | `MockCognitoAuthenticator` | `SdkCognitoAuthenticator`。雛形のみ。USER_SRP_AUTH を実装する |
-| Session / Code Store | `MemoryKeyValueStore` | Redis 実装。`KeyValueStore` を実装する |
-| 署名鍵 | 起動ごとに生成 | `SIGNING_KEY_PEM` を Secret Store から注入 |
-| Cookie | プレフィックスなし | `COOKIE_SECURE=true` で `__Host-` / `__Secure-` を付ける |
-| client_secret | `.env` の固定値 | Secret Store。slug をキーに取得 |
-| DB ロール | 固定パスワード | Secret Store |
+| Cognito | `COGNITO_ADAPTER=mock` | `COGNITO_ADAPTER=sdk`。USER_SRP_AUTH で実 User Pool に接続 |
+| Session / Code Store | `REDIS_URL` 未設定でインメモリ | `REDIS_URL` で ElastiCache Redis |
+| 署名鍵 | 起動ごとに生成 | `SIGNING_KEY_PEM` を Secrets Manager から注入 |
+| Cookie | プレフィックスなし | `COOKIE_SECURE=true` で `__Host-` / `__Secure-` |
+| client_secret | ローカル設定ファイルの固定値 | Terraform が生成し Secrets Manager に保存 |
+| DB | docker compose の初期化 SQL | provision タスクがスキーマとシードを投入 |
 
 ## フェーズ2
 
