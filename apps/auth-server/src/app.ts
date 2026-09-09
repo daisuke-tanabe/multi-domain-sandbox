@@ -25,11 +25,12 @@ export function createAuthApp(options: AuthAppOptions): Hono {
     secureHeaders({
       xFrameOptions: "DENY",
       referrerPolicy: "no-referrer",
+      // form-action は付けない。Chrome はフォーム送信後のリダイレクト先にも form-action を適用するため、
+      // ログイン POST から各 Client の redirect_uri への 302 がブロックされる。CSRF はトークンで防ぐ
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         frameAncestors: ["'none'"],
-        formAction: ["'self'"],
       },
     }),
   );

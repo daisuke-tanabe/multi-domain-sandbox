@@ -13,7 +13,8 @@
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d db",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "chrome-check": "tsx scripts/chrome-check.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

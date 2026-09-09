@@ -87,12 +87,16 @@ auth.sandbox.com と tenant-*.sandbox.com に共通で付与する。
 
 ```text
 Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; form-action 'self' https://auth.sandbox.com
+Content-Security-Policy: default-src 'self'; frame-ancestors 'none'
 X-Frame-Options: DENY
 X-Content-Type-Options: nosniff
 Referrer-Policy: no-referrer
 Cache-Control: no-store   (認証関連レスポンス)
 ```
+
+tenant-*.sandbox.com は `form-action 'self'` を追加してよい。フォームの送信先も送信後のリダイレクト先も自ホストに閉じるため。
+
+auth.sandbox.com には `form-action` を付けない。Chrome はフォーム送信後のリダイレクト先にも `form-action` を適用するため、ログイン POST から各 Client の redirect_uri への 302 がブロックされる。redirect_uri は Client 登録で動的に増えるため列挙できない。ログインフォームの CSRF は同期トークンで防ぐ。
 
 `/token` `/userinfo` `/revoke` の応答には `Cache-Control: no-store` と `Pragma: no-cache` を付ける。
 
