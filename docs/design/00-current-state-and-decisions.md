@@ -142,7 +142,7 @@
 
 ### D10. アクセス権のないテナントへのアクセス時の挙動
 
-推奨。`/authorize` でMembershipがない場合、redirect_uriは正当なので `error=access_denied` を付けてTenant Web Applicationへ戻し、Tenant側で「このテナントへのアクセス権がありません」を表示する。所属テナント一覧を提示する画面は拡張として扱う。
+推奨。`/authorize` でMembershipがない場合、redirect_uriは正当なので `error=access_denied` を付けてTenant Web Applicationへ戻し、Tenant側で「このテナントへのアクセス権がありません」を表示する。所属テナント一覧は auth.sandbox.com の `/` ポータルとして実装した。auth を直接開いた場合と Global Logout 後の入口を兼ねる。
 
 ### D11. Tenant Isolationの実装レベル
 

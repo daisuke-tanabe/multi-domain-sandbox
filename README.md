@@ -7,7 +7,7 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 
 | ディレクトリ | 役割 | ローカルホスト |
 | --- | --- | --- |
-| `apps/auth-server` | OpenID Provider。ログイン画面、認可、Token 発行、SSO Session | http://auth.localhost:3000 |
+| `apps/auth-server` | OpenID Provider。ログイン画面、認可、Token 発行、SSO Session、ポータル | http://auth.localhost:3000 |
 | `apps/tenant-web` | Tenant Web Application。BFF。1 プロセスで複数テナントのホストを受ける | http://tenant-a.localhost:3001 / http://tenant-b.localhost:3001 |
 | `apps/api-server` | Resource Server。Bearer 検証、Membership 認可、RLS | http://api.localhost:3002 |
 | `packages/shared` | Result 型、KV ストア、PKCE、AES-GCM、scrypt、JWT、Cookie、ロガー | |
@@ -62,6 +62,7 @@ Cognito はモックアダプタで代替している。`apps/auth-server/.env.e
 4. tenant-a でログアウトしても tenant-b はログイン済みのまま。tenant-a の Projects を開き直すと SSO Session によりパスワードなしで再ログインされる
 5. ログアウト後の画面にある「Sandbox 全体からログアウト」を押すと auth.localhost の確認画面に移り、SSO Session とすべてのテナントのセッションが無効化される
 6. bob で tenant-a を開くとアクセス権なしの画面になる。ログイン自体は成功しており tenant-b には入れる
+7. http://auth.localhost:3000/ を直接開くとポータルになる。未ログインならログインフォーム、ログイン後は所属テナントの一覧が出て、各テナントへパスワードなしで入れる
 
 ## ローカル運用の注意
 

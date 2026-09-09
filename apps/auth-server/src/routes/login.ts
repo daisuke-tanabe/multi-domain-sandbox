@@ -8,25 +8,25 @@ import { authorizeWithSession } from "../usecases/authorize.ts";
 import { issueCsrfToken, verifyCsrfToken } from "../usecases/csrf.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import { login, type LoginError } from "../usecases/login.ts";
+import { loadSsoSession } from "../usecases/sso-session.ts";
 import { errorPage, loginPage } from "../views/pages.ts";
 import {
   buildRedirect,
   noStore,
   readCsrfCookie,
+  readSsoCookie,
   writeCsrfCookie,
   writeSsoCookie,
 } from "./helpers.ts";
 
 const loginFormSchema = z.object({
-  rid: z.string().min(1),
+  rid: z.string().default(""),
   csrf: z.string().min(1),
   username: z.string().min(1).max(256),
   password: z.string().min(1).max(256),
 });
 
 const GENERIC_FAILURE = "ユーザー名またはパスワードが正しくありません";
-const DIRECT_ACCESS_MESSAGE =
-  "ログインは利用したいサービスから始まります。tenant-a.localhost:3001 などサービスの URL をブラウザで開くと、このログイン画面に自動で移動します。";
 const EXPIRED_REQUEST_MESSAGE =
   "ログイン画面を開いてから時間が経ちすぎたか、認証サーバーが再起動しました。利用したいサービスの URL をブラウザで開き直してログインしてください。";
 
@@ -60,14 +60,16 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
 
   app.get("/login", async (c) => {
     noStore(c);
-    const rid = c.req.query("rid");
-    if (rid === undefined || rid === "") {
-      // 直接開かれた場合。ログインは常に Client 側の /auth/login から始まる
-      return c.html(errorPage("このページは直接開けません", DIRECT_ACCESS_MESSAGE), 400);
-    }
-    const request = await deps.stores.authorizationRequests.get(rid);
-    if (request === undefined) {
-      return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
+    const rid = c.req.query("rid") ?? "";
+    if (rid !== "") {
+      const request = await deps.stores.authorizationRequests.get(rid);
+      if (request === undefined) {
+        return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
+      }
+    } else {
+      // rid なしはポータル用ログイン。既に SSO Session があればポータルへ
+      const session = await loadSsoSession(deps, readSsoCookie(c, policy));
+      if (session !== undefined) return c.redirect("/");
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
@@ -94,8 +96,9 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
         );
       }
 
-      const request = await deps.stores.authorizationRequests.get(form.rid);
-      if (request === undefined) {
+      const request =
+        form.rid === "" ? undefined : await deps.stores.authorizationRequests.get(form.rid);
+      if (form.rid !== "" && request === undefined) {
         return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
       }
 
@@ -115,6 +118,7 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       }
 
       writeSsoCookie(c, policy, result.value.session.id);
+      if (request === undefined) return c.redirect("/");
       await deps.stores.authorizationRequests.delete(form.rid);
       return c.redirect(await completeAuthorization(deps, request, result.value.session.id));
     },

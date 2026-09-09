@@ -583,16 +583,16 @@ describe("global logout", () => {
   });
 });
 
-describe("login page direct access", () => {
-  test("explains that login starts from a service when opened without rid", async () => {
+describe("portal", () => {
+  test("shows the login form when /login is opened without rid", async () => {
     const harness = await createHarness();
 
     const res = await harness.app.request(`${ISSUER}/login`);
     const body = await res.text();
 
-    expect(res.status).toBe(400);
-    expect(body).toContain("このページは直接開けません");
-    expect(body).not.toContain("時間が経ちすぎた");
+    expect(res.status).toBe(200);
+    expect(body).toContain("Sandbox にログイン");
+    expect(body).toContain('name="rid" value=""');
   });
 
   test("reports an expired request when rid is unknown", async () => {
@@ -602,5 +602,66 @@ describe("login page direct access", () => {
 
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("時間が経ちすぎた");
+  });
+
+  test("redirects to the login form when the portal is opened without a session", async () => {
+    const harness = await createHarness();
+
+    const res = await harness.app.request(`${ISSUER}/`);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/login");
+  });
+
+  test("logs in without rid and lists the tenants the user belongs to with their roles", async () => {
+    // Arrange
+    const harness = await createHarness();
+    const loginPage = await harness.app.request(`${ISSUER}/login`);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(await loginPage.text())?.[1] ?? "";
+    const csrfCookie = cookieHeaderFrom(loginPage);
+
+    // Act
+    const login = await harness.app.request(`${ISSUER}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookie },
+      body: new URLSearchParams({
+        rid: "",
+        csrf,
+        username: "alice",
+        password: "alice-password",
+      }).toString(),
+    });
+    const cookie = cookieHeaderFrom(login, csrfCookie);
+    const portal = await harness.app.request(`${ISSUER}/`, { headers: { Cookie: cookie } });
+    const body = await portal.text();
+
+    // Assert
+    expect(login.status).toBe(302);
+    expect(login.headers.get("Location")).toBe("/");
+    expect(portal.status).toBe(200);
+    expect(body).toContain("alice@example.com");
+    expect(body).toContain("http://tenant-a.localhost:3001/auth/login");
+    expect(body).toContain("tenant-a / owner");
+    expect(body).toContain("http://tenant-b.localhost:3001/auth/login");
+    expect(body).toContain("tenant-b / viewer");
+  });
+
+  test("tells a user without memberships that no tenant is available", async () => {
+    const harness = await createHarness();
+    const flow = await runLoginFlow(harness, { username: "carol", password: "carol-password" });
+
+    const portal = await harness.app.request(`${ISSUER}/`, { headers: { Cookie: flow.cookie } });
+
+    expect(await portal.text()).toContain("所属しているテナントがありません");
+  });
+
+  test("sends a logged-in user from /login straight to the portal", async () => {
+    const harness = await createHarness();
+    const flow = await runLoginFlow(harness, ALICE);
+
+    const res = await harness.app.request(`${ISSUER}/login`, { headers: { Cookie: flow.cookie } });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/");
   });
 });

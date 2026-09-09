@@ -111,14 +111,15 @@ flowchart LR
 | --- | --- | --- | --- |
 | `/.well-known/openid-configuration` | GET | OIDC Discovery | Client、API Server |
 | `/jwks` | GET | ID Token / Access Token検証用公開鍵 | Client、API Server |
+| `/` | GET | ポータル。SSO Session があれば所属テナント一覧、なければ `/login` へ | ブラウザ |
 | `/authorize` | GET | 認可エンドポイント。SSOセッション判定、Membership判定、code発行 | ブラウザ |
-| `/login` | GET | ログインフォーム | ブラウザ |
+| `/login` | GET | ログインフォーム。rid なしはポータル用ログインで、成功後に `/` へ戻る | ブラウザ |
 | `/login` | POST | Cognito InitiateAuth による認証 | ブラウザ |
 | `/login/challenge` | POST | MFA等のチャレンジ応答。フェーズ2 | ブラウザ |
 | `/token` | POST | code交換、refresh_token grant | Client。Back Channel |
 | `/userinfo` | GET | claims提供 | Client。Back Channel |
 | `/revoke` | POST | Refresh Token失効。RFC 7009 | Client。Back Channel |
-| `/logout` | GET/POST | Global Logout。フェーズ2 | ブラウザ |
+| `/logout` | GET/POST | Global Logout。確認画面付き。完了後は Client の origin かポータルへ | ブラウザ |
 | `/healthz` | GET | 死活監視 | 監視 |
 
 ## Tenant Web Application エンドポイント一覧
@@ -128,7 +129,7 @@ flowchart LR
 | `/auth/login` | GET | 認可リクエストの生成とリダイレクト |
 | `/auth/callback` | GET | code受領、Back Channelで交換、Tenant Session作成 |
 | `/auth/logout` | POST | Tenant Logout |
-| `/auth/backchannel-logout` | POST | Back-Channel Logout受信。フェーズ2 |
+| `/auth/backchannel-logout` | POST | Back-Channel Logout受信。aud で Client を解決し sid のセッションを削除 |
 | `/api/*` 相当の画面処理 | 任意 | サーバー側でAccess Tokenを付与しapi.sandbox.comを呼ぶ |
 
 ## API Server エンドポイント規約

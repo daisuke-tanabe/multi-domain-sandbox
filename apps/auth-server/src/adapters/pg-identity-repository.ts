@@ -5,6 +5,7 @@ import type {
   Membership,
   NewUser,
   OidcClient,
+  TenantMembershipView,
   User,
 } from "../ports/identity-repository.ts";
 
@@ -107,6 +108,10 @@ export class PgIdentityRepository implements IdentityRepository {
     return toUser(userRow.parse(result.rows[0]));
   }
 
+  public listTenantsForUser(userId: string): Promise<ReadonlyArray<TenantMembershipView>> {
+    return listTenantsForUser(this.pool, userId);
+  }
+
   public async findMembership(tenantId: string, userId: string): Promise<Membership | undefined> {
     const result = await this.pool.query(
       "SELECT role, status FROM identity.tenant_members WHERE tenant_id = $1 AND user_id = $2",
@@ -122,4 +127,45 @@ export function createPool(connectionString: string, onError: (error: Error) => 
   // アイドル接続が切れたときの error イベントを拾わないとプロセスごと落ちる
   pool.on("error", onError);
   return pool;
+}
+
+const tenantMembershipRow = z.object({
+  tenant_id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  status: z.enum(["active", "suspended"]),
+  role: z.enum(["owner", "admin", "member", "viewer"]),
+  redirect_uri: z.string().nullable(),
+});
+
+/**
+ * ポータル用の所属一覧。Client 未登録のテナントも一覧には出す。
+ */
+export async function listTenantsForUser(
+  pool: Pool,
+  userId: string,
+): Promise<ReadonlyArray<TenantMembershipView>> {
+  const result = await pool.query(
+    `SELECT t.id AS tenant_id, t.slug, t.name, t.status, m.role,
+            (SELECT r.redirect_uri
+               FROM identity.oidc_clients c
+               JOIN identity.oidc_client_redirect_uris r ON r.client_id = c.client_id
+              WHERE c.tenant_id = t.id AND c.status = 'active'
+              ORDER BY r.redirect_uri
+              LIMIT 1) AS redirect_uri
+       FROM identity.tenant_members m
+       JOIN identity.tenants t ON t.id = m.tenant_id
+      WHERE m.user_id = $1 AND m.status = 'active' AND t.status = 'active'
+      ORDER BY t.slug`,
+    [userId],
+  );
+  return result.rows.map((raw) => {
+    const row = tenantMembershipRow.parse(raw);
+    return {
+      tenant: { id: row.tenant_id, slug: row.slug, status: row.status },
+      tenantName: row.name,
+      role: row.role,
+      redirectUri: row.redirect_uri,
+    };
+  });
 }

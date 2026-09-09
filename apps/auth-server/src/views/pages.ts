@@ -32,6 +32,7 @@ function layout(
 }
 
 export interface LoginPageProps {
+  /** 認可リクエスト ID。ポータル用ログインでは空文字 */
   readonly rid: string;
   readonly csrfToken: string;
   readonly errorMessage?: string;
@@ -126,6 +127,50 @@ export function logoutDonePage(
           ? ""
           : html`<p><a href="${props.returnTo.href}">${props.returnTo.label} に戻る</a></p>`
       }
+    `,
+  );
+}
+
+export interface PortalTenant {
+  readonly slug: string;
+  readonly name: string;
+  readonly role: string;
+  /** テナント側の /auth/login。Client 未登録なら undefined */
+  readonly loginUrl: string | undefined;
+}
+
+export interface PortalPageProps {
+  readonly email: string;
+  readonly tenants: ReadonlyArray<PortalTenant>;
+}
+
+/**
+ * ポータル。SSO Session を持つユーザーに所属テナントの入口を並べる。
+ * リンク先はテナント側の /auth/login で、SSO Session によりパスワードなしで入れる。
+ */
+export function portalPage(props: PortalPageProps): HtmlEscapedString | Promise<HtmlEscapedString> {
+  return layout(
+    "Sandbox ポータル",
+    html`
+      <h1>Sandbox ポータル</h1>
+      <p class="muted">${props.email} としてログイン中</p>
+      ${
+        props.tenants.length === 0
+          ? html`<p>所属しているテナントがありません。管理者に招待を依頼してください。</p>`
+          : html`<ul>
+              ${props.tenants.map(
+                (tenant) => html`<li>
+                  ${
+                    tenant.loginUrl === undefined
+                      ? html`${tenant.name}`
+                      : html`<a href="${tenant.loginUrl}">${tenant.name}</a>`
+                  }
+                  <span class="muted">(${tenant.slug} / ${tenant.role})</span>
+                </li>`,
+              )}
+            </ul>`
+      }
+      <p><a href="/logout">Sandbox 全体からログアウト</a></p>
     `,
   );
 }

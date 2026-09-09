@@ -171,7 +171,27 @@ try {
     String(await cdp.evaluate("location.href")),
   );
 
-  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TENANT_B }));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: "http://auth.localhost:3000/" }));
+  const portalBody = String(await cdp.evaluate("document.body.innerText"));
+  check(
+    "portal lists the tenants the user belongs to",
+    portalBody.includes("Sandbox ポータル") &&
+      portalBody.includes("tenant-a / owner") &&
+      portalBody.includes("tenant-b / viewer"),
+    String(await cdp.evaluate("location.href")),
+  );
+  await cdp.navigateWith(() =>
+    cdp.evaluate(
+      "document.querySelector('a[href$=\"tenant-b.localhost:3001/auth/login\"]').click()",
+    ),
+  );
+  const viaPortal = String(await cdp.evaluate("location.href"));
+  check(
+    "portal link enters tenant-b via SSO",
+    viaPortal.startsWith("http://tenant-b.localhost:3001/"),
+    viaPortal,
+  );
+
   await cdp.navigateWith(() =>
     cdp.send("Page.navigate", { url: "http://auth.localhost:3000/logout?client_id=tenant-b" }),
   );

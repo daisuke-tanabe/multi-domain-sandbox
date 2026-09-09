@@ -51,4 +51,14 @@ export interface IdentityRepository {
   findUserById(id: string): Promise<User | undefined>;
   createUser(user: NewUser): Promise<User>;
   findMembership(tenantId: string, userId: string): Promise<Membership | undefined>;
+  /** ポータル用。ユーザーが active で所属する active なテナントと、そのテナント用 Client の redirect_uri */
+  listTenantsForUser(userId: string): Promise<ReadonlyArray<TenantMembershipView>>;
+}
+
+export interface TenantMembershipView {
+  readonly tenant: Tenant;
+  readonly tenantName: string;
+  readonly role: Role;
+  /** テナント用 Client の登録 redirect_uri。Client 未登録なら null */
+  readonly redirectUri: string | null;
 }

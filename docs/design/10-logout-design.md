@@ -57,6 +57,7 @@ token=<refresh_token>&token_type_hint=refresh_token
 | 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → Cookie 削除 |
 | 通知先 | SSO Session の authorized_clients に含まれる Client のうち backchannel_logout_uri を持つもの |
 | 通知失敗 | 完了扱い。対象 Tenant は Refresh 失敗で最大15分以内に失効 |
+| 完了画面 | `client_id` があれば登録 redirect_uri の origin へのリンク。加えて `/` ポータルへのリンク |
 
 ### logout_token
 

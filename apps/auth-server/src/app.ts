@@ -6,6 +6,7 @@ import { discoveryRoutes } from "./routes/discovery.ts";
 import { loginRoutes } from "./routes/login.ts";
 import { tokenRoutes } from "./routes/token.ts";
 import { logoutRoutes } from "./routes/logout.ts";
+import { portalRoutes } from "./routes/portal.ts";
 import { userinfoRoutes } from "./routes/userinfo.ts";
 import type { AuthDeps } from "./usecases/deps.ts";
 import { errorPage } from "./views/pages.ts";
@@ -42,6 +43,7 @@ export function createAuthApp(options: AuthAppOptions): Hono {
   app.route("/", tokenRoutes(deps));
   app.route("/", userinfoRoutes(deps));
   app.route("/", logoutRoutes(deps, cookiePolicy));
+  app.route("/", portalRoutes(deps, cookiePolicy));
 
   app.notFound((c) =>
     c.html(errorPage("ページが見つかりません", "指定されたページは存在しません。"), 404),

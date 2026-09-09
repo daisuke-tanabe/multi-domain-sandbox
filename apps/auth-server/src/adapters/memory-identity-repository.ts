@@ -3,6 +3,7 @@ import type {
   Membership,
   NewUser,
   OidcClient,
+  TenantMembershipView,
   User,
 } from "../ports/identity-repository.ts";
 
@@ -38,6 +39,26 @@ export class MemoryIdentityRepository implements IdentityRepository {
     const created: User = { ...user, status: "active" };
     this.users.set(created.id, created);
     return created;
+  }
+
+  public async listTenantsForUser(userId: string): Promise<ReadonlyArray<TenantMembershipView>> {
+    return this.data.memberships
+      .filter((member) => member.userId === userId && member.status === "active")
+      .flatMap((member) => {
+        const client = this.data.clients.find(
+          (candidate) => candidate.tenant?.id === member.tenantId,
+        );
+        const tenant = client?.tenant;
+        if (tenant === undefined || tenant === null || tenant.status !== "active") return [];
+        return [
+          {
+            tenant,
+            tenantName: `Tenant ${tenant.slug}`,
+            role: member.role,
+            redirectUri: client?.redirectUris[0] ?? null,
+          },
+        ];
+      });
   }
 
   public async findMembership(tenantId: string, userId: string): Promise<Membership | undefined> {
