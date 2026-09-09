@@ -17,7 +17,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
 cd "$TF_DIR"
-terraform init -input=false >/dev/null
+terraform init -input=false -backend-config=backend.hcl >/dev/null
 
 if [[ "${1:-}" == "--init" ]]; then
   echo "== creating ECR repositories first"

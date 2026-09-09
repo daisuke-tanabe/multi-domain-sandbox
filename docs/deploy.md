@@ -31,8 +31,9 @@
 ## 初回手順
 
 ```bash
-# 1. state バケット
+# 1. state バケット。terraform/backend.hcl も生成される (git 管理外)
 scripts/tf-bootstrap.sh
+cd terraform && terraform init -backend-config=backend.hcl && cd ..
 
 # 2. ECR を作ってイメージを push し、全リソースを apply
 scripts/deploy.sh --init
@@ -90,6 +91,14 @@ cd terraform && terraform destroy
 ```
 
 ECR は `force_delete`、RDS は `skip_final_snapshot`、Secrets Manager は即時削除に設定してあるため、destroy だけで消える。state バケットと親ゾーンの NS レコードは手動で消す。
+
+## 公開前のチェック
+
+```bash
+scripts/secret-scan.sh
+```
+
+追跡ファイルと全履歴を、AWS キー、秘密鍵、SSO の Start URL、アカウント ID、Cognito Pool ID のパターンで検索する。`.env.example` のローカル固定値は公開前提の値で、README にその旨を明示している。
 
 ## 費用の目安
 

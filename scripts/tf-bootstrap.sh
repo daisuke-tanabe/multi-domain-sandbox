@@ -25,5 +25,7 @@ aws s3api put-bucket-encryption --bucket "$BUCKET" --server-side-encryption-conf
 aws s3api put-public-access-block --bucket "$BUCKET" --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+printf 'bucket = "%s"\n' "$BUCKET" > "$ROOT/terraform/backend.hcl"
 echo "state bucket ready: $BUCKET"
-echo "terraform/versions.tf の backend bucket が一致していることを確認してください"
+echo "terraform/backend.hcl を生成しました。terraform init -backend-config=backend.hcl で使います"

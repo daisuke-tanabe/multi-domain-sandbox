@@ -1,0 +1,2 @@
+# scripts/tf-bootstrap.sh が backend.hcl として生成する
+bucket = "<account-id>-multi-domain-sandbox-tfstate"

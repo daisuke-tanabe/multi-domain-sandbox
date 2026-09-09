@@ -16,9 +16,9 @@ terraform {
     }
   }
 
-  # state バケットは scripts/tf-bootstrap.sh で先に作る
+  # バケット名はアカウント ID を含むため backend.hcl (git 管理外) に置く。
+  # scripts/tf-bootstrap.sh が生成し、terraform init -backend-config=backend.hcl で読み込む
   backend "s3" {
-    bucket       = "<account-id>-multi-domain-sandbox-tfstate"
     key          = "sandbox/terraform.tfstate"
     region       = "ap-northeast-1"
     use_lockfile = true

@@ -24,3 +24,6 @@ node_modules/
 
 # Coverage
 coverage/
+
+# 公開しない導入メモ
+docs/private/

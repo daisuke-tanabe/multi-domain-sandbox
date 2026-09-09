@@ -3,6 +3,10 @@
 Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した OpenID Provider として構築するマルチテナント SSO 基盤の叩き台。
 仕様と設計は [docs/](./docs/README.md)、実装規約は [ARCHITECTURE.md](./ARCHITECTURE.md) を参照する。
 
+## 他リポジトリへの導入
+
+既存サービスへ同じ仕組みを入れるための自己完結ガイドを [docs/integration-guide.md](./docs/integration-guide.md) に置いている。仕様、全 URL とパラメータの詳細設計、誰が何を渡して何を受け取るかを書いたシーケンス図、サブドメインに依存せず別ドメインでも動く理由、Next.js 構成への読み替え、参考資料をまとめてある。導入先のリポジトリへはこのファイルをそのままコピーして使う。
+
 ## 構成
 
 | ディレクトリ | 役割 | ローカルホスト |
