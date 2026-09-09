@@ -60,6 +60,20 @@
 
 仕様書27章に従い、選択肢と推奨案を示す。D1からD4はアーキテクチャを左右するため、実装前に決定が必要。D5以降は推奨値で進めてよいが確認を求める。
 
+決定状況。2026-09-09 にすべて推奨案で決定した。
+
+| 項目 | 決定 |
+| --- | --- |
+| D1 | BFF構成 |
+| D2 | テナントごとに1 Client |
+| D3 | Auth Server が Identity DB を所有 |
+| D4 | Auth Server 発行の Refresh Token をローテーション |
+| D5-D12 | 推奨値どおり |
+| 追加 | ID Token の sub は内部の users.id |
+| 追加 | 検証実装の Cognito はモックアダプタのみ。本番アダプタは雛形のみ |
+| 追加 | 検証実装の DB は PostgreSQL on Docker。RLS を検証する |
+| 追加 | Global Logout と MFA はフェーズ2 |
+
 ### D1. Tenant Web Applicationの実行形態
 
 問題点。Tenant Web ApplicationがサーバーサイドセッションをもつBFFか、ブラウザ完結のSPAかで、API認証とCookie設計が根本的に変わる。仕様書4.3は「自サービスセッションの管理」と「api.sandbox.comへのAPIアクセス」をTenant Web Applicationの責務としているが、実行形態は明記していない。

@@ -1,0 +1,3 @@
+{
+  "ignorePatterns": [".claude/**", "docs/**", "db/**", "**/*.md", "node_modules/**"]
+}
