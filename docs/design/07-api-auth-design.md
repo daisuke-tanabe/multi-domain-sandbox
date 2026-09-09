@@ -1,0 +1,156 @@
+# API認証・認可・Tenant Isolation設計
+
+## 結論
+
+api.sandbox.com は Resource Server として Auth Server 発行の Access Token のみを受け付ける。
+テナントコンテキストは Token の `tenant_id` だけから決め、リクエストのパス・クエリ・ボディに含まれるテナント指定は認可根拠にしない。
+認可は毎リクエスト Identity DB の tenant_members を再検証し、データアクセスは tenant_id でアプリ層とDB層の二重で分離する。
+
+## 処理順序
+
+仕様書17章の順序をミドルウェア構成に対応させる。
+
+```mermaid
+flowchart TD
+    A["Request"] --> B["1. Authentication<br/>Bearer Token 抽出と JWT 検証"]
+    B -- 失敗 --> E1["401 unauthorized"]
+    B --> C["2. User Identity<br/>sub → users.id、status=active"]
+    C -- 無効 --> E1
+    C --> D["3. Tenant Membership<br/>(tenant_id, user_id) を tenant_members で検索"]
+    D -- なし / status!=active --> E2["403 forbidden"]
+    D --> F["4. Role / Permission<br/>role → permission set"]
+    F --> G["5. Authorization<br/>endpoint が要求する permission を確認"]
+    G -- 不足 --> E2
+    G --> H["6. Data Access<br/>tenant_id を Repository と RLS に強制"]
+    H --> I["Response"]
+```
+
+## 1. Authentication
+
+| 検証項目 | 内容 |
+| --- | --- |
+| ヘッダ | `Authorization: Bearer <jwt>`。Cookie は受け付けない |
+| 署名 | Auth Server の JWKS。RS256 のみ。kid で鍵選択 |
+| iss | `https://auth.sandbox.com` |
+| aud | `https://api.sandbox.com`。ID Token を誤って送られても拒否 |
+| exp / iat | 許容スキュー 30秒 |
+| 必須 claims | sub, tenant_id, sid, scope |
+
+失敗時は `401` と `WWW-Authenticate: Bearer error="invalid_token"` を返す。
+
+## 2. User Identity
+
+- `sub` を users.id として扱う
+- users.status が active でなければ 401
+- ユーザー参照はリクエスト単位でキャッシュしない。ユーザー無効化を即時反映するため
+
+## 3. Tenant Membership
+
+```sql
+SELECT role
+FROM tenant_members
+WHERE tenant_id = :token_tenant_id
+  AND user_id   = :token_sub
+  AND status    = 'active';
+```
+
+- 見つからなければ 403
+- Token の tenant_id は Auth Server が発行時に検証済みだが、発行後の Membership 削除を反映するため毎回再検証する
+- 短時間キャッシュを入れる場合は Access Token 寿命以下にする。推奨は 60 秒以内
+
+## 4. Role / Permission
+
+role は tenant_members から取得した値のみ使う。Token に role があっても無視する。
+
+| role | permissions |
+| --- | --- |
+| owner | すべて。tenant:delete を含む |
+| admin | tenant:read, tenant:update, members:*, projects:* |
+| member | tenant:read, projects:read, projects:write |
+| viewer | tenant:read, projects:read |
+
+permission の定義は API Server 内の単一の表で管理し、DB には role のみ保存する。判断事項D8。
+
+## 5. Authorization
+
+各エンドポイントは要求 permission を宣言する。
+
+```typescript
+app.get('/v1/projects', requirePermission('projects:read'), handler);
+app.post('/v1/projects', requirePermission('projects:write'), handler);
+app.delete('/v1/projects/:id', requirePermission('projects:write'), handler);
+```
+
+- permission 未宣言のエンドポイントは起動時にエラーにする。デフォルト拒否
+- オブジェクト単位の所有者チェックが必要な場合は handler 内で追加し、tenant_id 一致の後に評価する
+
+## 6. Data Access と Tenant Isolation
+
+### アプリ層
+
+- Repository は tenant_id を必須引数に取る。省略可能な引数にしない
+- tenant_id はリクエストコンテキストの Token 由来値のみ。ハンドラがリクエストパラメータから tenant_id を組み立てることを禁止する
+- 単一リソース取得は `WHERE id = :id AND tenant_id = :tenant_id`。見つからなければ 404。他テナントのIDを指定しても存在の有無を区別しない
+- 一括更新・削除も必ず tenant_id 条件を含める
+
+```typescript
+type TenantContext = { tenantId: string; userId: string; role: Role };
+
+class ProjectRepository {
+  findById(ctx: TenantContext, id: string) {
+    return db.query('SELECT * FROM projects WHERE id = $1 AND tenant_id = $2', [id, ctx.tenantId]);
+  }
+}
+```
+
+### DB層。PostgreSQL の場合
+
+判断事項D11。アプリ層のバグに対する二重防御として Row Level Security を使う。
+
+```sql
+BEGIN;
+SET LOCAL app.tenant_id = '<token_tenant_id>';
+-- 以降のクエリは RLS により tenant_id が一致する行のみ見える
+COMMIT;
+```
+
+- API Server の DB ロールは BYPASSRLS を持たない
+- `FORCE ROW LEVEL SECURITY` でテーブル所有者にも適用する
+- マイグレーション用ロールと実行時ロールを分ける
+
+### 禁止パターン
+
+| パターン | 理由 |
+| --- | --- |
+| `GET /v1/tenants/:tenantId/projects` の tenantId で認可 | 仕様書16章。Tenant ID 改ざん |
+| `X-Tenant-Id` ヘッダで認可 | 同上 |
+| `WHERE id = :id` のみでの単一取得 | IDOR / BOLA |
+| Token の role claim で認可 | Membership 変更が反映されない |
+| 管理ロールでの RLS バイパス | 二重防御が無効化される |
+
+## テナント切替
+
+1 Access Token は 1 テナントに限定する。ユーザーが tenant-b を操作するには tenant-b.sandbox.com で別の Tenant Session と Token を持つ。API Server 側にテナント切替 API は作らない。
+
+## 管理 API。フェーズ2
+
+複数テナントをまたぐ操作は、tenant_id を持たない管理用 Client の Access Token と `admin` scope を要求する。処理順序は同じだが、3の Membership 判定の代わりに管理者テーブルを参照する。RLS は `app.tenant_id` を操作対象テナントに設定して1テナントずつ処理する。
+
+## API 変更案
+
+グリーンフィールドのため新規規約として定義する。既存 API がある適用先では以下を移行対象にする。
+
+| 変更 | 内容 |
+| --- | --- |
+| 認証 | Cognito JWT の直接検証を廃止し、Auth Server JWKS による検証へ置換 |
+| パス | tenant slug / id を含むパスを廃止。Token の tenant_id に統一 |
+| ミドルウェア | Authentication → Membership → Permission の順に必ず通す共通チェーンを導入 |
+| Repository | tenant_id 必須引数化 |
+| DB | RLS ポリシー追加。実行時ロールの権限縮小 |
+| CORS | ブラウザ直接呼び出しを廃止するため許可オリジンを空にする |
+
+## ログ
+
+- 認可判定の結果を user_id / tenant_id / permission / 結果 で構造化ログに出す
+- Token 値、Cookie 値、client_secret は出さない
+- 403 の発生をテナント単位で監視し、異常な増加を IDOR 試行として検知する
