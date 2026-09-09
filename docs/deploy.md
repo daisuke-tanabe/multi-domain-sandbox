@@ -87,10 +87,14 @@ pnpm chrome-check
 ## 撤去
 
 ```bash
-cd terraform && terraform destroy
+scripts/teardown.sh
 ```
 
-ECR は `force_delete`、RDS は `skip_final_snapshot`、Secrets Manager は即時削除に設定してあるため、destroy だけで消える。state バケットと親ゾーンの NS レコードは手動で消す。
+課金対象をすべて削除し、Route 53 ホストゾーンだけ残す。ゾーンまで消すと親ゾーンの NS 委任が存在しないゾーンを指したまま残り、第三者が同じネームサーバーを引き当ててサブドメインを乗っ取れる。ゾーンは月 0.50 USD で、残しておけば次回は `scripts/deploy.sh --init` と `scripts/run-provision.sh` だけで同じ URL に復元できる。
+
+ECR は `force_delete`、RDS は `skip_final_snapshot`、Secrets Manager は即時削除に設定してあるため、destroy で残るものはない。残るのはホストゾーンと state バケットのみ。完全に撤去する場合は、親ゾーンの NS レコードを先に削除してから `terraform destroy` でゾーンを消し、state バケットを手動で消す。
+
+`terraform destroy -target` でゾーンを除外する方法は取らない。for_each を持つリソースのキーに引用符が含まれ、シェル経由で正しく渡しにくい。スクリプトはゾーンを一時的に state から外して全体を destroy し、import ブロックで取り込み直す。
 
 ## 公開前のチェック
 
