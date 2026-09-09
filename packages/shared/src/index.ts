@@ -35,3 +35,4 @@ export type { CookiePolicy, CookieScope, CookieAttributes } from "./cookie.ts";
 export { createLogger, silentLogger, getErrorMessage } from "./logger.ts";
 export type { Logger } from "./logger.ts";
 export { sanitizeReturnTo } from "./return-to.ts";
+export { RedisKeyValueStore, createRedisClient } from "./redis-store.ts";

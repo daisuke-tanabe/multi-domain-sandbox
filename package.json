@@ -10,9 +10,9 @@
     "lint": "oxlint .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "db:up": "docker compose up -d db",
+    "db:up": "docker compose up -d db redis",
     "db:down": "docker compose down",
-    "db:reset": "docker compose down -v && docker compose up -d db",
+    "db:reset": "docker compose down -v && docker compose up -d db redis",
     "smoke": "tsx scripts/smoke.ts",
     "chrome-check": "tsx scripts/chrome-check.ts"
   },

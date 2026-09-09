@@ -1,22 +1,15 @@
 {
-  "name": "@sandbox/api-server",
+  "name": "@sandbox/provision",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {
-    "./app": "./src/app.ts",
-    "./test-support": "./src/test-support.ts"
-  },
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --import tsx --watch src/main.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@hono/node-server": "catalog:",
-    "@hono/zod-validator": "catalog:",
+    "@aws-sdk/client-cognito-identity-provider": "catalog:",
     "@sandbox/shared": "workspace:*",
-    "hono": "catalog:",
     "pg": "catalog:",
     "tsx": "catalog:",
     "ulid": "catalog:",
@@ -25,7 +18,6 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
-    "typescript": "catalog:",
-    "vitest": "catalog:"
+    "typescript": "catalog:"
   }
 }

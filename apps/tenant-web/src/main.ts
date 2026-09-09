@@ -1,11 +1,29 @@
 import { serve } from "@hono/node-server";
 import { OidcProvider, type OidcClientDeps } from "@sandbox/oidc-client";
-import { createLogger, MemoryKeyValueStore, systemClock } from "@sandbox/shared";
+import {
+  createLogger,
+  createRedisClient,
+  MemoryKeyValueStore,
+  RedisKeyValueStore,
+  systemClock,
+  type KeyValueStore,
+} from "@sandbox/shared";
 import { createTenantApp } from "./app.ts";
 import { createClientResolvers, loadConfig } from "./config.ts";
 
 const logger = createLogger("tenant-web");
 const config = loadConfig();
+
+const redis = config.REDIS_URL === undefined ? undefined : createRedisClient(config.REDIS_URL);
+if (redis === undefined) {
+  logger.warn("REDIS_URL is not set. Sessions are kept in memory and lost on restart");
+}
+
+function createStore<T>(prefix: string): KeyValueStore<T> {
+  return redis === undefined
+    ? new MemoryKeyValueStore<T>(systemClock)
+    : new RedisKeyValueStore<T>(redis, prefix);
+}
 
 const deps: OidcClientDeps = {
   provider: {
@@ -15,9 +33,9 @@ const deps: OidcClientDeps = {
     }),
   },
   ...createClientResolvers(config),
-  sessions: new MemoryKeyValueStore(systemClock),
-  sessionsBySid: new MemoryKeyValueStore(systemClock),
-  preAuth: new MemoryKeyValueStore(systemClock),
+  sessions: createStore("tenant:sess"),
+  sessionsBySid: createStore("tenant:sid"),
+  preAuth: createStore("tenant:pre"),
   clock: systemClock,
   cookiePolicy: { secure: config.COOKIE_SECURE },
   logger,

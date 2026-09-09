@@ -16,13 +16,13 @@
     "@sandbox/oidc-client": "workspace:*",
     "@sandbox/shared": "workspace:*",
     "hono": "catalog:",
+    "tsx": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@sandbox/api-server": "workspace:*",
     "@sandbox/auth-server": "workspace:*",
     "@types/node": "catalog:",
-    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

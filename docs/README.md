@@ -20,6 +20,7 @@ Sandbox 認証・マルチテナントSSO基盤の設計ドキュメント。
 | [design/09-error-cases.md](./design/09-error-cases.md) | エラーケース一覧 |
 | [design/10-logout-design.md](./design/10-logout-design.md) | Logout設計 |
 | [design/11-test-plan.md](./design/11-test-plan.md) | テスト計画 |
+| [deploy.md](./deploy.md) | AWS へのデプロイ手順と構成 |
 
 ## 実装状況
 

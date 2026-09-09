@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+.git
+docs
+terraform
+scripts
+coverage
+**/*.test.ts
+.env
+**/.env

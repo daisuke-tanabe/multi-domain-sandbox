@@ -13,6 +13,7 @@ const envSchema = z.object({
   ISSUER: z.string().url(),
   AUTH_BACKCHANNEL_URL: z.string().url().optional(),
   API_BACKCHANNEL_URL: z.string().url(),
+  REDIS_URL: z.string().url().optional(),
   COOKIE_SECURE: z
     .enum(["true", "false"])
     .default("false")

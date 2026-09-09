@@ -23,3 +23,6 @@ catalog:
   oxfmt: 0.67.0
   type-fest: 5.9.0
   ulid: 3.0.2
+  ioredis: 6.0.0
+  cognito-srp-helper: 2.3.5
+  "@aws-sdk/client-cognito-identity-provider": 3.1128.0

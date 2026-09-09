@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "ioredis": "catalog:",
     "jose": "catalog:",
     "zod": "catalog:"
   },

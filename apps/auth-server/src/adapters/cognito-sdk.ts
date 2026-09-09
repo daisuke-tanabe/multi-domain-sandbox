@@ -1,4 +1,26 @@
-import { err, type Result } from "@sandbox/shared";
+import {
+  CognitoIdentityProviderClient,
+  InitiateAuthCommand,
+  RespondToAuthChallengeCommand,
+  RevokeTokenCommand,
+  type AuthenticationResultType,
+} from "@aws-sdk/client-cognito-identity-provider";
+import {
+  createSecretHash,
+  createSrpSession,
+  signSrpSession,
+  wrapAuthChallenge,
+  wrapInitiateAuth,
+} from "cognito-srp-helper";
+import {
+  err,
+  ok,
+  verifyJwt,
+  type Clock,
+  type JSONWebKeySet,
+  type Logger,
+  type Result,
+} from "@sandbox/shared";
 import type {
   CognitoAuthenticated,
   CognitoAuthenticator,
@@ -6,37 +28,198 @@ import type {
   CognitoCredentials,
 } from "../ports/cognito.ts";
 
+export interface SdkCognitoConfig {
+  readonly region: string;
+  readonly userPoolId: string;
+  readonly clientId: string;
+  readonly clientSecret: string;
+}
+
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+const JWKS_CACHE_SECONDS = 10 * 60;
+
 /**
- * 本番向け Cognito アダプタの雛形。本サンドボックスでは実装しない。
- *
- * 実装時の方針。docs/design/00-current-state-and-decisions.md の D5 に対応する。
- *
- * 1. @aws-sdk/client-cognito-identity-provider の InitiateAuthCommand を AuthFlow=USER_SRP_AUTH で呼ぶ。
- *    SRP の計算は amazon-cognito-identity-js 相当の実装を用い、パスワードを平文で送らない。
- *    App Client に secret がある場合は SECRET_HASH を付ける。
- * 2. ChallengeName が返った場合は { kind: 'challenge_required' } を返す。MFA はフェーズ2。
- * 3. AuthenticationResult の IdToken を Cognito の JWKS で検証する。iss / aud / exp / token_use=id。
- * 4. 検証済み claims から sub / email / email_verified / name を取り出して返す。
- * 5. NotAuthorizedException と UserNotFoundException は共に invalid_credentials に写像する。
- * 6. UserNotConfirmedException → user_not_confirmed、PasswordResetRequiredException → password_reset_required。
- * 7. それ以外の例外は unavailable として返し、メッセージはログのみに残す。
+ * 本番向け Cognito アダプタ。USER_SRP_AUTH でパスワードを平文送信せずに認証し、
+ * 返ってきた ID Token を Cognito の JWKS で検証してから claims を返す。
+ * docs/design/00-current-state-and-decisions.md の D5 に対応する。
  */
 export class SdkCognitoAuthenticator implements CognitoAuthenticator {
+  private readonly client: CognitoIdentityProviderClient;
+  private readonly issuer: string;
+  private jwks: JSONWebKeySet | undefined;
+  private jwksFetchedAt = 0;
+
+  constructor(
+    private readonly config: SdkCognitoConfig,
+    private readonly clock: Clock,
+    private readonly logger: Logger,
+    private readonly fetchFn: FetchLike,
+  ) {
+    this.client = new CognitoIdentityProviderClient({ region: config.region });
+    this.issuer = `https://cognito-idp.${config.region}.amazonaws.com/${config.userPoolId}`;
+  }
+
   public async authenticate(
-    _credentials: CognitoCredentials,
+    credentials: CognitoCredentials,
   ): Promise<Result<CognitoAuthenticated, CognitoAuthError>> {
-    return err({
-      kind: "unavailable",
-      reason: "SdkCognitoAuthenticator is not implemented in this sandbox",
-    });
+    const secretHash = createSecretHash(
+      credentials.username,
+      this.config.clientId,
+      this.config.clientSecret,
+    );
+    try {
+      const srpSession = createSrpSession(
+        credentials.username,
+        credentials.password,
+        this.config.userPoolId,
+        false,
+      );
+      const initiated = await this.client.send(
+        new InitiateAuthCommand(
+          wrapInitiateAuth(srpSession, {
+            ClientId: this.config.clientId,
+            AuthFlow: "USER_SRP_AUTH",
+            AuthParameters: {
+              CHALLENGE_NAME: "SRP_A",
+              SECRET_HASH: secretHash,
+              USERNAME: credentials.username,
+            },
+          } as const),
+        ),
+      );
+      if (initiated.ChallengeName !== "PASSWORD_VERIFIER") {
+        return err({
+          kind: "challenge_required",
+          challengeName: initiated.ChallengeName ?? "unknown",
+        });
+      }
+      const challengeParameters = initiated.ChallengeParameters;
+      if (challengeParameters === undefined) {
+        return err({ kind: "unavailable", reason: "challenge parameters missing" });
+      }
+      const signed = signSrpSession(srpSession, {
+        ChallengeName: "PASSWORD_VERIFIER",
+        ChallengeParameters: challengeParameters,
+      });
+      const responded = await this.client.send(
+        new RespondToAuthChallengeCommand(
+          wrapAuthChallenge(signed, {
+            ClientId: this.config.clientId,
+            ChallengeName: "PASSWORD_VERIFIER",
+            ChallengeResponses: { SECRET_HASH: secretHash, USERNAME: credentials.username },
+            ...(initiated.Session !== undefined && { Session: initiated.Session }),
+          } as const),
+        ),
+      );
+      if (responded.ChallengeName !== undefined) {
+        return err({ kind: "challenge_required", challengeName: responded.ChallengeName });
+      }
+      if (responded.AuthenticationResult === undefined) {
+        return err({ kind: "unavailable", reason: "no authentication result" });
+      }
+      return this.toAuthenticated(responded.AuthenticationResult);
+    } catch (error: unknown) {
+      return err(mapCognitoError(error, this.logger));
+    }
   }
 
   public async revokeRefreshToken(
-    _refreshToken: string,
+    refreshToken: string,
   ): Promise<Result<void, { kind: "unavailable"; reason: string }>> {
-    return err({
-      kind: "unavailable",
-      reason: "SdkCognitoAuthenticator is not implemented in this sandbox",
+    try {
+      await this.client.send(
+        new RevokeTokenCommand({
+          ClientId: this.config.clientId,
+          ClientSecret: this.config.clientSecret,
+          Token: refreshToken,
+        }),
+      );
+      return ok(undefined);
+    } catch (error: unknown) {
+      return err({ kind: "unavailable", reason: errorName(error) });
+    }
+  }
+
+  private async toAuthenticated(
+    result: AuthenticationResultType,
+  ): Promise<Result<CognitoAuthenticated, CognitoAuthError>> {
+    const { AccessToken, IdToken, RefreshToken, ExpiresIn } = result;
+    if (AccessToken === undefined || IdToken === undefined || RefreshToken === undefined) {
+      return err({ kind: "unavailable", reason: "tokens missing in authentication result" });
+    }
+    const jwks = await this.getJwks();
+    if (!jwks.ok) return jwks;
+    const verified = await verifyJwt(IdToken, jwks.value, {
+      issuer: this.issuer,
+      audience: this.config.clientId,
+      currentDate: new Date(this.clock.nowSeconds() * 1000),
     });
+    if (!verified.ok) {
+      this.logger.error("cognito id token verification failed", { reason: verified.error.reason });
+      return err({ kind: "unavailable", reason: "id token verification failed" });
+    }
+    const claims = verified.value;
+    if (
+      claims.token_use !== "id" ||
+      typeof claims.sub !== "string" ||
+      typeof claims.email !== "string"
+    ) {
+      return err({ kind: "unavailable", reason: "id token claims incomplete" });
+    }
+    return ok({
+      sub: claims.sub,
+      email: claims.email,
+      emailVerified: claims.email_verified === true,
+      ...(typeof claims.name === "string" && { name: claims.name }),
+      tokens: {
+        accessToken: AccessToken,
+        idToken: IdToken,
+        refreshToken: RefreshToken,
+        expiresAt: this.clock.nowSeconds() + (ExpiresIn ?? 3600),
+      },
+    });
+  }
+
+  private async getJwks(): Promise<Result<JSONWebKeySet, CognitoAuthError>> {
+    const now = this.clock.nowSeconds();
+    if (this.jwks !== undefined && now - this.jwksFetchedAt < JWKS_CACHE_SECONDS)
+      return ok(this.jwks);
+    try {
+      const res = await this.fetchFn(`${this.issuer}/.well-known/jwks.json`);
+      if (!res.ok) return err({ kind: "unavailable", reason: `jwks status ${res.status}` });
+      const body: unknown = await res.json();
+      if (typeof body !== "object" || body === null || !Array.isArray(Reflect.get(body, "keys"))) {
+        return err({ kind: "unavailable", reason: "malformed cognito jwks" });
+      }
+      const jwks: JSONWebKeySet = { keys: Reflect.get(body, "keys") };
+      this.jwks = jwks;
+      this.jwksFetchedAt = now;
+      return ok(jwks);
+    } catch (error: unknown) {
+      return err({ kind: "unavailable", reason: errorName(error) });
+    }
+  }
+}
+
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : "unknown";
+}
+
+/**
+ * Cognito の例外を理由コードへ写像する。認証失敗系はユーザー列挙を防ぐため一つにまとめる。
+ */
+function mapCognitoError(error: unknown, logger: Logger): CognitoAuthError {
+  switch (errorName(error)) {
+    case "NotAuthorizedException":
+    case "UserNotFoundException":
+      return { kind: "invalid_credentials" };
+    case "UserNotConfirmedException":
+      return { kind: "user_not_confirmed" };
+    case "PasswordResetRequiredException":
+      return { kind: "password_reset_required" };
+    default:
+      logger.error("cognito call failed", { name: errorName(error) });
+      return { kind: "unavailable", reason: errorName(error) };
   }
 }

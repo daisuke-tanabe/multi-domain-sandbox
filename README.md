@@ -13,7 +13,10 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | `packages/shared` | Result 型、KV ストア、PKCE、AES-GCM、scrypt、JWT、Cookie、ロガー | |
 | `packages/oidc-client` | Tenant Web Application 向け OIDC Client 共通モジュール | |
 | `db/init` | PostgreSQL のロール、スキーマ、RLS、シード | |
+| `apps/provision` | RDS のスキーマ作成、Cognito テストユーザー作成、シード投入。ECS の一回限りタスク | |
+| `terraform` | AWS 構成。ECS Fargate + ALB、RDS、ElastiCache、Cognito、Route 53、ACM | |
 | `scripts/smoke.ts` | 起動中のサーバーに対する実 HTTP の疎通確認 | |
+| `scripts/deploy.sh` 他 | AWS へのビルドと apply。手順は [docs/deploy.md](./docs/deploy.md) | |
 
 ## 前提
 

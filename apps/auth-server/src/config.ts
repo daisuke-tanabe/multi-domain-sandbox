@@ -20,7 +20,12 @@ const envSchema = z.object({
   TOKEN_ENCRYPTION_KEY_ID: z.string().min(1),
   TOKEN_ENCRYPTION_KEY: z.string().min(1),
   SIGNING_KEY_PEM: z.string().optional(),
-  COGNITO_ADAPTER: z.enum(["mock"]).default("mock"),
+  REDIS_URL: z.string().url().optional(),
+  COGNITO_ADAPTER: z.enum(["mock", "sdk"]).default("mock"),
+  COGNITO_REGION: z.string().optional(),
+  COGNITO_USER_POOL_ID: z.string().optional(),
+  COGNITO_CLIENT_ID: z.string().optional(),
+  COGNITO_CLIENT_SECRET: z.string().optional(),
   MOCK_COGNITO_USERS: z
     .string()
     .default("[]")
@@ -37,11 +42,29 @@ const envSchema = z.object({
     }),
 });
 
-export type AuthServerConfig = z.infer<typeof envSchema>;
+const configSchema = envSchema.superRefine((value, ctx) => {
+  if (value.COGNITO_ADAPTER !== "sdk") return;
+  for (const key of [
+    "COGNITO_REGION",
+    "COGNITO_USER_POOL_ID",
+    "COGNITO_CLIENT_ID",
+    "COGNITO_CLIENT_SECRET",
+  ] as const) {
+    if (value[key] === undefined || value[key] === "") {
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} is required when COGNITO_ADAPTER=sdk`,
+      });
+    }
+  }
+});
+
+export type AuthServerConfig = z.infer<typeof configSchema>;
 export type MockCognitoUser = z.infer<typeof mockUserSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AuthServerConfig {
-  const parsed = envSchema.safeParse(env);
+  const parsed = configSchema.safeParse(env);
   if (!parsed.success) {
     throw new Error(
       `Invalid auth-server configuration: ${JSON.stringify(parsed.error.flatten().fieldErrors)}`,
