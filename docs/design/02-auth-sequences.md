@@ -38,14 +38,14 @@ sequenceDiagram
     Browser->>WebA: GET /projects
     Note over WebA: tenant_a_session Cookieなし → 未ログイン<br/>Hostから slug=tenant-a を解決
     WebA->>WebA: state, nonce, code_verifier を生成<br/>code_challenge = BASE64URL(SHA256(code_verifier))
-    WebA->>SessA: pre-auth保存<br/>{state, nonce, code_verifier, return_to:"/projects"} TTL 10分
+    WebA->>SessA: pre-auth保存<br/>{state, nonce, code_verifier, return_to:"/projects"} TTL 30分
     WebA-->>Browser: 302 https://auth.sandbox.com/authorize<br/>?response_type=code&client_id=tenant-a<br/>&redirect_uri=https://tenant-a.sandbox.com/auth/callback<br/>&scope=openid profile email<br/>&state=S1&nonce=N1<br/>&code_challenge=C1&code_challenge_method=S256<br/>Set-Cookie: tenant_a_pre_auth=P1; HttpOnly; Secure; SameSite=Lax; Path=/auth
 
     Browser->>Auth: GET /authorize?...
     Note over Auth: sso_session Cookieなし
     Auth->>IdDB: oidc_clients から client_id=tenant-a を取得
     Auth->>Auth: redirect_uri 完全一致検証<br/>response_type=code / scope / PKCE必須 を検証
-    Auth->>SsoStore: 認可リクエスト保存<br/>{rid, client_id, redirect_uri, scope, state, nonce, code_challenge} TTL 10分
+    Auth->>SsoStore: 認可リクエスト保存<br/>{rid, client_id, redirect_uri, scope, state, nonce, code_challenge} TTL 30分
     Auth-->>Browser: 302 /login?rid=R1
 
     Browser->>Auth: GET /login?rid=R1

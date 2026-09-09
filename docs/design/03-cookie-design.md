@@ -11,9 +11,9 @@ Cookie値はサーバー側ストアを指すランダムIDのみで、Tokenや�
 | Cookie名 | 発行ホスト | 属性 | 寿命 | 値 |
 | --- | --- | --- | --- | --- |
 | `__Host-sso_session` | auth.sandbox.com | HttpOnly; Secure; SameSite=Lax; Path=/ | Session Cookie。サーバー側TTLで管理 | SSO Session ID |
-| `__Host-auth_csrf` | auth.sandbox.com | HttpOnly; Secure; SameSite=Lax; Path=/ | 10分 | ログインフォーム用CSRFトークンのID |
+| `__Host-auth_csrf` | auth.sandbox.com | HttpOnly; Secure; SameSite=Lax; Path=/ | 30分 | ログインフォーム用CSRFトークンのID |
 | `__Host-tenant_session` | tenant-a.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/ | Session Cookie。サーバー側TTLで管理 | Tenant Session ID |
-| `__Secure-tenant_pre_auth` | tenant-a.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/auth | 10分 | pre-auth state参照ID |
+| `__Secure-tenant_pre_auth` | tenant-a.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/auth | 30分 | pre-auth state参照ID |
 
 Tenant側のCookie名はホストが異なるため同名でよい。仕様書10章の `tenant_a_session` 表記はホスト単位に分かれていることを示す概念名として扱い、実装上は共通名にする。
 
@@ -65,7 +65,7 @@ Cookie は Session Cookie とし、実寿命はサーバー側で管理する。
 | --- | --- | --- | --- |
 | SSO Session | 2時間 | 12時間 | D6 |
 | Tenant Session | 30分 | 12時間 | D6 |
-| pre-auth | 10分 | 10分 | 固定 |
+| pre-auth | 30分 | 30分 | 固定。ログイン画面を開いたまま離席する時間を許容する |
 
 Tenant Session が切れても SSO Session が有効なら無画面で復帰するため、体感のログイン持続時間は SSO Session の寿命で決まる。
 

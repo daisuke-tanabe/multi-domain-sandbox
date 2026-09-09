@@ -67,7 +67,7 @@ export interface OidcClientDeps {
 
 export const SESSION_IDLE_SECONDS = 30 * 60;
 export const SESSION_ABSOLUTE_SECONDS = 12 * 60 * 60;
-export const PRE_AUTH_TTL_SECONDS = 10 * 60;
+export const PRE_AUTH_TTL_SECONDS = 30 * 60;
 /** Access Token の残り寿命がこれ未満なら先に更新する */
 export const ACCESS_TOKEN_REFRESH_MARGIN_SECONDS = 60;
 

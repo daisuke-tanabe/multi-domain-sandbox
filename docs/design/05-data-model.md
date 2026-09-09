@@ -186,7 +186,7 @@ type SsoSession = {
 
 ### 認可リクエスト
 
-キー `sso:authreq:<rid>`。TTL 10分。ログイン画面を挟む間の保持用。
+キー `sso:authreq:<rid>`。TTL 30分。ログイン画面を挟む間の保持用。
 
 ```typescript
 type AuthorizationRequest = {
@@ -270,7 +270,7 @@ type TenantSession = {
 
 ### pre-auth
 
-キー `tenant:<slug>:pre:<id>`。TTL 10分。
+キー `tenant:<slug>:pre:<id>`。TTL 30分。
 
 ```typescript
 type PreAuthState = {

@@ -25,6 +25,8 @@ const loginFormSchema = z.object({
 });
 
 const GENERIC_FAILURE = "ユーザー名またはパスワードが正しくありません";
+const EXPIRED_REQUEST_MESSAGE =
+  "ログイン画面を開いてから時間が経ちすぎたか、認証サーバーが再起動しました。利用したいサービスの URL をブラウザで開き直してログインしてください。";
 
 /**
  * 失敗理由をユーザー向け文言に写像する。ユーザー列挙を防ぐため認証失敗系は同一文言にする。
@@ -60,13 +62,7 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
     const request =
       rid === undefined ? undefined : await deps.stores.authorizationRequests.get(rid);
     if (rid === undefined || request === undefined) {
-      return c.html(
-        errorPage(
-          "ログインをやり直してください",
-          "ログイン要求の有効期限が切れています。サービスからやり直してください。",
-        ),
-        400,
-      );
+      return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
@@ -95,13 +91,7 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
 
       const request = await deps.stores.authorizationRequests.get(form.rid);
       if (request === undefined) {
-        return c.html(
-          errorPage(
-            "ログインをやり直してください",
-            "ログイン要求の有効期限が切れています。サービスからやり直してください。",
-          ),
-          400,
-        );
+        return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
       }
 
       const result = await login(deps, { username: form.username, password: form.password });
