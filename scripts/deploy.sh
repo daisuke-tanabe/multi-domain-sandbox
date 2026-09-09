@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # イメージをビルドして ECR に push し、Terraform を apply する。
 #   scripts/deploy.sh            通常のデプロイ
-#   scripts/deploy.sh --init     初回。ECR と Cognito 等を先に作ってから push し、全体を apply する
+#   scripts/deploy.sh --init     初回。ECR を先に作ってから push し、全体を apply する
+#   scripts/deploy.sh --push-only  ビルドと push だけ行い、apply しない
 set -euo pipefail
 
 : "${AWS_PROFILE:=multi-domain-sandbox}"
@@ -37,6 +38,11 @@ for app in "${APPS[@]}"; do
     --push \
     "$ROOT"
 done
+
+if [[ "${1:-}" == "--push-only" ]]; then
+  echo "== pushed tag $TAG"
+  exit 0
+fi
 
 echo "== terraform apply (image_tag=$TAG)"
 terraform apply -input=false -auto-approve -var "image_tag=$TAG"

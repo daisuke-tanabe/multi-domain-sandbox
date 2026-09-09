@@ -9,7 +9,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/terraform"
 
-DOMAIN=$(terraform output -json urls | jq -r '.portal' | sed -E 's#https://auth\.##')
+# 全体 apply 前でも動くよう、DOMAIN は環境変数か output の domain から取る
+DOMAIN="${DOMAIN:-$(terraform output -raw domain 2>/dev/null || true)}"
+[[ -n "$DOMAIN" ]] || { echo "DOMAIN を指定してください"; exit 1; }
 NS_JSON=$(AWS_PROFILE="$AWS_PROFILE" terraform output -json name_servers)
 
 PARENT_ZONE_ID=$(aws route53 list-hosted-zones-by-name --profile "$PARENT_PROFILE" \

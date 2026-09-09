@@ -1,3 +1,7 @@
+output "domain" {
+  value = var.domain
+}
+
 output "name_servers" {
   description = "親ゾーンに NS 委任するネームサーバー"
   value       = aws_route53_zone.sandbox.name_servers
