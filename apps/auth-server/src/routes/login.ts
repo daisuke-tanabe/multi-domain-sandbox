@@ -25,6 +25,8 @@ const loginFormSchema = z.object({
 });
 
 const GENERIC_FAILURE = "ユーザー名またはパスワードが正しくありません";
+const DIRECT_ACCESS_MESSAGE =
+  "ログインは利用したいサービスから始まります。tenant-a.localhost:3001 などサービスの URL をブラウザで開くと、このログイン画面に自動で移動します。";
 const EXPIRED_REQUEST_MESSAGE =
   "ログイン画面を開いてから時間が経ちすぎたか、認証サーバーが再起動しました。利用したいサービスの URL をブラウザで開き直してログインしてください。";
 
@@ -59,9 +61,12 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   app.get("/login", async (c) => {
     noStore(c);
     const rid = c.req.query("rid");
-    const request =
-      rid === undefined ? undefined : await deps.stores.authorizationRequests.get(rid);
-    if (rid === undefined || request === undefined) {
+    if (rid === undefined || rid === "") {
+      // 直接開かれた場合。ログインは常に Client 側の /auth/login から始まる
+      return c.html(errorPage("このページは直接開けません", DIRECT_ACCESS_MESSAGE), 400);
+    }
+    const request = await deps.stores.authorizationRequests.get(rid);
+    if (request === undefined) {
       return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
     }
     const csrf = await issueCsrfToken(deps);

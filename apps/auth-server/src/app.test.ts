@@ -582,3 +582,25 @@ describe("global logout", () => {
     expect(stillLoggedIn.headers.get("Location")).toContain("code=");
   });
 });
+
+describe("login page direct access", () => {
+  test("explains that login starts from a service when opened without rid", async () => {
+    const harness = await createHarness();
+
+    const res = await harness.app.request(`${ISSUER}/login`);
+    const body = await res.text();
+
+    expect(res.status).toBe(400);
+    expect(body).toContain("このページは直接開けません");
+    expect(body).not.toContain("時間が経ちすぎた");
+  });
+
+  test("reports an expired request when rid is unknown", async () => {
+    const harness = await createHarness();
+
+    const res = await harness.app.request(`${ISSUER}/login?rid=unknown`);
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("時間が経ちすぎた");
+  });
+});
