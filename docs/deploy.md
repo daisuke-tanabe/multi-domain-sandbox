@@ -14,7 +14,7 @@
 | 実行基盤 | ECS Fargate ARM64。auth-server / tenant-web / api-server を各 1 タスク。provision は一回限りのタスク |
 | ルーティング | ALB のホストベース。`auth.<domain>` → auth-server、`api.<domain>` → api-server、`*.<domain>` → tenant-web |
 | 証明書 | ACM。`*.<domain>` と `<domain>` を DNS 検証 |
-| DB | RDS PostgreSQL 16、db.t4g.micro、単一 AZ。ロールは provision タスクが作る |
+| DB | RDS PostgreSQL 16、db.t4g.micro、単一 AZ。`rds.force_ssl=1` のため接続 URL に `sslmode=no-verify` を付ける。ロールは provision タスクが作る |
 | Session Store | ElastiCache Redis 7、cache.t4g.micro、単一ノード、VPC 内のみ |
 | 認証 | Cognito User Pool。Hosted UI なし。App Client は secret 付きで USER_SRP_AUTH のみ許可 |
 | 秘密値 | Secrets Manager。DB パスワード、署名鍵、Token 暗号化鍵、client_secret、テストユーザーのパスワード |
@@ -102,5 +102,6 @@ ap-northeast-1 で常時起動した場合の概算。
 - Redis を transit encryption + AUTH 付きにし、`rediss://` で接続する
 - RDS を Multi-AZ にし、削除保護と最終スナップショットを有効にする
 - Secrets を Terraform の生成値ではなく Secret Store で管理し、state から外す
+- RDS の CA 証明書を同梱して `sslmode=verify-full` にする
 - NAT Gateway か VPC Endpoint を置き、タスクを private subnet に移す
 - ECS のオートスケールと ALB のアクセスログを設定する

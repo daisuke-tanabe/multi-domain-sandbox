@@ -55,9 +55,10 @@ resource "aws_secretsmanager_secret_version" "db" {
     master_password = random_password.db_master.result
     auth_password   = random_password.db_auth.result
     api_password    = random_password.db_api.result
-    master_url      = "postgres://postgres:${random_password.db_master.result}@${aws_db_instance.main.address}:5432/sandbox"
-    auth_url        = "postgres://sandbox_auth:${random_password.db_auth.result}@${aws_db_instance.main.address}:5432/sandbox"
-    api_url         = "postgres://sandbox_api:${random_password.db_api.result}@${aws_db_instance.main.address}:5432/sandbox"
+    # RDS は rds.force_ssl=1 のため TLS 必須。証明書検証は RDS CA の同梱が必要になるため sandbox では省略する
+    master_url = "postgres://postgres:${random_password.db_master.result}@${aws_db_instance.main.address}:5432/sandbox?sslmode=no-verify"
+    auth_url   = "postgres://sandbox_auth:${random_password.db_auth.result}@${aws_db_instance.main.address}:5432/sandbox?sslmode=no-verify"
+    api_url    = "postgres://sandbox_api:${random_password.db_api.result}@${aws_db_instance.main.address}:5432/sandbox?sslmode=no-verify"
   })
 }
 
