@@ -1,0 +1,214 @@
+import type { Hono } from "hono";
+import { createApiHarness, type ApiHarness } from "@sandbox/api-server/test-support";
+import {
+  createHarness as createAuthHarness,
+  type TestHarness as AuthHarness,
+} from "@sandbox/auth-server/test-support";
+import { OidcProvider, type OidcClientDeps, type OidcEnv } from "@sandbox/oidc-client";
+import { MemoryKeyValueStore, silentLogger } from "@sandbox/shared";
+import { createTenantApp } from "./app.ts";
+import { createClientResolver } from "./config.ts";
+
+export const AUTH_HOST = "auth.localhost:3000";
+export const AUTH_BACKCHANNEL_HOST = "127.0.0.1:3000";
+export const API_BACKCHANNEL_HOST = "127.0.0.1:3002";
+export const TENANT_BASE_HOST = "localhost:3001";
+export const TENANT_A_ORIGIN = `http://tenant-a.${TENANT_BASE_HOST}`;
+export const TENANT_B_ORIGIN = `http://tenant-b.${TENANT_BASE_HOST}`;
+
+interface Requestable {
+  request(input: string, init?: RequestInit): Response | Promise<Response>;
+}
+
+/**
+ * auth-server / tenant-web / api-server を 1 プロセスで接続した環境。
+ * ホスト名でディスパッチし、サーバー間通信は 127.0.0.1 の Back Channel URL を使う。
+ */
+export interface SandboxHarness {
+  readonly auth: AuthHarness;
+  readonly api: ApiHarness;
+  readonly tenant: Hono<OidcEnv>;
+  readonly tenantDeps: OidcClientDeps;
+  readonly dispatch: (url: URL, init?: RequestInit) => Promise<Response>;
+}
+
+export async function createSandbox(): Promise<SandboxHarness> {
+  const auth = await createAuthHarness();
+  const api = await createApiHarness({ signingKey: auth.deps.signingKey, clock: auth.clock });
+
+  const apps = new Map<string, Requestable>();
+  const dispatch = async (url: URL, init: RequestInit = {}): Promise<Response> => {
+    const app = apps.get(url.host);
+    if (app === undefined) throw new Error(`no app for host ${url.host}`);
+    const headers = new Headers(init.headers);
+    headers.set("host", url.host);
+    return Promise.resolve(app.request(url.toString(), { ...init, headers }));
+  };
+
+  const tenantDeps: OidcClientDeps = {
+    provider: {
+      issuer: `http://${AUTH_HOST}`,
+      backchannelBaseUrl: `http://${AUTH_BACKCHANNEL_HOST}`,
+    },
+    resolveClient: createClientResolver({
+      PUBLIC_SCHEME: "http",
+      PUBLIC_BASE_HOST: TENANT_BASE_HOST,
+      TENANT_CLIENTS: [
+        { slug: "tenant-a", clientSecret: "tenant-secret" },
+        { slug: "tenant-b", clientSecret: "tenant-secret" },
+      ],
+    }),
+    sessions: new MemoryKeyValueStore(auth.clock),
+    preAuth: new MemoryKeyValueStore(auth.clock),
+    clock: auth.clock,
+    cookiePolicy: { secure: false },
+    logger: silentLogger,
+    fetch: (input, init) => dispatch(new URL(input), init),
+  };
+  const provider = new OidcProvider(tenantDeps.provider, tenantDeps.fetch, auth.clock);
+  const tenant = createTenantApp({
+    deps: tenantDeps,
+    provider,
+    apiBaseUrl: `http://${API_BACKCHANNEL_HOST}`,
+  });
+
+  apps.set(AUTH_HOST, auth.app);
+  apps.set(AUTH_BACKCHANNEL_HOST, auth.app);
+  apps.set(API_BACKCHANNEL_HOST, api.app);
+  apps.set(`tenant-a.${TENANT_BASE_HOST}`, tenant);
+  apps.set(`tenant-b.${TENANT_BASE_HOST}`, tenant);
+
+  return { auth, api, tenant, tenantDeps, dispatch };
+}
+
+interface StoredCookie {
+  readonly value: string;
+  readonly path: string;
+}
+
+export interface NavigationResult {
+  readonly response: Response;
+  readonly body: string;
+  readonly finalUrl: URL;
+  readonly history: ReadonlyArray<URL>;
+}
+
+const MAX_REDIRECTS = 10;
+
+/**
+ * ホストごとに Cookie を分けて保持し、リダイレクトを追跡する簡易ブラウザ。
+ * Domain 属性は解釈しない。本設計では使わないため、付いていたらテストを失敗させる。
+ */
+export class Browser {
+  private readonly jar = new Map<string, Map<string, StoredCookie>>();
+
+  constructor(private readonly dispatch: (url: URL, init?: RequestInit) => Promise<Response>) {}
+
+  public cookies(host: string): ReadonlyMap<string, string> {
+    const cookies = this.jar.get(host) ?? new Map<string, StoredCookie>();
+    return new Map([...cookies.entries()].map(([name, cookie]) => [name, cookie.value]));
+  }
+
+  public navigate(url: string): Promise<NavigationResult> {
+    return this.request(new URL(url), { method: "GET" }, []);
+  }
+
+  public submitForm(url: string, fields: Record<string, string>): Promise<NavigationResult> {
+    return this.request(
+      new URL(url),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(fields).toString(),
+      },
+      [],
+    );
+  }
+
+  private async request(url: URL, init: RequestInit, history: URL[]): Promise<NavigationResult> {
+    if (history.length > MAX_REDIRECTS) throw new Error("too many redirects");
+    const headers = new Headers(init.headers);
+    const cookieHeader = this.cookieHeaderFor(url);
+    if (cookieHeader !== "") headers.set("Cookie", cookieHeader);
+
+    const response = await this.dispatch(url, { ...init, headers });
+    this.storeCookies(url, response);
+    const nextHistory = [...history, url];
+
+    const location = response.headers.get("Location");
+    if (response.status >= 300 && response.status < 400 && location !== null) {
+      return this.request(new URL(location, url), { method: "GET" }, nextHistory);
+    }
+    return { response, body: await response.text(), finalUrl: url, history: nextHistory };
+  }
+
+  private cookieHeaderFor(url: URL): string {
+    const cookies = this.jar.get(url.host) ?? new Map<string, StoredCookie>();
+    return [...cookies.entries()]
+      .filter(([, cookie]) => url.pathname.startsWith(cookie.path))
+      .map(([name, cookie]) => `${name}=${cookie.value}`)
+      .join("; ");
+  }
+
+  private storeCookies(url: URL, response: Response): void {
+    const cookies = this.jar.get(url.host) ?? new Map<string, StoredCookie>();
+    for (const line of response.headers.getSetCookie()) {
+      const [pair, ...attributes] = line.split(";").map((part) => part.trim());
+      const [name, ...rest] = (pair ?? "").split("=");
+      if (name === undefined || name === "") continue;
+      const value = rest.join("=");
+      const attrs = new Map(
+        attributes.map((attribute) => {
+          const [key, ...valueParts] = attribute.split("=");
+          return [(key ?? "").toLowerCase(), valueParts.join("=")];
+        }),
+      );
+      if (attrs.has("domain")) throw new Error(`cookie ${name} must not carry Domain attribute`);
+      const maxAge = attrs.get("max-age");
+      if (value === "" || (maxAge !== undefined && Number(maxAge) <= 0)) {
+        cookies.delete(name);
+        continue;
+      }
+      cookies.set(name, { value, path: attrs.get("path") ?? "/" });
+    }
+    this.jar.set(url.host, cookies);
+  }
+}
+
+/** ログイン画面の hidden 値を取り出す */
+export function readLoginForm(body: string): { rid: string; csrf: string } {
+  const rid = /name="rid" value="([^"]+)"/.exec(body)?.[1];
+  const csrf = /name="csrf" value="([^"]+)"/.exec(body)?.[1];
+  if (rid === undefined || csrf === undefined) throw new Error("login form not found");
+  return { rid, csrf };
+}
+
+/** ページ内の Logout / 作成フォームの csrf を取り出す */
+export function readPageCsrf(body: string): string {
+  const csrf = /name="csrf" value="([^"]+)"/.exec(body)?.[1];
+  if (csrf === undefined) throw new Error("csrf not found in page");
+  return csrf;
+}
+
+/**
+ * 対象テナントへアクセスし、ログイン画面が出たら資格情報を入力して完了させる。
+ */
+export async function loginThrough(
+  browser: Browser,
+  startUrl: string,
+  credentials: { username: string; password: string },
+): Promise<NavigationResult> {
+  const first = await browser.navigate(startUrl);
+  if (!first.finalUrl.pathname.startsWith("/login")) return first;
+  const form = readLoginForm(first.body);
+  return browser.submitForm(`http://${AUTH_HOST}/login`, {
+    rid: form.rid,
+    csrf: form.csrf,
+    username: credentials.username,
+    password: credentials.password,
+  });
+}
+
+export function visitedPaths(result: NavigationResult): ReadonlyArray<string> {
+  return result.history.map((url) => `${url.host}${url.pathname}`);
+}

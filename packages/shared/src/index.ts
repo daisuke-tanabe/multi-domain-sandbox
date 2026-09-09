@@ -29,6 +29,7 @@ export type {
   JWTPayload,
   JSONWebKeySet,
 } from "./jwt.ts";
+export { readJwtKid } from "./jwt.ts";
 export { cookieName, sessionCookieAttributes, shortLivedCookieAttributes } from "./cookie.ts";
 export type { CookiePolicy, CookieScope, CookieAttributes } from "./cookie.ts";
 export { createLogger, silentLogger, getErrorMessage } from "./logger.ts";

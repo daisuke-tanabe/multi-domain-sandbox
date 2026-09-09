@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   SignJWT,
   createLocalJWKSet,
+  decodeProtectedHeader,
   exportJWK,
   generateKeyPair,
   importPKCS8,
@@ -116,3 +117,15 @@ export async function verifyJwt(
 }
 
 export type { JWTPayload, JSONWebKeySet };
+
+/**
+ * 署名検証せずにヘッダの kid だけ読む。鍵ローテーション時の JWKS 再取得判断に使う。
+ */
+export function readJwtKid(token: string): string | undefined {
+  try {
+    const header = decodeProtectedHeader(token);
+    return typeof header.kid === "string" ? header.kid : undefined;
+  } catch {
+    return undefined;
+  }
+}

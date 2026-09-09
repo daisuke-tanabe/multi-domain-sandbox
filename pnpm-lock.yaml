@@ -75,6 +75,46 @@ importers:
         specifier: 'catalog:'
         version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
 
+  apps/api-server:
+    dependencies:
+      '@hono/node-server':
+        specifier: 'catalog:'
+        version: 2.1.1(hono@4.13.7)
+      '@hono/zod-validator':
+        specifier: 'catalog:'
+        version: 0.9.1(hono@4.13.7)(zod@4.5.4)
+      '@sandbox/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      hono:
+        specifier: 'catalog:'
+        version: 4.13.7
+      pg:
+        specifier: 'catalog:'
+        version: 8.23.0
+      ulid:
+        specifier: 'catalog:'
+        version: 3.0.2
+      zod:
+        specifier: 'catalog:'
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.3
+      '@types/pg':
+        specifier: 'catalog:'
+        version: 8.23.1
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.13
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
+
   apps/auth-server:
     dependencies:
       '@hono/node-server':
@@ -108,6 +148,65 @@ importers:
       tsx:
         specifier: 'catalog:'
         version: 4.23.13
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
+
+  apps/tenant-web:
+    dependencies:
+      '@hono/node-server':
+        specifier: 'catalog:'
+        version: 2.1.1(hono@4.13.7)
+      '@sandbox/oidc-client':
+        specifier: workspace:*
+        version: link:../../packages/oidc-client
+      '@sandbox/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      hono:
+        specifier: 'catalog:'
+        version: 4.13.7
+      zod:
+        specifier: 'catalog:'
+        version: 4.5.4
+    devDependencies:
+      '@sandbox/api-server':
+        specifier: workspace:*
+        version: link:../api-server
+      '@sandbox/auth-server':
+        specifier: workspace:*
+        version: link:../auth-server
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.3
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.13
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
+
+  packages/oidc-client:
+    dependencies:
+      '@sandbox/shared':
+        specifier: workspace:*
+        version: link:../shared
+      hono:
+        specifier: 'catalog:'
+        version: 4.13.7
+      zod:
+        specifier: 'catalog:'
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.3
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

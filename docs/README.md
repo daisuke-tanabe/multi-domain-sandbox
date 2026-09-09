@@ -21,6 +21,10 @@ Sandbox 認証・マルチテナントSSO基盤の設計ドキュメント。
 | [design/10-logout-design.md](./design/10-logout-design.md) | Logout設計 |
 | [design/11-test-plan.md](./design/11-test-plan.md) | テスト計画 |
 
+## 実装状況
+
+設計に対応する検証実装を `apps/` と `packages/` に置いている。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA と Global Logout は未実装。
+
 ## 前提
 
 本リポジトリは新規サンドボックスであり、既存の認証実装は存在しない。仕様書22章の調査結果と24章の現状分析は [design/00-current-state-and-decisions.md](./design/00-current-state-and-decisions.md) にまとめている。

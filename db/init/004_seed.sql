@@ -33,11 +33,9 @@ INSERT INTO identity.oidc_client_redirect_uris (client_id, redirect_uri) VALUES
 
 RESET ROLE;
 
-SET ROLE sandbox_api;
-
+-- business.projects は FORCE ROW LEVEL SECURITY のため sandbox_api では app.tenant_id なしに挿入できない
+-- シードは RLS をバイパスできるスーパーユーザーのまま投入する
 INSERT INTO business.projects (id, tenant_id, name, created_by) VALUES
   ('01J0000000000000000PROJECTA1', '01J000000000000000000TENANTA', 'Tenant A Project 1', '01J0000000000000000000ALICE'),
   ('01J0000000000000000PROJECTA2', '01J000000000000000000TENANTA', 'Tenant A Project 2', '01J0000000000000000000ALICE'),
   ('01J0000000000000000PROJECTB1', '01J000000000000000000TENANTB', 'Tenant B Project 1', '01J00000000000000000000BOB0');
-
-RESET ROLE;
