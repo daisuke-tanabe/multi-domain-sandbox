@@ -1,9 +1,9 @@
 import { Redis } from "ioredis";
-import type { KeyValueStore } from "./kv-store.ts";
+import type { CounterStore, KeyValueStore, SetStore } from "./kv-store.ts";
 
 /**
  * Redis 実装。値は JSON で保存し、TTL は EX で指定する。
- * getAndDelete は GETDEL でアトミックに行い、Authorization Code の二重交換を排除する。
+ * getAndDelete は GETDEL、setIfAbsent は SET NX でアトミックに行う。
  */
 export class RedisKeyValueStore<T> implements KeyValueStore<T> {
   constructor(
@@ -21,7 +21,7 @@ export class RedisKeyValueStore<T> implements KeyValueStore<T> {
   }
 
   public async set(key: string, value: T, ttlSeconds: number): Promise<void> {
-    await this.redis.set(this.key(key), JSON.stringify(value), "EX", Math.max(1, ttlSeconds));
+    await this.redis.set(this.key(key), JSON.stringify(value), "EX", ttl(ttlSeconds));
   }
 
   public async delete(key: string): Promise<void> {
@@ -32,6 +32,69 @@ export class RedisKeyValueStore<T> implements KeyValueStore<T> {
     const raw = await this.redis.getdel(this.key(key));
     return raw === null ? undefined : parse<T>(raw);
   }
+
+  public async setIfAbsent(key: string, value: T, ttlSeconds: number): Promise<boolean> {
+    const result = await this.redis.set(
+      this.key(key),
+      JSON.stringify(value),
+      "EX",
+      ttl(ttlSeconds),
+      "NX",
+    );
+    return result === "OK";
+  }
+}
+
+/**
+ * Redis の Set。SADD / SREM は要素単位でアトミックなので、並行追加で要素が落ちない。
+ */
+export class RedisSetStore implements SetStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly prefix: string,
+  ) {}
+
+  private key(key: string): string {
+    return `${this.prefix}:${key}`;
+  }
+
+  public async add(key: string, member: string, ttlSeconds: number): Promise<void> {
+    await this.redis
+      .multi()
+      .sadd(this.key(key), member)
+      .expire(this.key(key), ttl(ttlSeconds))
+      .exec();
+  }
+
+  public async remove(key: string, member: string): Promise<void> {
+    await this.redis.srem(this.key(key), member);
+  }
+
+  public async members(key: string): Promise<ReadonlyArray<string>> {
+    return this.redis.smembers(this.key(key));
+  }
+
+  public async delete(key: string): Promise<void> {
+    await this.redis.del(this.key(key));
+  }
+}
+
+export class RedisCounterStore implements CounterStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly prefix: string,
+  ) {}
+
+  public async increment(key: string, ttlSeconds: number): Promise<number> {
+    const full = `${this.prefix}:${key}`;
+    const results = await this.redis.multi().incr(full).expire(full, ttl(ttlSeconds), "NX").exec();
+    const count = results?.[0]?.[1];
+    return typeof count === "number" ? count : Number(count ?? 0);
+  }
+}
+
+function ttl(seconds: number): number {
+  return Math.max(1, Math.ceil(seconds));
 }
 
 function parse<T>(raw: string): T {

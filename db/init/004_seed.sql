@@ -8,8 +8,8 @@
 -- carol    : どのテナントにも所属しない
 --
 -- client_secret はローカル固定値。ハッシュは packages/shared/src/secret-hash.ts の sha256 形式
---   crm : crm-secret
---   cms : cms-secret
+--   crm : crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU
+--   cms : cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA
 
 SET ROLE sandbox_auth;
 
@@ -31,8 +31,8 @@ INSERT INTO identity.oidc_clients (id, client_id, name, audience, redirect_uri_t
   ('01J00000000000000000000CMS', 'cms', 'CMS', 'http://api.cms.localhost:3004', 'http://{tenant}.cms.localhost:3003/auth/callback', 'http://cms.localhost:3003/auth/backchannel-logout');
 
 INSERT INTO identity.oidc_client_secrets (id, oidc_client_id, secret_hash) VALUES
-  ('01J0000000000000000CRMSEC1', '01J00000000000000000000CRM', 'sha256$DZrMSRDqNdPJqi0LEVDJBK2C01JR-aT9MPB1yLcXiXc'),
-  ('01J0000000000000000CMSSEC1', '01J00000000000000000000CMS', 'sha256$oQwvcNfYzgyba9W-8quyDRljKkulL6dUppdft83rHjU');
+  ('01J0000000000000000CRMSEC1', '01J00000000000000000000CRM', 'sha256$kkx39qkJVz2YbZgRDEK6Be78zfE1Z1dR9r9Nc06ZWqw'),
+  ('01J0000000000000000CMSSEC1', '01J00000000000000000000CMS', 'sha256$3Y9I_ZB9Y8jOR0nhE25ZUXAshoh6AHnDI7WaxWDpF_I');
 
 -- suzuki は cms を契約していない。suzuki.cms への認可は access_denied (not_contracted) になる
 INSERT INTO identity.tenant_services (tenant_id, oidc_client_id) VALUES

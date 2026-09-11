@@ -47,7 +47,6 @@ export async function createSsoSession(
     authTime: now,
     createdAt: now,
     lastSeenAt: now,
-    authorizedClients: [],
   };
   await Promise.all([
     deps.stores.ssoSessions.set(session.id, session, SSO_SESSION_ABSOLUTE_SECONDS),
@@ -58,6 +57,7 @@ export async function createSsoSession(
 
 /**
  * /authorize 到達時に lastSeenAt を更新し、code を発行した client を記録する。
+ * client の記録は集合に足すだけなので、並行する /authorize で取りこぼさない。
  */
 export async function touchSsoSession(
   deps: AuthDeps,
@@ -65,17 +65,27 @@ export async function touchSsoSession(
   clientId: string,
 ): Promise<SsoSession> {
   const now = deps.clock.nowSeconds();
-  const authorizedClients = session.authorizedClients.includes(clientId)
-    ? session.authorizedClients
-    : [...session.authorizedClients, clientId];
-  const updated: SsoSession = { ...session, lastSeenAt: now, authorizedClients };
-  await deps.stores.ssoSessions.set(updated.id, updated, expiry.remainingTtl(updated, now));
+  const updated: SsoSession = { ...session, lastSeenAt: now };
+  const ttl = expiry.remainingTtl(updated, now);
+  await Promise.all([
+    deps.stores.ssoSessions.set(updated.id, updated, ttl),
+    deps.stores.sessionClients.add(updated.id, clientId, ttl),
+  ]);
   return updated;
+}
+
+/** この SSO Session で code を発行した client_id の一覧 */
+export function listAuthorizedClients(
+  deps: AuthDeps,
+  session: SsoSession,
+): Promise<ReadonlyArray<string>> {
+  return deps.stores.sessionClients.members(session.id);
 }
 
 export async function destroySsoSession(deps: AuthDeps, session: SsoSession): Promise<void> {
   await Promise.all([
     deps.stores.ssoSessions.delete(session.id),
     deps.stores.sidIndex.delete(session.sid),
+    deps.stores.sessionClients.delete(session.id),
   ]);
 }

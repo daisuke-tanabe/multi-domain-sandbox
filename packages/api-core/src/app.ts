@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import type { Clock, JwksSource, Logger } from "@sandbox/shared";
 import { authenticate, type ApiEnv } from "./auth/middleware.ts";
@@ -25,6 +26,7 @@ export function createApiApp(options: ApiAppOptions): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
 
   app.use(secureHeaders());
+  app.use(bodyLimit({ maxSize: 16 * 1024 }));
   app.use(async (c, next) => {
     c.header("Cache-Control", "no-store");
     await next();

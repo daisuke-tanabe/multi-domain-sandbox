@@ -13,40 +13,50 @@ export async function createRefreshTokenFamily(
   input: NewRefreshTokenInput,
 ): Promise<RefreshToken> {
   const familyId = randomToken(16);
-  const [token, families] = await Promise.all([
-    storeRefreshToken(deps, { ...input, familyId }),
-    deps.stores.sidRefreshFamilies.get(input.sid),
-  ]);
+  const token = await storeRefreshToken(deps, { ...input, familyId });
   await Promise.all([
-    deps.stores.refreshTokenFamilies.set(familyId, [token.token], REFRESH_TOKEN_TTL_SECONDS),
-    deps.stores.sidRefreshFamilies.set(
-      input.sid,
-      [...(families ?? []), familyId],
-      REFRESH_TOKEN_TTL_SECONDS,
-    ),
+    deps.stores.refreshTokenFamilies.add(familyId, token.token, REFRESH_TOKEN_TTL_SECONDS),
+    deps.stores.sidRefreshFamilies.add(input.sid, familyId, REFRESH_TOKEN_TTL_SECONDS),
   ]);
   return token;
 }
 
+export type ConsumeResult =
+  | { readonly kind: "consumed"; readonly token: RefreshToken }
+  | { readonly kind: "unknown" }
+  | { readonly kind: "reused"; readonly token: RefreshToken };
+
 /**
- * 使用済みの Refresh Token を rotated にし、同じ系列で新しい Token を発行する。
+ * Refresh Token を一回限りで消費する。GETDEL で取り出した直後に rotated として書き戻すため、
+ * 同じ値を同時に提示した 2 つ目は unknown か reused になり、両方が成功することはない。
+ */
+export async function consumeRefreshToken(deps: AuthDeps, value: string): Promise<ConsumeResult> {
+  const stored = await deps.stores.refreshTokens.getAndDelete(value);
+  if (stored === undefined) return { kind: "unknown" };
+  if (stored.status !== "active") {
+    // 再利用検知の記録は残す
+    await deps.stores.refreshTokens.set(value, stored, REFRESH_TOKEN_TTL_SECONDS);
+    return { kind: "reused", token: stored };
+  }
+  await deps.stores.refreshTokens.set(
+    value,
+    { ...stored, status: "rotated" },
+    REFRESH_TOKEN_TTL_SECONDS,
+  );
+  return { kind: "consumed", token: stored };
+}
+
+/**
+ * 消費済みの Refresh Token と同じ系列で新しい Token を発行する。
  */
 export async function rotateRefreshToken(
   deps: AuthDeps,
   current: RefreshToken,
 ): Promise<RefreshToken> {
-  const [, next, family] = await Promise.all([
-    deps.stores.refreshTokens.set(
-      current.token,
-      { ...current, status: "rotated" },
-      REFRESH_TOKEN_TTL_SECONDS,
-    ),
-    storeRefreshToken(deps, current),
-    deps.stores.refreshTokenFamilies.get(current.familyId),
-  ]);
-  await deps.stores.refreshTokenFamilies.set(
+  const next = await storeRefreshToken(deps, current);
+  await deps.stores.refreshTokenFamilies.add(
     current.familyId,
-    [...(family ?? [current.token]), next.token],
+    next.token,
     REFRESH_TOKEN_TTL_SECONDS,
   );
   return next;
@@ -56,8 +66,7 @@ export async function rotateRefreshToken(
  * 系列全体を失効させる。再利用検知、Logout、Membership 削除時に使う。
  */
 export async function revokeRefreshTokenFamily(deps: AuthDeps, familyId: string): Promise<void> {
-  const tokens = await deps.stores.refreshTokenFamilies.get(familyId);
-  if (tokens === undefined) return;
+  const tokens = await deps.stores.refreshTokenFamilies.members(familyId);
   await Promise.all(
     tokens.map(async (token) => {
       const stored = await deps.stores.refreshTokens.get(token);

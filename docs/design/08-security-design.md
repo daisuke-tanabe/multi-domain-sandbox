@@ -47,18 +47,23 @@
 | 脅威 | 対策 |
 | --- | --- |
 | Session Fixation | 認証成功時に ID 再発行 |
+| 再ログイン時の旧セッション残留 | `POST /login` 成功時に、Cookie が指す旧 SSO Session をストアから破棄してから新しい Cookie を書く。Cookie の上書きだけでは旧セッションが期限まで有効なまま残る |
 | Session Hijack | HttpOnly / Secure / `__Host-`。値はランダム 256bit |
 | 長期放置 | アイドルと絶対の二重タイムアウト |
 | Cookie のサブドメインからの上書き | `__Host-` により Domain 指定を不可能にする |
-| CSRF。ログイン POST / Logout POST | 同期トークン方式。Cookie 参照 ID とフォーム値の一致 |
-| Login CSRF | ログインフォームの CSRF トークンと rid の紐付け |
+| CSRF。ログイン POST / Logout POST | 同期トークン方式。Cookie 参照 ID とフォーム値の一致。比較は `timingSafeEqualString` |
+| Login CSRF | ログインフォームの同期トークン。rid との紐付けと使用時の消費は未対応で、テナント側の state 検証が code の差し替えを止める |
+| lastSeenAt 更新による Token の巻き戻し | Tenant 側の `touchSession` は書く直前にセッションを読み直し、並行する Refresh が更新した Token を古い値で上書きしない |
 
 ### Token
 
 | 脅威 | 対策 |
 | --- | --- |
 | Token 漏洩 | ブラウザに置かない。サーバー側ストアのみ |
-| Refresh Token 再利用 | ローテーションと系列失効 |
+| Refresh Token 再利用 | ローテーションと系列失効。消費は GETDEL で先に行い、直後に `rotated` として書き戻す。`rotated` / `revoked` の値が提示されたら系列全体を失効 |
+| Refresh Token の同時提示 | 同じ値を同時に 2 回提示しても、GETDEL で取り出せるのは 1 回だけ。成功は 1 つで、もう一方は `invalid_grant`。系列は失効しないため、正規の Client が続行できる |
+| 別 Client からの Refresh Token 提示 | client_id 不一致は漏洩とみなし `client_mismatch` として系列全体を失効 |
+| Tenant 側の Refresh 二重送信 | `ensureFreshAccessToken` がセッション単位のロックを取り、同時リクエストはロック保持者の結果を待って再読込する。Refresh Token を二重に送らない |
 | 鍵漏洩 | 秘密鍵は Auth Server のみ。Secret Store から起動時読み込み。ローテーション手順を定義 |
 | alg 混同 | 検証時に alg を RS256 に固定。none と HS256 を拒否 |
 | aud 取り違え | ID Token と Access Token で aud を分ける。API は `API_BASE_URL` を aud として必ず検証し、Host が異なれば 404 |
@@ -77,14 +82,39 @@
 | 契約解除後のアクセス | tenant_services を `/authorize` と Refresh で確認。Access Token 寿命の 15 分以内に失効 |
 | 同一テナントの別サービスへの Cookie 流用 | tanaka.crm と tanaka.cms は別ホスト。Cookie は届かず、Session Store のキーも clientId で分かれる |
 
+### 並行性
+
+同じ値を同時に提示されたときに二重に成功させないこと、並行更新で一覧の要素を落とさないことをストアの操作で保証する。`packages/shared/src/kv-store.ts`。
+
+| 脅威 | 対策 |
+| --- | --- |
+| code / Refresh Token の同時提示 | 一回限りの消費は `KeyValueStore.getAndDelete` だけで行う。Redis は GETDEL、インメモリは await を挟まず読んで消す。読んでから別の呼び出しで消す手順を持たない |
+| 一覧の read-modify-write による要素の欠落 | Refresh Token 系列、sid に紐付く系列、SSO Session が code を発行した client_id、sid に紐付く Tenant Session は `SetStore` に置く。Redis は SADD / SREM / SMEMBERS で、2 つの追加が同時に走っても片方が消えない |
+| Refresh の二重実行 | `KeyValueStore.setIfAbsent` で SET NX のロックを取る。Tenant 側の Refresh ロックに使う |
+| レート制限カウンタの競合 | `CounterStore.increment` は INCR と EXPIRE NX で加算と TTL 付与を行う |
+
+Refresh Token のローテーションは consume-first で行う。`consumeRefreshToken` が GETDEL で取り出し、直後に `rotated` として書き戻してから検証と新 Token の発行に進む。`active` でない値を取り出した場合はその値を書き戻して再利用として報告する。この順序により、同じ値を同時に 2 回提示されても GETDEL で取り出せるのは 1 回だけになり、もう一方は `invalid_grant` になる。系列は失効させない。正規の Client が偶発的に二重送信しただけで全セッションが落ちることを避けるためで、失効させるのは `rotated` / `revoked` の値が明示的に提示された場合と、別 Client からの提示に限る。
+
+Tenant 側の `ensureFreshAccessToken` はセッション単位のロック `<tenantSlug>:<sessionId>` を `setIfAbsent` で取り、TTL は `REFRESH_LOCK_TTL_SECONDS` の 10 秒。取得後にセッションを読み直し、別のリクエストが更新済みならそれを使う。取れなかったリクエストは 100 ミリ秒間隔で最大 30 回セッションを読み直し、Refresh 済みになれば続行する。Refresh Token が一回限りであるため、二重に送ると Auth Server が再利用とみなして系列を失効させる。ロックはそれを防ぐ。
+
 ### ログインエンドポイント
 
 | 脅威 | 対策 |
 | --- | --- |
-| パスワードスプレー / ブルートフォース | IP とユーザー名でレート制限。Cognito 側のロックアウトも併用 |
+| パスワードスプレー / ブルートフォース | IP 単位と IP × ユーザー名でレート制限。本書のレート制限を参照。Cognito 側のロックアウトも併用 |
 | ユーザー列挙 | 失敗理由を統一メッセージにする。応答時間を揃える |
 | 資格情報の平文送信 | USER_SRP_AUTH。USER_PASSWORD_AUTH を無効化 |
+| 巨大な body によるメモリ消費 | 全ルートで body を 16 KB に制限。フォームと Token リクエストは数 KB で足りる |
+| Basic 資格情報の不正なパーセントエンコード | デコード失敗を `invalid_client` にする。500 にしない |
 | Clickjacking | `X-Frame-Options: DENY` と `frame-ancestors 'none'` |
+
+### Back-Channel Logout
+
+| 脅威 | 対策 |
+| --- | --- |
+| 通知先が応答しない | `fetch` に `AbortSignal.timeout(5000)` を付ける。`BACKCHANNEL_TIMEOUT_MS`。1 サービスの停止が Global Logout 全体を止めない |
+| 停止した Client への送信 | `oidc_clients.status` が `active` でない Client と `backchannel_logout_uri` を持たない Client は通知対象から外す |
+| 無認証エンドポイントへの書き込み増幅 | `/auth/backchannel-logout` は IP あたり 60 回/分に制限し、body を 16 KB に制限 |
 
 ## HTTP セキュリティヘッダ
 
@@ -119,19 +149,58 @@ auth.sandbox.com には `form-action` を付けない。Chrome はフォーム�
 | Auth Server 署名鍵 | Secret Store | JWKS 併存方式。04参照 |
 | Cognito App Client Secret | Secret Store | Cognito 側で再生成後に差し替え |
 | client_secret | Secret Store。DB は oidc_client_secrets に `sha256$<base64url>` のハッシュ。サービスごとに active な行を複数持てる | 新 secret を active で追加 → サービスの `CLIENT_SECRET` を差し替え → 旧行を revoked。切替中は新旧どちらも `/token` で受け付ける |
-
-client_secret のハッシュに KDF を使わない理由。client_secret は人が選ぶパスワードではなく 32 バイト以上の乱数なので、辞書攻撃への耐性を KDF で補う必要がない。scrypt は `/token` のたびに数十ミリ秒イベントループを止め、Refresh が集中する時間帯に Auth Server 全体の応答を遅らせる。SHA-256 ならハッシュ計算はマイクロ秒で終わり、比較は `timingSafeEqual` で行う。乱数長の要件を満たさない secret を登録しないことが前提になるため、provision と登録手順で 32 バイト以上を強制する。
 | Cognito Token 暗号化鍵 | Secret Store | 鍵 ID をレコードに保存し、旧鍵で復号できるようにする |
 | Session Store 接続情報 | Secret Store | |
 
+client_secret のハッシュに KDF を使わない理由。client_secret は人が選ぶパスワードではなく 32 バイト以上の乱数なので、辞書攻撃への耐性を KDF で補う必要がない。scrypt は `/token` のたびに数十ミリ秒イベントループを止め、Refresh が集中する時間帯に Auth Server 全体の応答を遅らせる。SHA-256 ならハッシュ計算はマイクロ秒で終わり、比較は `timingSafeEqual` で行う。乱数長の要件を満たさない secret を登録しないことが前提になるため、長さを起動時に強制する。`*-web` の `CLIENT_SECRET` と provision の `SERVICES[].clientSecret` は 43 文字以上でなければ起動に失敗する。32 バイトの乱数を base64url にした長さで、ローカルの固定値もこの長さを満たす。
+
+## 設定ガード
+
+Cookie の Secure と `__Host-` を外せる設定値を持たない。公開 scheme から導く。
+
+| アプリ | 導出 | https のときの必須条件 |
+| --- | --- | --- |
+| auth-api | `cookieSecure = ISSUER が https:// で始まる` | `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk`。欠けると起動に失敗する |
+| crm-web / cms-web | `cookieSecure = PUBLIC_SCHEME === "https"` | `REDIS_URL` が設定され、`ISSUER` と `API_BASE_URL` が https。欠けると起動に失敗する |
+
+https で公開する構成で、起動ごとに生成される署名鍵、インメモリのセッション、モックの Cognito をそのまま使えないようにするための制約。ローカルの http では制約を課さない。
+
 ## レート制限
 
-| エンドポイント | 制限 |
-| --- | --- |
-| POST /login | IP あたり 10 回/分。ユーザー名あたり 5 回/分 |
-| POST /token | client_id あたり 60 回/分 |
-| GET /authorize | IP あたり 60 回/分 |
-| POST /auth/callback 相当 | Tenant 側で IP あたり 30 回/分 |
+固定窓。`packages/shared/src/rate-limit.ts` の `rateLimit` ミドルウェアで、キーは `X-Forwarded-For` の先頭、なければ接続元アドレス。超過時は 429 と `Retry-After` を返す。カウンタは `CounterStore` に置き、Redis なら複数プロセスで共有される。ALB のような信頼できるプロキシの背後で動かす前提で、直接公開する場合はヘッダを信用しない構成にする。
+
+| アプリ | エンドポイント | 制限 | 定義 |
+| --- | --- | --- | --- |
+| auth-api | `/login` 全メソッド | IP あたり 60 回/分 | `RATE_LIMITS.login` |
+| auth-api | `POST /login` | IP × ユーザー名あたり 10 回/分 | `RATE_LIMITS.loginPerUser` |
+| auth-api | `/authorize` | IP あたり 120 回/分 | `RATE_LIMITS.authorize` |
+| auth-api | `/token` | IP あたり 300 回/分 | `RATE_LIMITS.token` |
+| auth-api | `/logout` | IP あたり 60 回/分 | `RATE_LIMITS.login` を流用 |
+| crm-web / cms-web | `/auth/*` | IP あたり 60 回/分 | `AUTH_ROUTE_RATE_LIMIT` |
+| crm-web / cms-web | `/auth/backchannel-logout` | IP あたり 60 回/分 | `AUTH_ROUTE_RATE_LIMIT` |
+
+定義は `apps/auth-api/src/policy.ts` と `packages/oidc-client/src/types.ts`。`/token` は Client のサーバーから来るため IP 単位で緩く、`/login` はブラウザから来るため厳しくしている。
+
+## body の上限
+
+| アプリ | 範囲 | 上限 |
+| --- | --- | --- |
+| auth-api | 全ルート | 16 KB |
+| crm-web / cms-web | `/auth/*` と `/auth/backchannel-logout` | 16 KB |
+| crm-api / cms-api | 全ルート | 16 KB |
+
+Hono の `bodyLimit` を使う。フォーム、Token リクエスト、logout_token、業務 API の JSON はいずれも数 KB で足りる。
+
+## 未対応
+
+判断済みで、現時点では実装していない項目。
+
+- Refresh Token、SSO Session ID、code は平文のキーで保存している。キーをハッシュにすれば Redis の読み取り漏洩時の影響を減らせる
+- RLS を掛けた `business.projects` の所有者が実行時ロールの `sandbox_api` になっている。マイグレーション用の所有者ロールを分ければ、将来の SQL インジェクションで RLS を無効化されることを防げる
+- logout_token は `sub` に sid を入れ、`typ` が `logout+jwt` ではなく `JWT` になっている
+- ログインフォームの CSRF トークンは rid に紐付かず、使用時に消費しない。テナント側の state 検証が補っている
+- 認可レスポンスの `iss` は存在する場合だけ検証している。Discovery の `authorization_response_iss_parameter_supported` を読んで必須化すればダウングレードを塞げる
+- logout_token の jti リプレイは記録していない。リプレイしても冪等な Logout が繰り返されるだけ
 
 ## 依存関係と運用
 

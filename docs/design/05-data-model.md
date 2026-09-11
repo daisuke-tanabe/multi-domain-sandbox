@@ -25,13 +25,20 @@ flowchart LR
     end
     subgraph SessionStore ["Session Store  Redis想定"]
         sso["sso:sess:*"]
+        ssosid["sso:sid:*"]
+        clients["sso:clients:*  集合"]
+        authreq["sso:authreq:*"]
         code["sso:code:*"]
         rt["sso:rt:*"]
-        authreq["sso:authreq:*"]
-        rtfamily["sso:rtfamily:*"]
+        rtfamily["sso:rtfamily:*  集合"]
+        sidrt["sso:sidrt:*  集合"]
+        csrf["sso:csrf:*"]
+        ratelimit["sso:ratelimit:*  カウンタ"]
         tsess["clientId:sess:tenantSlug:*"]
-        tsid["clientId:sid:sid:*"]
+        tsid["clientId:sid:sid:*  集合"]
         tpre["clientId:pre:tenantSlug:*"]
+        tlock["clientId:lock:tenantSlug:*"]
+        tratelimit["clientId:ratelimit:*  カウンタ"]
     end
     tenant_members --> users
     tenant_members --> tenants
@@ -145,7 +152,7 @@ CREATE INDEX oidc_client_secrets_active_idx ON oidc_client_secrets (oidc_client_
 
 - client_secret はサービスごとに複数持てる。`/token` と `/revoke` は active な行のいずれかに一致すれば認証成功とする
 - ローテーションは、新しい secret を active で挿入し、サービスの `CLIENT_SECRET` を差し替えてから、旧行を revoked にする。切替中は新旧どちらでも通るため無停止で進められる
-- client_secret は 32 バイト以上の乱数とし、DB にはハッシュのみ保存する。ローカルでは `crm-secret` `cms-secret` の固定値
+- client_secret は 32 バイト以上の乱数とし、DB にはハッシュのみ保存する。`*-web` の `CLIENT_SECRET` と provision の `SERVICES[].clientSecret` は 43 文字以上を起動時に検証する。ローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` `cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA` の固定値
 - ハッシュは SHA-256。client_secret は人が選ぶパスワードではなく十分に長い乱数であるため KDF を使わない。scrypt は `/token` のたびに数十ミリ秒イベントループを止めるため採用しない。`packages/shared/src/secret-hash.ts`
 
 ### tenant_services
@@ -180,8 +187,8 @@ client_secret oidc_client_secrets。
 
 | id | oidc_client_id | 平文 | status |
 | --- | --- | --- | --- |
-| 01J0000000000000000CRMSEC1 | 01J00000000000000000000CRM | crm-secret | active |
-| 01J0000000000000000CMSSEC1 | 01J00000000000000000000CMS | cms-secret | active |
+| 01J0000000000000000CRMSEC1 | 01J00000000000000000000CRM | crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU | active |
+| 01J0000000000000000CMSSEC1 | 01J00000000000000000000CMS | cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA | active |
 
 テナント。
 
@@ -242,7 +249,26 @@ API Server はトランザクション開始時に `SET LOCAL app.tenant_id = :t
 ## Session Store
 
 Redis 想定。すべて TTL 付き。ローカル検証はインメモリ Map。
-ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、auth-api は `adapters/stores.ts` の `createAuthStores`、`*-web` は `startWebCore` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。
+ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、`kv` `set` `counter` の 3 種類を返す。auth-api は `adapters/stores.ts` の `createAuthStores`、`*-web` は `startWebCore` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。テストは `createMemoryStoreFactory` を使う。
+一覧は `SetStore`、一回限りの消費は `getAndDelete`、ロックは `setIfAbsent`、レート制限は `CounterStore` を使う。値を読んで書き戻す形の一覧更新は持たない。
+
+| プレフィックス | 種類 | 内容 |
+| --- | --- | --- |
+| `sso:sess` | kv | SSO Session |
+| `sso:sid` | kv | sid → SSO Session ID |
+| `sso:clients` | set | SSO Session ID → code を発行した client_id の集合。Global Logout の通知先 |
+| `sso:authreq` | kv | 認可リクエスト |
+| `sso:code` | kv | Authorization Code |
+| `sso:rt` | kv | Refresh Token |
+| `sso:rtfamily` | set | familyId → 系列の Refresh Token の集合 |
+| `sso:sidrt` | set | sid → Refresh Token 系列 ID の集合 |
+| `sso:csrf` | kv | ログインと Global Logout の CSRF トークン |
+| `sso:ratelimit` | counter | レート制限の固定窓カウンタ |
+| `<clientId>:sess` | kv | Tenant Session |
+| `<clientId>:sid` | set | sid → Tenant Session キーの集合 |
+| `<clientId>:pre` | kv | pre-auth |
+| `<clientId>:lock` | kv | Refresh ロック。`setIfAbsent` で取得 |
+| `<clientId>:ratelimit` | counter | `/auth/*` のレート制限カウンタ |
 寿命はストアの TTL で管理し、値には `createdAt` のような期限計算用の項目を持たせない。アイドル期限と絶対期限を持つ SSO Session と Tenant Session は例外で、`packages/shared/src/session-expiry.ts` の共通判定を使う。
 
 ### SSO Session
@@ -258,12 +284,13 @@ type SsoSession = {
   authTime: number;
   createdAt: number;
   lastSeenAt: number;         // アイドル判定。/authorize ごとに更新。書き込みは 60 秒に 1 回に間引く
-  authorizedClients: string[]; // code を発行したサービス。Global Logout の通知先。例 ["crm", "cms"]
 };
 ```
 
 cognito_sub は保持しない。users.id で引けるため必要になった時点で Identity DB から取る。
 逆引き `sso:sid` の `<sid> → sso_session_id` を持ち、Back-Channel Logout と Refresh Token 失効に使う。
+code を発行したサービスは値には持たず、`sso:clients` の `<sso_session_id> → client_id の集合` に置く。例 `{crm, cms}`。Global Logout の通知先になる。集合にするのは、crm と cms への `/authorize` が同時に走ってもどちらの追加も落ちないようにするため。
+`POST /login` が成功したとき、Cookie が指す旧 SSO Session があれば `sso:sess` `sso:sid` `sso:clients` から破棄してから新しい ID を書く。
 
 ### 認可リクエスト
 
@@ -331,7 +358,9 @@ type RefreshToken = {
 };
 ```
 
-逆引き `sso:rtfamily` の `<familyId> → token[]` と `sso:sidrt` の `<sid> → familyId[]` を持つ。系列の値は token の一覧だけで、失効フラグは持たない。系列の失効は一覧の全 token を並列に revoked へ更新する。refresh_token grant の検証は `validateRefreshContext` にまとめ、どの段階で失敗しても系列を 1 回だけ失効させる。
+逆引き `sso:rtfamily` の `<familyId> → token の集合` と `sso:sidrt` の `<sid> → familyId の集合` を `SetStore` で持つ。系列の値は token の一覧だけで、失効フラグは持たない。系列の失効は集合の全 token を並列に revoked へ更新する。refresh_token grant の検証は `validateRefreshContext` にまとめ、どの段階で失敗しても系列を 1 回だけ失効させる。
+
+消費は consume-first。`consumeRefreshToken` が `getAndDelete` で取り出し、直後に `status: "rotated"` で書き戻してから検証に進む。取り出した値が `active` でなければそのまま書き戻して再利用として扱う。同じ値を同時に提示されても取り出せるのは 1 回だけで、もう一方は存在しないため `invalid_grant` になり、系列は失効しない。別 Client からの提示は `client_mismatch` として系列全体を失効させる。
 
 ### Tenant Session
 
@@ -356,8 +385,19 @@ type TenantSession = {
 ```
 
 - 1 プロセスは 1 サービスを担当するため、サービスはストアのプレフィックスで分け、値には clientId を持たない。プロセス内では tenantSlug をキーに含めて空間を分ける。Cookie 値が同じでも別ホストのセッションを引けない
-- 逆引きはプレフィックス `<clientId>:sid`、キー `sid:<sid> → sessionKey[]`。Back-Channel Logout はサービス単位で届くため、同じ sid で作られたそのサービスの全テナントのセッションをまとめて削除できる
+- 逆引きはプレフィックス `<clientId>:sid`、キー `sid:<sid> → sessionKey の集合`。`SetStore` で持ち、セッション作成時に追加、`destroySession` で要素を削除する。Back-Channel Logout はサービス単位で届くため、同じ sid で作られたそのサービスの全テナントのセッションをまとめて削除できる
+- `lastSeenAt` の更新は書く直前にセッションを読み直す。並行する Refresh が更新した Token を古い値で上書きしない
 - role は保存しない。表示用に必要なら API から都度取得する
+
+### Refresh ロック
+
+プレフィックス `<clientId>:lock`、キー `<tenantSlug>:<session_id>`。値は `"1"`。TTL は `REFRESH_LOCK_TTL_SECONDS` の 10 秒。
+`ensureFreshAccessToken` が `setIfAbsent` で取り、Refresh の完了後に削除する。取れなかったリクエストは 100 ミリ秒間隔で最大 30 回セッションを読み直し、Refresh 済みなら続行する。同じセッションで Refresh Token を二重に送らないための排他。
+
+### レート制限カウンタ
+
+プレフィックスは auth-api が `sso:ratelimit`、`*-web` が `<clientId>:ratelimit`。キー `<名前>:<IP など>:<窓番号>`。TTL は窓の長さ。
+`CounterStore.increment` で加算し、初回の加算で TTL を付ける。制限値は [08-security-design.md](./08-security-design.md) を参照。
 
 ### pre-auth
 
@@ -379,14 +419,26 @@ interface KeyValueStore<T> {
   get(key: string): Promise<T | undefined>;
   set(key: string, value: T, ttlSeconds: number): Promise<void>;
   delete(key: string): Promise<void>;
-  getAndDelete(key: string): Promise<T | undefined>; // code の一回限り消費用
+  getAndDelete(key: string): Promise<T | undefined>;                    // code と Refresh Token の一回限り消費
+  setIfAbsent(key: string, value: T, ttlSeconds: number): Promise<boolean>; // ロック。書けたら true
+}
+
+interface SetStore {
+  add(key: string, member: string, ttlSeconds: number): Promise<void>;
+  remove(key: string, member: string): Promise<void>;
+  members(key: string): Promise<ReadonlyArray<string>>;
+  delete(key: string): Promise<void>;
+}
+
+interface CounterStore {
+  increment(key: string, ttlSeconds: number): Promise<number>; // 加算後の値。初回で TTL を付ける
 }
 ```
 
 | 環境 | 実装 |
 | --- | --- |
-| ローカル検証 | インメモリ Map + 期限管理。`REDIS_URL` 未設定時に `createStoreFactory` が選ぶ |
-| 本番 | Redis。getAndDelete は GETDEL。`REDIS_URL` 設定時に `createStoreFactory` が選ぶ |
+| ローカル検証 | インメモリ Map + 期限管理。`REDIS_URL` 未設定時に `createStoreFactory` が選ぶ。`getAndDelete` は await を挟まず読んで消し、並行呼び出しでも値を返すのは 1 回 |
+| 本番 | Redis。`getAndDelete` は GETDEL、`setIfAbsent` は SET NX、`SetStore` は SADD / SREM / SMEMBERS、`increment` は INCR と EXPIRE NX。`REDIS_URL` 設定時に `createStoreFactory` が選ぶ |
 
 ## 障害時の考慮
 

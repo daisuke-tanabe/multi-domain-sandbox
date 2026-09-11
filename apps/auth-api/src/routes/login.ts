@@ -6,7 +6,7 @@ import { issueCsrfToken, verifyCsrfToken } from "../usecases/csrf.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import { login, type LoginError } from "../usecases/login.ts";
 import { resumePendingAuthorization } from "../usecases/pending-authorization.ts";
-import { loadSsoSession } from "../usecases/sso-session.ts";
+import { destroySsoSession, loadSsoSession } from "../usecases/sso-session.ts";
 import { errorPage, loginPage } from "../views/pages.ts";
 import {
   noStore,
@@ -115,6 +115,9 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
         );
       }
 
+      // 古い SSO Session を残さない。Cookie を上書きするだけでは前のセッションが期限まで生き続ける
+      const previous = await loadSsoSession(deps, readSsoCookie(c, policy));
+      if (previous !== undefined) await destroySsoSession(deps, previous);
       writeSsoCookie(c, policy, result.value.session.id);
       if (request === undefined) return c.redirect("/");
       await deps.stores.authorizationRequests.delete(form.rid);

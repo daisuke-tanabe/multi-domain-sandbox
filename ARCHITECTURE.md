@@ -91,7 +91,9 @@ src/
 - Cookie は `docs/design/03-cookie-design.md` に従う。本番は `__Host-` 必須
 - Token は `docs/design/04-token-design.md` に従う。ブラウザへ渡さない
 - redirect_uri は完全一致。不一致時はリダイレクトしない。登録はサービスごとの `redirect_uri_template` で行い、`{tenant}` をテナント slug で展開した文字列と比較する
-- client_secret はサービスごとに複数持てる。ローテーションは新 secret を追加してから旧 secret を revoked にする
+- client_secret はサービスごとに複数持てる。ローテーションは新 secret を追加してから旧 secret を revoked にする。`CLIENT_SECRET` と provision の `clientSecret` は 43 文字以上をスキーマで要求する
+- 一覧は `SetStore`、一回限りの消費は `getAndDelete`、Refresh はセッション単位のロック。値を読んで書き戻す形の一覧更新や、読んでから消す二段階の消費は書かない
+- ブラウザと Client のサーバーから受ける入力はレート制限と body 上限を通す。制限値は `docs/design/08-security-design.md` に従う
 - API の tenant_id は Access Token 由来のみ。リクエストの値を認可に使わない
 - Repository は tenant_id を必須引数に取る
 
@@ -107,6 +109,8 @@ src/
 - 各アプリは `.env.example` を持つ。`.env` は git 管理外
 - 起動時に zod で検証し、不足があれば起動を失敗させる。検証は `packages/shared` の `parseEnv` に zod スキーマを渡して行い、`envBoolean` `jsonArrayEnv` `publicSchemeEnv` を再利用する
 - 開発時の既定値はコード側に持たせず `.env.example` に書く
+- Cookie の Secure と `__Host-` は公開 scheme から導く。auth-api は `ISSUER`、`*-web` は `PUBLIC_SCHEME`。切り替え用の変数を追加しない
+- https のときは本番の値を必須にする。auth-api は `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk`、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL`。欠けたら起動を失敗させる
 
 ## 命名
 

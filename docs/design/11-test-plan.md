@@ -5,7 +5,7 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / api-core / web-core / shared で 121 件が通っている。oidc-client は web-core のテストを通して検証する。crm-web / crm-api / cms-web / cms-api の `main.ts` は `packages/web-core` と `packages/api-core` の起動関数を呼ぶだけのため、テストは共有パッケージ側に置く。
+現在の自動テストは auth-api / api-core / web-core / shared で 130 件が通っている。oidc-client は web-core のテストを通して検証する。crm-web / crm-api / cms-web / cms-api の `main.ts` は `packages/web-core` と `packages/api-core` の起動関数を呼ぶだけのため、テストは共有パッケージ側に置く。
 
 ## テストピラミッド
 
@@ -35,6 +35,16 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | Cognito アダプタ | 例外種別ごとの理由コード写像 |
 | セッション寿命 | アイドルと絶対の判定境界 |
 
+### 共有ストア
+
+| 対象 | ケース |
+| --- | --- |
+| `MemoryKeyValueStore.get` | TTL 経過後は undefined |
+| `MemoryKeyValueStore.getAndDelete` | 同じキーを同時に消費しても値を返すのは 1 回 |
+| `MemoryKeyValueStore.setIfAbsent` | 未登録なら true で書き、登録済みなら false で書かない。TTL 経過後は再取得できる |
+| `MemorySetStore` | 同時に add した要素がすべて残り、remove で個別に外せる |
+| `MemoryCounterStore` | increment が 1 から加算され、窓の経過後に 1 に戻る |
+
 ### Tenant Web Application と OIDC Client モジュール
 
 | 対象 | ケース |
@@ -47,6 +57,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | Session キー | ストア `<clientId>:sess` のキー `<tenantSlug>:<id>`。同じ Cookie 値でも別ホストから引けない |
 | sid 逆引き | ストア `<clientId>:sid` のキー `sid:<sid>` に複数テナントのセッションが入り、まとめて削除できる |
 | Token 更新判定 | 残り60秒未満で Refresh を発火 |
+| 同時 Refresh | 同じセッションで同時に 2 リクエストが走っても Refresh は 1 回。両方 200 で、Refresh Token は 1 回だけローテーションされ、セッション Cookie が残る |
 
 ### API Server
 
@@ -79,7 +90,12 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | 正常 | /revoke が冪等 |
 | 正常 | /.well-known/openid-configuration と /jwks の内容 |
 | ポータル | alice で「Tanaka Inc. (tanaka / owner)」に CRM と CMS、「Suzuki Ltd. (suzuki / viewer)」に CRM のみ。リンクは `<tenant>.<service>` の /auth/login |
-| Global Logout | authorized_clients のサービスごとに1通の logout_token。aud がサービス。完了画面に「CRM (tanaka) に戻る」。リンク先は redirect_uri_template を tenant で展開した origin |
+| Global Logout | `sso:clients` のサービスごとに1通の logout_token。aud がサービス。完了画面に「CRM (tanaka) に戻る」。リンク先は redirect_uri_template を tenant で展開した origin |
+| 並行性と悪用 | 同じ Refresh Token を同時に 2 回提示すると成功は 1 つで、もう一方は invalid_grant。系列は失効せず、成功側の新 Token で次の Refresh が通る |
+| 並行性と悪用 | 別 Client の Basic 認証で Refresh Token を提示すると invalid_grant になり、その後の正規 Client からの提示も invalid_grant。系列全体が失効する |
+| 並行性と悪用 | ログイン済みの Cookie で再ログインすると旧 SSO Session がストアから消え、SSO Session は 1 件だけになる |
+| 並行性と悪用 | 同じ IP から `/login` を 61 回叩くと 429 |
+| 並行性と悪用 | Basic 資格情報のパーセントエンコードが壊れていると invalid_client。500 にならない |
 
 ### Tenant Web Application
 
@@ -144,6 +160,8 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | S4 | 別ブラウザへの code 注入 | nonce 不一致で 401 |
 | S5 | crm の code を cms の secret で交換 | invalid_grant |
 | S6 | Refresh Token 再利用 | 系列全体が失効し、正規の次回 Refresh も失敗する |
+| S6b | 同じ Refresh Token の同時提示 | 成功は 1 つ。もう一方は invalid_grant。系列は失効しない |
+| S6c | 別 Client からの Refresh Token 提示 | invalid_grant。系列全体が失効する |
 | S7 | ID Token を API に送る | 401 |
 | S8 | alg=none / HS256 の偽造 Token | 401 |
 | S9 | Token の tenant_id を書き換え | 署名不正で 401 |
@@ -151,7 +169,8 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | S11 | Cookie の Domain を .sandbox.com にして送信 | `__Host-` 名で受理されない |
 | S12 | ログイン POST を CSRF トークンなしで送信 | 403 |
 | S13 | ログアウト POST を別オリジンから送信 | 403 |
-| S14 | パスワードスプレー | 429 |
+| S14 | パスワードスプレー | 429 と Retry-After。IP あたり 60 回/分、IP × ユーザー名あたり 10 回/分 |
+| S14b | 再ログインによる旧 SSO Session の残留 | ストアに旧 SSO Session が残らない |
 | S15 | 存在ユーザーと非存在ユーザーの応答比較 | 文言と応答時間の差がない |
 | S16 | crm の Access Token を api.cms に送る | aud 不一致で 401 |
 | S17 | suzuki 向けの code を tanaka.crm の callback で受ける | redirect_uri 不一致で invalid_grant。通過しても tenant_slug 不一致で 401 |

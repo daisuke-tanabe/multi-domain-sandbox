@@ -182,16 +182,16 @@ flowchart LR
 
 | アプリ | 変数 | 内容 |
 | --- | --- | --- |
-| crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。`crm` / `crm-secret` / `CRM` のように oidc_clients と oidc_client_secrets の登録値と一致させる。`CLIENT_SECRET` は active な secret のいずれか |
+| crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。`crm` / `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` / `CRM` のように oidc_clients と oidc_client_secrets の登録値と一致させる。`CLIENT_SECRET` は active な secret のいずれかで、43 文字以上でなければ起動に失敗する |
 | crm-web / cms-web | `BASE_HOST` `API_BASE_URL` | テナント slug を除いたホストと、呼び出す API の公開 URL。crm は `crm.localhost:3001` と `http://api.crm.localhost:3002`、cms は `cms.localhost:3003` と `http://api.cms.localhost:3004`。Host `<tenant>.<BASE_HOST>` からテナントを解決する |
-| crm-web / cms-web | `PORT` `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `COOKIE_SECURE` `REDIS_URL` | 待ち受けポート、redirect_uri の scheme、Auth Server の issuer、サーバー間通信先、Cookie の Secure 属性、Session Store。`REDIS_URL` 未設定はインメモリ |
-| auth-api | `ISSUER` `DATABASE_URL` `COGNITO_ADAPTER` 等 | Client やテナントの設定は持たず、Identity DB から読む |
+| crm-web / cms-web | `PORT` `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `REDIS_URL` | 待ち受けポート、redirect_uri の scheme、Auth Server の issuer、サーバー間通信先、Session Store。`REDIS_URL` 未設定はインメモリ。Cookie の Secure と `__Host-` は `PUBLIC_SCHEME` が `https` のときに付き、そのときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` が必須 |
+| auth-api | `ISSUER` `DATABASE_URL` `COGNITO_ADAPTER` 等 | Client やテナントの設定は持たず、Identity DB から読む。Cookie の Secure と `__Host-` は `ISSUER` が `https://` で始まるときに付き、そのときは `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk` が必須 |
 | crm-api / cms-api | `API_BASE_URL` | この API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004`。この値がそのまま aud になり、Host が URL のホストと異なるリクエストは 404 |
 | crm-api / cms-api | `PORT` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` | aud は `API_BASE_URL` と同じ値。provision が oidc_clients.audience に書く `apiBaseUrl` と一致させる。`PUBLIC_SCHEME` は持たない |
 | provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` の JSON 配列。oidc_clients、redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`redirect_uri_template` は `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` |
 
-client_secret はローカルでは `crm-secret` と `cms-secret` の固定値。本番は 32 バイト以上の乱数を Secret Store から各 web の `CLIENT_SECRET` と provision の `SERVICES` に注入する。provision はサービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする。
-環境変数の検証は `packages/shared` の `parseEnv` で行い、不足があれば起動を失敗させる。
+client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` と `cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA` の固定値。本番は 32 バイト以上の乱数を Secret Store から各 web の `CLIENT_SECRET` と provision の `SERVICES` に注入する。どちらも 43 文字以上をスキーマで要求する。provision はサービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする。
+環境変数の検証は `packages/shared` の `parseEnv` で行い、不足があれば起動を失敗させる。Cookie の Secure を外す変数は持たず、公開 scheme から導く。
 
 ## サービス追加手順
 

@@ -10,7 +10,7 @@ import {
   type OidcEnv,
   type ServiceConfig,
 } from "@sandbox/oidc-client";
-import { MemoryKeyValueStore, silentLogger } from "@sandbox/shared";
+import { createMemoryStoreFactory, silentLogger } from "@sandbox/shared";
 import { createWebCoreApp } from "./app.ts";
 import { createClientResolvers } from "./config.ts";
 
@@ -84,15 +84,20 @@ export async function createSandbox(): Promise<SandboxHarness> {
       clock: auth.clock,
       audience: service.apiBaseUrl,
     });
+    const stores = createMemoryStoreFactory(auth.clock);
     const webDeps: OidcClientDeps = {
       provider: {
         issuer: `http://${AUTH_HOST}`,
         backchannelBaseUrl: `http://${AUTH_BACKCHANNEL_HOST}`,
       },
       ...createClientResolvers({ publicScheme: "http", baseHost, service }),
-      sessions: new MemoryKeyValueStore(auth.clock),
-      sessionsBySid: new MemoryKeyValueStore(auth.clock),
-      preAuth: new MemoryKeyValueStore(auth.clock),
+      sessions: stores.kv("sess"),
+      sessionsBySid: stores.set("sid"),
+      preAuth: stores.kv("pre"),
+      refreshLocks: stores.kv("lock"),
+      rateLimits: stores.counter("ratelimit"),
+      // FakeClock なので待ち時間は最小にし、ロック保持側の署名処理が進むだけの実時間を空ける
+      sleep: () => new Promise((resolve) => setTimeout(resolve, 20)),
       clock: auth.clock,
       cookiePolicy: { secure: false },
       logger: silentLogger,

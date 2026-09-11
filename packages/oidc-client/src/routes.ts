@@ -1,10 +1,13 @@
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import {
   computeCodeChallenge,
   generateCodeVerifier,
   isAccessDeniedReason,
   randomToken,
+  rateLimit,
   sanitizeReturnTo,
+  timingSafeEqualString,
   type AccessDeniedReason,
 } from "@sandbox/shared";
 import {
@@ -18,7 +21,12 @@ import {
 import type { OidcEnv } from "./middleware.ts";
 import type { OidcProvider, ProviderError } from "./provider.ts";
 import { createSession, destroySession, destroySessionsBySid, loadSession } from "./session.ts";
-import { PRE_AUTH_TTL_SECONDS, type OidcClientConfig, type OidcClientDeps } from "./types.ts";
+import {
+  AUTH_ROUTE_RATE_LIMIT,
+  PRE_AUTH_TTL_SECONDS,
+  type OidcClientConfig,
+  type OidcClientDeps,
+} from "./types.ts";
 
 export type ErrorStatus = 400 | 401 | 403 | 500 | 503;
 
@@ -53,6 +61,9 @@ export function oidcRoutes(
     c.header("Cache-Control", "no-store");
     await next();
   });
+  // 無認証で到達できる経路はストアへの書き込みと Auth Server への中継を伴うため IP 単位で絞る
+  app.use("/auth/*", rateLimit("auth", { store: deps.rateLimits, ...AUTH_ROUTE_RATE_LIMIT }));
+  app.use("/auth/*", bodyLimit({ maxSize: 16 * 1024 }));
 
   app.get("/auth/login", async (c) => {
     const client = c.get("tenantClient");
@@ -179,7 +190,7 @@ export function oidcRoutes(
       return c.redirect("/");
     }
     const form = await c.req.parseBody();
-    if (form.csrf !== session.csrfToken) {
+    if (typeof form.csrf !== "string" || !timingSafeEqualString(form.csrf, session.csrfToken)) {
       deps.logger.warn("logout csrf mismatch", { tenantSlug: client.tenantSlug });
       return renderError(
         c,
@@ -227,6 +238,11 @@ export function oidcRoutes(
 export function backchannelRoutes(deps: OidcClientDeps, provider: OidcProvider): Hono {
   const app = new Hono();
 
+  app.use(
+    "/auth/backchannel-logout",
+    rateLimit("backchannel", { store: deps.rateLimits, ...AUTH_ROUTE_RATE_LIMIT }),
+    bodyLimit({ maxSize: 16 * 1024 }),
+  );
   app.post("/auth/backchannel-logout", async (c) => {
     c.header("Cache-Control", "no-store");
     const form = await c.req.parseBody();

@@ -2,8 +2,10 @@ export { ok, err } from "./result.ts";
 export type { Result } from "./result.ts";
 export { systemClock, FakeClock } from "./clock.ts";
 export type { Clock } from "./clock.ts";
-export { MemoryKeyValueStore } from "./kv-store.ts";
-export type { KeyValueStore } from "./kv-store.ts";
+export { MemoryKeyValueStore, MemorySetStore, MemoryCounterStore } from "./kv-store.ts";
+export type { KeyValueStore, SetStore, CounterStore } from "./kv-store.ts";
+export { rateLimit, clientIp } from "./rate-limit.ts";
+export type { RateLimitOptions } from "./rate-limit.ts";
 export {
   randomToken,
   generateCodeVerifier,
@@ -69,7 +71,7 @@ export { RemoteJwksSource, StaticJwksSource, jwksSchema, verifyJwtWithSource } f
 export type { JwksError, JwksSource } from "./jwks.ts";
 export { createSessionExpiry } from "./session-expiry.ts";
 export type { ExpiringSession, SessionExpiry, SessionExpiryPolicy } from "./session-expiry.ts";
-export { createStoreFactory } from "./store-factory.ts";
+export { createStoreFactory, createMemoryStoreFactory } from "./store-factory.ts";
 export type { StoreFactory } from "./store-factory.ts";
 export {
   ACCESS_DENIED_REASONS,
@@ -82,4 +84,9 @@ export {
 export type { AccessDeniedReason } from "./oidc-protocol.ts";
 export type { Logger } from "./logger.ts";
 export { sanitizeReturnTo } from "./return-to.ts";
-export { RedisKeyValueStore, createRedisClient } from "./redis-store.ts";
+export {
+  RedisKeyValueStore,
+  RedisSetStore,
+  RedisCounterStore,
+  createRedisClient,
+} from "./redis-store.ts";

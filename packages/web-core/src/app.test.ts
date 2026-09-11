@@ -314,6 +314,25 @@ describe("session lifetimes", () => {
     if (!(refreshTokens instanceof MemoryKeyValueStore)) throw new Error("unexpected store");
     expect(refreshTokens.size()).toBe(2);
   });
+
+  test("concurrent requests refresh only once and keep the session alive", async () => {
+    // Arrange: 2 タブで同時に開いた状況。Refresh Token は一回限りなので二重に送ってはならない
+    sandbox.auth.clock.advance(14 * 60 + 30);
+
+    // Act
+    const [first, second] = await Promise.all([
+      browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`),
+      browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`),
+    ]);
+
+    // Assert
+    expect(first.response.status).toBe(200);
+    expect(second.response.status).toBe(200);
+    const refreshTokens = sandbox.auth.deps.stores.refreshTokens;
+    if (!(refreshTokens instanceof MemoryKeyValueStore)) throw new Error("unexpected store");
+    expect(refreshTokens.size()).toBe(2);
+    expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(true);
+  });
 });
 
 describe("E11 global logout via auth.localhost", () => {

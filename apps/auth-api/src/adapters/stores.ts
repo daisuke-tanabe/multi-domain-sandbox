@@ -6,13 +6,15 @@ import type { AuthStores } from "../ports/stores.ts";
  */
 export function createAuthStores(store: StoreFactory): AuthStores {
   return {
-    ssoSessions: store("sso:sess"),
-    sidIndex: store("sso:sid"),
-    authorizationRequests: store("sso:authreq"),
-    authorizationCodes: store("sso:code"),
-    refreshTokens: store("sso:rt"),
-    refreshTokenFamilies: store("sso:rtfamily"),
-    csrfTokens: store("sso:csrf"),
-    sidRefreshFamilies: store("sso:sidrt"),
+    ssoSessions: store.kv("sso:sess"),
+    sidIndex: store.kv("sso:sid"),
+    sessionClients: store.set("sso:clients"),
+    authorizationRequests: store.kv("sso:authreq"),
+    authorizationCodes: store.kv("sso:code"),
+    refreshTokens: store.kv("sso:rt"),
+    refreshTokenFamilies: store.set("sso:rtfamily"),
+    csrfTokens: store.kv("sso:csrf"),
+    sidRefreshFamilies: store.set("sso:sidrt"),
+    rateLimits: store.counter("sso:ratelimit"),
   };
 }

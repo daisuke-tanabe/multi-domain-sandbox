@@ -62,7 +62,8 @@ sequenceDiagram
     Cognito-->>Auth: AuthenticationResult<br/>{AccessToken, IdToken, RefreshToken}
     Auth->>Auth: Cognito IdToken 検証<br/>署名(Cognito JWKS) / iss / aud / exp / token_use
     Auth->>IdDB: users を cognito_sub で検索。なければJIT作成
-    Auth->>SsoStore: SSO Session作成<br/>{sso_session_id, sid, user_id,<br/>cognito_tokens(暗号化), auth_time, authorized_clients:[]}
+    Auth->>SsoStore: SSO Session作成<br/>{sso_session_id, sid, user_id,<br/>cognito_tokens(暗号化), auth_time}
+    Auth->>SsoStore: Cookie が指す旧 SSO Session があれば破棄<br/>sso:sess / sso:sid / sso:clients
     Note over Auth: Cognito Tokenはここから外に出さない
     Auth->>IdDB: アクセス判定。users.status → tenants.status<br/>→ tenant_services (tanaka, crm) → tenant_members (tanaka, user_id)
     alt 判定失敗
@@ -70,13 +71,13 @@ sequenceDiagram
         Note over Browser,TanakaCrm: TanakaCrm が理由に応じた 403 画面を表示。SSO Session は残る。以降は省略
     end
     Auth->>SsoStore: Authorization Code発行<br/>{code, client_id:crm, redirect_uri, scope, nonce,<br/>code_challenge, user_id, tenant_id, sid, auth_time} TTL 60秒
-    Auth->>SsoStore: SSO Session の authorized_clients に crm を追加
+    Auth->>SsoStore: sso:clients の集合に crm を追加
     Auth-->>Browser: 302 https://tanaka.crm.sandbox.com/auth/callback?code=AC1&state=S1<br/>Set-Cookie: sso_session=X1; HttpOnly; Secure; SameSite=Lax; Path=/<br/>Domain属性なし。auth.sandbox.comのみに限定
 
     Browser->>TanakaCrm: GET /auth/callback?code=AC1&state=S1<br/>Cookie: tenant_pre_auth=P1
     TanakaCrm->>Sess: pre-auth P1 を取得
     TanakaCrm->>TanakaCrm: state == S1 を検証
-    TanakaCrm->>Auth: POST /token (Back Channel)<br/>Authorization: Basic base64(crm:crm-secret)<br/>grant_type=authorization_code&code=AC1<br/>&redirect_uri=https://tanaka.crm.sandbox.com/auth/callback<br/>&code_verifier=V1
+    TanakaCrm->>Auth: POST /token (Back Channel)<br/>Authorization: Basic base64(crm:client_secret)<br/>grant_type=authorization_code&code=AC1<br/>&redirect_uri=https://tanaka.crm.sandbox.com/auth/callback<br/>&code_verifier=V1
     Auth->>IdDB: client認証。oidc_client_secrets の active な行のいずれかとハッシュ照合
     Auth->>SsoStore: code AC1 を取得し used=true に更新。アトミック
     Auth->>Auth: 未使用 / 期限内 / client_id一致 / redirect_uri一致<br/>BASE64URL(SHA256(V1)) == code_challenge
@@ -100,6 +101,7 @@ sequenceDiagram
 - アクセス判定は Cognito 認証成功後、code 発行前に行う。契約がないサービス、所属していないテナントには code を発行しない
 - 認証は成功しているため SSO Session は作成する。アクセスできるテナントへ移動すればログイン画面なしで入れる
 - ブラウザに渡るのは Cookie のみ。access_token / refresh_token は TanakaCrm のサーバー側セッションに保存する
+- ログイン成功時に Cookie が指す旧 SSO Session があれば破棄する。Cookie の上書きだけでは旧セッションが期限まで残る
 
 ## 2. 別テナント・別サービスへのSSO
 
@@ -130,7 +132,7 @@ sequenceDiagram
     alt 判定失敗
         Auth-->>Browser: 302 https://suzuki.crm.sandbox.com/auth/callback?error=access_denied&error_description=<理由>&state=S2
     end
-    Auth->>SsoStore: lastSeenAt更新。authorized_clients は [crm] のまま
+    Auth->>SsoStore: lastSeenAt更新。sso:clients は {crm} のまま
     Auth->>SsoStore: Authorization Code発行 {code:AC2, client_id:crm, tenant_id:suzuki, sid, ...} TTL 60秒
     Auth-->>Browser: 302 https://suzuki.crm.sandbox.com/auth/callback?code=AC2&state=S2
 
@@ -167,10 +169,10 @@ sequenceDiagram
     Browser->>Auth: GET /authorize?... Cookie: sso_session=X1
     Auth->>IdDB: client_id=cms の取得。redirect_uri をテンプレートに当てて slug=tanaka → tenants から解決
     Auth->>IdDB: アクセス判定。tenant_services (tanaka, cms) あり。tenant_members (tanaka, user_id) あり
-    Auth->>SsoStore: authorized_clients に cms を追加。code 発行 {client_id:cms, tenant_id:tanaka, sid}
+    Auth->>SsoStore: sso:clients に cms を追加。code 発行 {client_id:cms, tenant_id:tanaka, sid}
     Auth-->>Browser: 302 https://tanaka.cms.sandbox.com/auth/callback?code=AC3&state=S3
     Browser->>TanakaCms: GET /auth/callback?code=AC3&state=S3
-    TanakaCms->>Auth: POST /token client認証 cms:cms-secret
+    TanakaCms->>Auth: POST /token client認証 cms:client_secret
     Auth-->>TanakaCms: 200 {id_token(aud=cms), access_token(aud=api.cms), refresh_token}
     TanakaCms->>TanakaCms: id_token検証。aud=cms, tenant_slug==tanaka
     TanakaCms-->>Browser: 302 /<br/>Set-Cookie: tenant_session=T3
@@ -209,7 +211,7 @@ tanaka.crm.sandbox.com → ログイン済み (tenant_session。キー crm:tanak
 suzuki.crm.sandbox.com → ログイン済み (tenant_session。キー crm:suzuki:T2)
 tanaka.cms.sandbox.com → ログイン済み (tenant_session。キー cms:tanaka:T3)
 suzuki.cms.sandbox.com → 403 not_contracted。セッションなし
-auth.sandbox.com       → SSO Session 1つ。authorized_clients = [crm, cms]
+auth.sandbox.com       → SSO Session 1つ。sso:clients = {crm, cms}
 ```
 
 ## 3. Authorization Code Flow の詳細
@@ -243,7 +245,7 @@ flowchart TD
     J3 -- yes --> J4{"tenant_members に<br/>(tenant_id, user_id)<br/>が存在?"}
     J4 -- no --> E6["302 ... error_description=no_membership"]
     J4 -- "存在するが status!=active" --> E7["302 ... error_description=membership_inactive"]
-    J4 -- active --> K["code 発行 TTL 60秒<br/>authorized_clients に client_id を追加"]
+    J4 -- active --> K["code 発行 TTL 60秒<br/>sso:clients の集合に client_id を追加"]
     K --> L["302 redirect_uri?code&state"]
 ```
 
@@ -284,28 +286,38 @@ sequenceDiagram
     participant IdDB
 
     Note over TanakaCrm: API呼び出し前に access_token の exp を確認<br/>残り60秒未満なら更新
+    TanakaCrm->>TanakaCrm: セッション単位のロックを setIfAbsent で取得<br/>取れなければ保持者の完了を待って再読込
     TanakaCrm->>Auth: POST /token<br/>grant_type=refresh_token&refresh_token=RT1<br/>client認証 crm
-    Auth->>SsoStore: RT1 を取得
-    alt RT1が存在しない / 期限切れ / 失効済み / client_id 不一致
-        Auth-->>TanakaCrm: 400 invalid_grant
+    Auth->>SsoStore: RT1 を GETDEL で取り出し、直後に rotated として書き戻す
+    alt RT1 が存在しない / 期限切れ / 同時提示のもう一方
+        Auth-->>TanakaCrm: 400 invalid_grant。系列は失効しない
         Note over TanakaCrm: Tenant Session を破棄し /auth/login へ。SSO Sessionが生きていれば無画面で復帰
+    end
+    alt RT1 が rotated / revoked。再利用
+        Auth->>SsoStore: 系列の全 Refresh Token を revoked に更新
+        Auth-->>TanakaCrm: 400 invalid_grant
+    end
+    alt RT1.client_id が認証済み Client と不一致
+        Auth->>SsoStore: 系列の全 Refresh Token を revoked に更新
+        Auth-->>TanakaCrm: 400 invalid_grant。client_mismatch
     end
     Auth->>SsoStore: 紐付くSSO Sessionが有効か確認
     alt SSO Session失効済み
-        Auth->>SsoStore: RT1 失効
+        Auth->>SsoStore: 系列失効
         Auth-->>TanakaCrm: 400 invalid_grant
     end
     Auth->>IdDB: アクセス判定を再実行<br/>users → tenants → tenant_services → tenant_members
     alt 判定失敗。契約解除 / Membership削除 / 停止
-        Auth->>SsoStore: RT1 失効
+        Auth->>SsoStore: 系列失効
         Auth-->>TanakaCrm: 400 invalid_grant
     end
-    Auth->>SsoStore: RT1 を失効し RT2 を発行。ローテーション
+    Auth->>SsoStore: 同じ系列で RT2 を発行。sso:rtfamily に追加
     Auth-->>TanakaCrm: 200 {access_token(新), refresh_token:RT2, expires_in:900}
-    TanakaCrm->>TanakaCrm: Tenant Session の token を更新
+    TanakaCrm->>TanakaCrm: Tenant Session の token を更新し、ロックを解放
 ```
 
-Refresh Token の再利用を検知した場合は、同一系列のすべての Refresh Token を失効させる。
+消費を先に行う。同じ RT1 を同時に 2 回提示されても GETDEL で取り出せるのは 1 回だけで、もう一方は存在しない値として `invalid_grant` になる。このとき系列は失効させない。正規の Client の偶発的な二重送信で全セッションを落とさないためで、系列を失効させるのは `rotated` / `revoked` の値が提示された再利用と、別 Client からの提示に限る。
+Tenant 側は同じセッションで Refresh を 1 回にまとめる。`ensureFreshAccessToken` がセッション単位のロックを取り、取れなかったリクエストは 100 ミリ秒間隔で最大 30 回セッションを読み直して、Refresh 済みの Token で続行する。
 
 ## 4. API呼び出し。BFFからapi.crm.sandbox.comへ
 
@@ -464,11 +476,11 @@ sequenceDiagram
     Browser->>Auth: GET /logout?client_id=crm&tenant=tanaka (sso_session=X1)
     Auth-->>Browser: 200 確認画面。CSRFトークンと client_id / tenant を hidden で埋め込む
     Browser->>Auth: POST /logout {csrf, client_id=crm, tenant=tanaka}
-    Auth->>SsoStore: X1 取得。authorized_clients=[crm, cms] と sid を特定
+    Auth->>SsoStore: X1 取得。sso:clients={crm, cms} と sid を特定
     Auth->>SsoStore: sid に紐付く Refresh Token を全失効
     Auth->>Cognito: RevokeToken(Cognito RefreshToken)
-    Auth->>SsoStore: X1 削除
-    par Back-Channel Logout。サービスごとに1通
+    Auth->>SsoStore: X1 と sso:sid / sso:clients を削除
+    par Back-Channel Logout。サービスごとに1通。5 秒でタイムアウト
         Auth->>WebCrm: POST /auth/backchannel-logout<br/>logout_token (JWT: iss, aud=crm, sid, events)
         WebCrm->>WebCrm: logout_token 検証。crm:sid:<sid> から<br/>tanaka / suzuki の Tenant Session を全削除
         WebCrm-->>Auth: 200
@@ -480,9 +492,9 @@ sequenceDiagram
     Auth-->>Browser: 200 ログアウト完了ページ<br/>「CRM (tanaka) に戻る」→ https://tanaka.crm.sandbox.com/<br/>crm の redirect_uri_template を tenant=tanaka で展開した origin<br/>Set-Cookie: sso_session=; Max-Age=0
 ```
 
-通知先は SSO Session の authorized_clients に含まれるサービス。サービスは logout_token の sid で、テナントを問わず自サービスの全セッションを削除する。
+通知先は `sso:clients` の集合に含まれるサービスのうち、`oidc_clients.status` が `active` で `backchannel_logout_uri` を持つもの。サービスは logout_token の sid で、テナントを問わず自サービスの全セッションを削除する。
 戻り先のリンクは `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin から導く。`tenant` は確認画面の hidden フィールドで POST まで引き継ぐ。
-通知に失敗したサービスの Tenant Session は、Access Token 期限切れ後の Refresh で `invalid_grant` となり自然に失効する。最大遅延は Access Token 寿命の15分。
+各通知は `AbortSignal.timeout(5000)` を付けて送り、応答しないサービスがあっても 5 秒で打ち切る。通知に失敗したサービスの Tenant Session は、Access Token 期限切れ後の Refresh で `invalid_grant` となり自然に失効する。最大遅延は Access Token 寿命の15分。
 
 ## 12. 異常系。認可レスポンスの改ざんと再利用
 

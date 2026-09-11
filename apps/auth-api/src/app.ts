@@ -1,6 +1,8 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
-import type { CookiePolicy } from "@sandbox/shared";
+import { clientIp, rateLimit, type CookiePolicy } from "@sandbox/shared";
+import { RATE_LIMITS } from "./policy.ts";
 import { authorizeRoutes } from "./routes/authorize.ts";
 import { discoveryRoutes } from "./routes/discovery.ts";
 import { loginRoutes } from "./routes/login.ts";
@@ -36,6 +38,28 @@ export function createAuthApp(options: AuthAppOptions): Hono {
       },
     }),
   );
+
+  // フォームと Token リクエストは数 KB で足りる。巨大な body でメモリを使わせない
+  app.use(bodyLimit({ maxSize: 16 * 1024 }));
+  // レート制限。IP 単位を基本にし、ログイン試行はユーザー名でも絞る
+  app.use("/login", rateLimit("login", { store: deps.stores.rateLimits, ...RATE_LIMITS.login }));
+  app.post(
+    "/login",
+    rateLimit("login-user", {
+      store: deps.stores.rateLimits,
+      ...RATE_LIMITS.loginPerUser,
+      keyOf: async (c) => {
+        const body = await c.req.raw.clone().formData();
+        return `${clientIp(c)}:${String(body.get("username") ?? "")}`;
+      },
+    }),
+  );
+  app.use(
+    "/authorize",
+    rateLimit("authorize", { store: deps.stores.rateLimits, ...RATE_LIMITS.authorize }),
+  );
+  app.use("/token", rateLimit("token", { store: deps.stores.rateLimits, ...RATE_LIMITS.token }));
+  app.use("/logout", rateLimit("logout", { store: deps.stores.rateLimits, ...RATE_LIMITS.login }));
 
   app.route("/", discoveryRoutes(deps));
   app.route("/", authorizeRoutes(deps, cookiePolicy));

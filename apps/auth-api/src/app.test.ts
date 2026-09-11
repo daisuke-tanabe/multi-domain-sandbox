@@ -1,4 +1,4 @@
-import { toJwks, verifyJwt } from "@sandbox/shared";
+import { toJwks, verifyJwt, MemoryKeyValueStore } from "@sandbox/shared";
 import { beforeEach, describe, expect, test } from "vitest";
 import {
   ALICE_ID,
@@ -740,5 +740,82 @@ describe("service and tenant separation", () => {
     if (!claims.ok) return;
     expect(claims.value.tenant_id).toBe(SUZUKI_ID);
     expect(claims.value.tenant_slug).toBe("suzuki");
+  });
+});
+
+describe("concurrency and abuse hardening", () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  test("only one of two simultaneous refreshes with the same token succeeds and the family survives", async () => {
+    // Arrange
+    const flow = await runLoginFlow(harness, ALICE);
+    const initial = await readTokenBody(
+      await exchangeCode(harness, {
+        code: flow.redirect.searchParams.get("code") ?? "",
+        codeVerifier: flow.codeVerifier,
+      }),
+    );
+
+    // Act: 同じ Refresh Token を同時に 2 回提示する
+    const [first, second] = await Promise.all([
+      refresh(harness, initial.refresh_token),
+      refresh(harness, initial.refresh_token),
+    ]);
+    const winner = first.status === 200 ? first : second;
+    const nextBody = await readTokenBody(winner);
+    const followUp = await refresh(harness, nextBody.refresh_token);
+
+    // Assert: 成功は 1 つだけ。二重提示は再利用ではなく消費済み扱いなので系列は生きている
+    expect([first.status, second.status].filter((status) => status === 200)).toHaveLength(1);
+    expect(followUp.status).toBe(200);
+  });
+
+  test("a refresh token presented by another client revokes the whole family", async () => {
+    const flow = await runLoginFlow(harness, ALICE);
+    const initial = await readTokenBody(
+      await exchangeCode(harness, {
+        code: flow.redirect.searchParams.get("code") ?? "",
+        codeVerifier: flow.codeVerifier,
+      }),
+    );
+
+    const byOtherClient = await refresh(harness, initial.refresh_token, "cms");
+    const byOwner = await refresh(harness, initial.refresh_token);
+
+    expect(byOtherClient.status).toBe(400);
+    expect(byOwner.status).toBe(400);
+  });
+
+  test("re-login destroys the previous SSO session instead of leaving it valid", async () => {
+    const first = await runLoginFlow(harness, ALICE);
+    await runLoginFlow(harness, ALICE, { state: "s2", nonce: "n2" }, first.cookie);
+
+    const sessions = harness.deps.stores.ssoSessions;
+    if (!(sessions instanceof MemoryKeyValueStore)) throw new Error("unexpected store");
+    expect(sessions.size()).toBe(1);
+  });
+
+  test("rate limits repeated requests to the login page from one client", async () => {
+    let last = 0;
+    for (let i = 0; i < 61; i += 1) {
+      last = (await harness.app.request(`${ISSUER}/login`)).status;
+    }
+    expect(last).toBe(429);
+  });
+
+  test("returns invalid_client for malformed percent-encoding in Basic credentials", async () => {
+    const res = await harness.app.request(`${ISSUER}/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from("crm%zz:secret").toString("base64")}`,
+      },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: "x" }).toString(),
+    });
+    expect(res.status).toBe(401);
   });
 });

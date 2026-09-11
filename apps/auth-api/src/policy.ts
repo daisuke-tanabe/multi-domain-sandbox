@@ -15,6 +15,16 @@ export const CSRF_TOKEN_TTL_SECONDS = 30 * 60;
 
 export const SUPPORTED_SCOPES: ReadonlyArray<string> = ["openid", "profile", "email"];
 
+/** レート制限。固定窓の回数。docs/design/08-security-design.md に対応する */
+export const RATE_LIMITS = {
+  login: { limit: 60, windowSeconds: 60 },
+  loginPerUser: { limit: 10, windowSeconds: 60 },
+  authorize: { limit: 120, windowSeconds: 60 },
+  token: { limit: 300, windowSeconds: 60 },
+} as const;
+/** Back-Channel Logout の送信タイムアウト */
+export const BACKCHANNEL_TIMEOUT_MS = 5_000;
+
 export const COOKIE_SSO_SESSION = "sso_session";
 export const COOKIE_CSRF = "auth_csrf";
 export const LOGOUT_TOKEN_TTL_SECONDS = 2 * 60;

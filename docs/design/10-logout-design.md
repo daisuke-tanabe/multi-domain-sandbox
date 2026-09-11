@@ -57,7 +57,8 @@ token=<refresh_token>&token_type_hint=refresh_token
 | エンドポイント | `GET /logout?client_id=crm&tenant=tanaka` で確認画面。確認フォームは csrf、client_id、tenant を hidden で持ち、`POST /logout` に送る |
 | CSRF | 同期トークン必須 |
 | 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → Cookie 削除 |
-| 通知先 | SSO Session の authorized_clients に含まれるサービスのうち backchannel_logout_uri を持つもの。サービスごとに1通 |
+| 通知先 | `sso:clients` の集合に含まれるサービスのうち、`oidc_clients.status` が `active` で backchannel_logout_uri を持つもの。サービスごとに1通。停止した Client には送らない |
+| タイムアウト | `fetch` に `AbortSignal.timeout(5000)` を付ける。`BACKCHANNEL_TIMEOUT_MS`。1 サービスの無応答が完了画面を止めない |
 | 通知失敗 | 完了扱い。対象サービスの Session は Refresh 失敗で最大15分以内に失効 |
 | 完了画面 | `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin へ「CRM (tanaka) に戻る」のリンク。加えて `/` ポータルへのリンク |
 
@@ -91,6 +92,7 @@ OIDC Back-Channel Logout 1.0 に従う。
 ```
 
 送信先は `oidc_clients.backchannel_logout_uri`。CRM は `https://crm.sandbox.com/auth/backchannel-logout`、CMS は `https://cms.sandbox.com/auth/backchannel-logout`。テナントのホストではなくサービスのベースホストで受ける。
+現在の実装は `sub` に sid を入れ、`typ` を `logout+jwt` ではなく `JWT` にしている。変更は未対応。[08-security-design.md](./08-security-design.md) の未対応を参照。
 
 Tenant Web Application 側の検証。
 
@@ -98,14 +100,15 @@ Tenant Web Application 側の検証。
 2. `aud` が自サービスの `CLIENT_ID` と一致すること。不一致なら 400
 3. `events` に backchannel-logout が含まれる
 4. `nonce` が含まれていないこと
-5. jti の重複を短時間記憶してリプレイを拒否
-6. ストア `<clientId>:sid` のキー `sid:<sid>` の逆引きから、テナントを問わずそのサービスの Tenant Session をすべて削除
+5. ストア `<clientId>:sid` のキー `sid:<sid>` の集合から、テナントを問わずそのサービスの Tenant Session をすべて削除し、集合も削除する
+
+jti の重複記憶によるリプレイ拒否は未対応。リプレイされても冪等な削除が繰り返されるだけで、新しい状態は作れない。受け口は IP あたり 60 回/分のレート制限と 16 KB の body 上限を通す。
 
 ### 前提となる構造
 
 - ID Token と Access Token に `sid` を含める
-- Tenant Session に `sid` を保存し、ストア `<clientId>:sid` に `sid:<sid> → sessionKey[]` の逆引きを持つ
-- SSO Session に `authorized_clients` としてサービスの client_id を保存する
+- Tenant Session に `sid` を保存し、ストア `<clientId>:sid` に `sid:<sid> → sessionKey の集合` の逆引きを `SetStore` で持つ。Tenant Logout の `destroySession` は集合から自分のキーを外す
+- SSO Session ID から code を発行したサービスの client_id を引ける集合 `sso:clients` を持つ。値の配列ではなく `SetStore` にし、並行する `/authorize` で追加が落ちないようにする
 - oidc_clients に `backchannel_logout_uri` 列を持つ
 - oidc_clients に `redirect_uri_template` 列を持ち、完了画面とポータルの戻り先を展開で導く
 

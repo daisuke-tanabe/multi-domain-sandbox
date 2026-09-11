@@ -3,7 +3,8 @@ import { jsonArrayEnv, parseEnv, publicSchemeEnv } from "@sandbox/shared";
 
 const serviceSchema = z.object({
   clientId: z.string().min(1),
-  clientSecret: z.string().min(1),
+  /** ハッシュが SHA-256 のみなので 32 バイト以上の乱数を要求する。base64url で 43 文字 */
+  clientSecret: z.string().min(43),
   name: z.string().min(1),
   /** テナントのサブドメインを除いたホスト。例 crm.example.com */
   baseHost: z.string().min(1),

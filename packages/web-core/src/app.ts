@@ -13,6 +13,7 @@ import {
   type RenderError,
   type TenantSession,
 } from "@sandbox/oidc-client";
+import { timingSafeEqualString } from "@sandbox/shared";
 import { errorPage, homePage, projectsPage, type PageLabels, type Viewer } from "./views/pages.ts";
 
 export interface WebCoreAppOptions {
@@ -52,6 +53,13 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
       },
     }),
   );
+  // ログイン済みページには CSRF トークンや役割が載る。bfcache や共有端末に残さない
+  app.use(async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
+  // ALB のヘルスチェックはテナントのホストで来ないため、tenantContext の前に返す
+  app.get("/healthz", (c) => c.json({ status: "ok" }));
   // Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、tenantContext の前に受ける
   app.route("/", backchannelRoutes(deps, provider));
   app.use(
@@ -60,8 +68,6 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
     ),
   );
   app.route("/", oidcRoutes(deps, provider, renderError));
-
-  app.get("/healthz", (c) => c.json({ status: "ok" }));
 
   app.get("/", (c) => {
     const session = c.get("tenantSession");
@@ -90,7 +96,7 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
     const session = c.get("tenantSession");
     if (session === undefined) return c.redirect("/auth/login");
     const form = await c.req.parseBody();
-    if (form.csrf !== session.csrfToken) {
+    if (typeof form.csrf !== "string" || !timingSafeEqualString(form.csrf, session.csrfToken)) {
       return renderError(
         c,
         "ページを再読み込みしてください",

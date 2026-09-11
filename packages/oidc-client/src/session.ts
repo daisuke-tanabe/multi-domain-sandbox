@@ -74,15 +74,10 @@ export async function createSession(
     lastSeenAt: now,
   };
   const key = sessionKey(session.tenantSlug, session.id);
-  const [, existing] = await Promise.all([
+  await Promise.all([
     deps.sessions.set(key, session, SESSION_ABSOLUTE_SECONDS),
-    deps.sessionsBySid.get(sidKey(session.sid)),
+    deps.sessionsBySid.add(sidKey(session.sid), key, SESSION_ABSOLUTE_SECONDS),
   ]);
-  await deps.sessionsBySid.set(
-    sidKey(session.sid),
-    [...(existing ?? []), key],
-    SESSION_ABSOLUTE_SECONDS,
-  );
   return session;
 }
 
@@ -103,21 +98,30 @@ export async function saveSession(
 
 /**
  * リクエストごとの lastSeenAt 更新。前回から間隔が空いていなければ書き込まない。
+ * 書く直前に読み直し、並行する Refresh が更新した Token を古い値で上書きしない。
  */
-export function touchSession(deps: OidcClientDeps, session: TenantSession): Promise<TenantSession> {
-  if (!expiry.shouldTouch(session, deps.clock.nowSeconds())) return Promise.resolve(session);
-  return saveSession(deps, session);
+export async function touchSession(
+  deps: OidcClientDeps,
+  session: TenantSession,
+): Promise<TenantSession> {
+  if (!expiry.shouldTouch(session, deps.clock.nowSeconds())) return session;
+  const latest = await deps.sessions.get(sessionKey(session.tenantSlug, session.id));
+  return saveSession(deps, latest ?? session);
 }
 
-export function destroySession(deps: OidcClientDeps, session: TenantSession): Promise<void> {
-  return deps.sessions.delete(sessionKey(session.tenantSlug, session.id));
+export async function destroySession(deps: OidcClientDeps, session: TenantSession): Promise<void> {
+  const key = sessionKey(session.tenantSlug, session.id);
+  await Promise.all([
+    deps.sessions.delete(key),
+    deps.sessionsBySid.remove(sidKey(session.sid), key),
+  ]);
 }
 
 /**
  * Back-Channel Logout。同じ sid で作られたこのサービスのセッションを、テナントを問わずすべて削除する。
  */
 export async function destroySessionsBySid(deps: OidcClientDeps, sid: string): Promise<number> {
-  const keys = (await deps.sessionsBySid.get(sidKey(sid))) ?? [];
+  const keys = await deps.sessionsBySid.members(sidKey(sid));
   await Promise.all([
     ...keys.map((key) => deps.sessions.delete(key)),
     deps.sessionsBySid.delete(sidKey(sid)),

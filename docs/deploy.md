@@ -28,18 +28,20 @@ Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名
 | 秘密値 | Secrets Manager。DB パスワード、署名鍵、Token 暗号化鍵、client_secret、テストユーザーのパスワード |
 | ログ | CloudWatch Logs。`/ecs/multi-domain-sandbox/<app>` |
 
-ローカルとの差分は環境変数だけで吸収する。`COOKIE_SECURE=true` で `__Host-` プレフィックス、`COGNITO_ADAPTER=sdk` で実 Cognito、`REDIS_URL` で Redis を使う。
+ローカルとの差分は環境変数だけで吸収する。Cookie の Secure と `__Host-` プレフィックスは auth-api が `ISSUER` の scheme、`*-web` が `PUBLIC_SCHEME` から導き、切り替え用の変数はない。https にすると本番の値が揃っていることを起動時に検証する。auth-api は `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk` が必須で、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` が必須。欠けると起動に失敗する。
 アプリ側で必要な環境変数は次のとおり。Terraform のタスク定義はまだこれらを渡していない。
 crm-web / cms-web / crm-api / cms-api の `main.ts` は `packages/web-core` と `packages/api-core` の起動関数を呼ぶだけで、環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。`*-api` は `PUBLIC_SCHEME` を読まず、aud は `API_BASE_URL` そのものになる。
 
 | アプリ | 変数 | 本番の値の例 |
 | --- | --- | --- |
-| crm-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `crm` / Secrets Manager の値 / `CRM` / `crm.<domain>` / `https://api.crm.<domain>` |
-| cms-web | 同上 | `cms` / Secrets Manager の値 / `CMS` / `cms.<domain>` / `https://api.cms.<domain>` |
+| auth-api | `ISSUER` `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER` | `https://auth.<domain>` / Secrets Manager の値 / `rediss://...` / `sdk`。`ISSUER` が https のため 4 つとも必須 |
+| crm-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `crm` / Secrets Manager の値。43 文字以上 / `CRM` / `crm.<domain>` / `https://api.crm.<domain>` |
+| cms-web | 同上 | `cms` / Secrets Manager の値。43 文字以上 / `CMS` / `cms.<domain>` / `https://api.cms.<domain>` |
+| crm-web / cms-web | `ISSUER` `REDIS_URL` | `https://auth.<domain>` / `rediss://...`。`PUBLIC_SCHEME` が https のため両方必須 |
 | crm-api | `API_BASE_URL` | `https://api.crm.<domain>`。そのまま aud になり、provision が oidc_clients.audience に書く `apiBaseUrl` と同じ値にする |
 | cms-api | `API_BASE_URL` | `https://api.cms.<domain>` |
 | crm-web / cms-web / provision | `PUBLIC_SCHEME` | `https` |
-| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、`https://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`clientSecret` は 32 バイト以上の乱数で、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする |
+| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、`https://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`clientSecret` は 32 バイト以上の乱数で 43 文字以上をスキーマで要求する。サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする |
 
 ## 事前準備
 

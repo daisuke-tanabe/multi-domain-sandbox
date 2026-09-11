@@ -1,8 +1,9 @@
-import type { KeyValueStore } from "@sandbox/shared";
+import type { CounterStore, KeyValueStore, SetStore } from "@sandbox/shared";
 
 /**
  * 揮発ストアの型。docs/design/05-data-model.md の Session Store に対応する。
  * 寿命はストアの TTL で管理し、値には持たない。
+ * 一覧は SetStore に置き、並行更新で要素が落ちないようにする。
  */
 export interface SsoSession {
   readonly id: string;
@@ -14,7 +15,6 @@ export interface SsoSession {
   readonly authTime: number;
   readonly createdAt: number;
   readonly lastSeenAt: number;
-  readonly authorizedClients: ReadonlyArray<string>;
 }
 
 /** /authorize で検証済みのリクエスト。ログイン後に再検証せずそのまま code 発行に使う */
@@ -73,12 +73,15 @@ export interface AuthStores {
   readonly ssoSessions: KeyValueStore<SsoSession>;
   /** sid → SSO Session ID の逆引き */
   readonly sidIndex: KeyValueStore<string>;
+  /** SSO Session ID → code を発行した client_id の集合。Global Logout の通知先 */
+  readonly sessionClients: SetStore;
   readonly authorizationRequests: KeyValueStore<AuthorizationRequest>;
   readonly authorizationCodes: KeyValueStore<AuthorizationCode>;
   readonly refreshTokens: KeyValueStore<RefreshToken>;
-  /** familyId → その系列で発行した Refresh Token の一覧。一括失効に使う */
-  readonly refreshTokenFamilies: KeyValueStore<ReadonlyArray<string>>;
+  /** familyId → その系列で発行した Refresh Token の集合。一括失効に使う */
+  readonly refreshTokenFamilies: SetStore;
   readonly csrfTokens: KeyValueStore<CsrfToken>;
-  /** sid → Refresh Token 系列 ID の一覧。Global Logout で一括失効する */
-  readonly sidRefreshFamilies: KeyValueStore<ReadonlyArray<string>>;
+  /** sid → Refresh Token 系列 ID の集合。Global Logout で一括失効する */
+  readonly sidRefreshFamilies: SetStore;
+  readonly rateLimits: CounterStore;
 }

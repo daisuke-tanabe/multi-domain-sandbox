@@ -123,31 +123,41 @@ POST /auth/logout
 
 POST /auth/backchannel-logout
   1. logout_token 検証。aud が自サービスの clientId と一致すること
-  2. ストア <clientId>:sid のキー sid:<sid> の逆引きから、テナントを問わずそのサービスの全セッションを削除
+  2. ストア <clientId>:sid のキー sid:<sid> の集合から、テナントを問わずそのサービスの全セッションを削除
 
 内部ヘルパー
-  getAccessToken(session)
+  ensureFreshAccessToken(session)
     残り寿命が60秒未満なら /token refresh_token grant で更新
+    セッション単位のロック <tenantSlug>:<sessionId> を setIfAbsent で取る。TTL 10 秒
+    取得後にセッションを読み直し、別のリクエストが更新済みならそれを使う
+    取れなければ 100 ミリ秒間隔で最大 30 回読み直し、Refresh 済みなら続行
     invalid_grant ならセッション破棄し再ログインへ
   apiFetch(session, path, init)
-    Authorization: Bearer を付与してサービスの apiBaseUrl を呼ぶ
+    Authorization: Bearer を付与してサービスの apiBaseUrl を呼ぶ。期限切れ応答なら 1 回だけ Refresh して再試行
 ```
+
+Refresh Token は一回限りで、同じ値を二重に送ると Auth Server が再利用とみなして系列を失効させる。同じセッションで画面と API 中継が同時に走っても Refresh が 1 回になるように、ロックで直列化する。
 
 実装は `packages/oidc-client` に置き、次の構成にする。
 
-- `backchannelRoutes(deps, provider)` は `tenantContext` ミドルウェアより前に mount する。Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、ミドルウェア側にパスの特別扱いを持たせない
-- `oidcRoutes(deps, provider, renderError)` は `tenantContext` の後に mount し、Client を `c.get("tenantClient")` から受け取る
-- Cookie の読み書きは `cookies.ts` にまとめる。セッション Cookie と pre-auth Cookie の読み取り、書き込み、削除
-- ストアは `startWebCore` がサービスごとに `<clientId>:sess` `<clientId>:sid` `<clientId>:pre` のプレフィックスで作る。1 プロセス 1 サービスのため、ストア内のキーは `<tenantSlug>:<sessionId>`、`sid:<sid>`、`<tenantSlug>:<preAuthId>` とし clientId を含めない
+- `startWebCore` は `/healthz` を `tenantContext` より前に返す。ALB のヘルスチェックはテナントのホストで来ない
+- `backchannelRoutes(deps, provider)` は `tenantContext` ミドルウェアより前に mount する。Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、ミドルウェア側にパスの特別扱いを持たせない。IP あたり 60 回/分のレート制限と 16 KB の body 上限を持つ
+- `oidcRoutes(deps, provider, renderError)` は `tenantContext` の後に mount し、Client を `c.get("tenantClient")` から受け取る。`/auth/*` は IP あたり 60 回/分のレート制限と 16 KB の body 上限を持つ。`AUTH_ROUTE_RATE_LIMIT`
+- web アプリ全体に `Cache-Control: no-store` を付ける。ログイン済みページには CSRF トークンや role が載るため、bfcache や共有端末に残さない
+- Tenant Logout の CSRF 比較は `timingSafeEqualString` で行う
+- Cookie の読み書きは `cookies.ts` にまとめる。セッション Cookie と pre-auth Cookie の読み取り、書き込み、削除。Secure と `__Host-` は `PUBLIC_SCHEME` が `https` のときに付く
+- ストアは `startWebCore` がサービスごとに `<clientId>:sess` `<clientId>:sid` `<clientId>:pre` `<clientId>:lock` `<clientId>:ratelimit` のプレフィックスで作る。`<clientId>:sid` は `SetStore`、`<clientId>:ratelimit` は `CounterStore`。1 プロセス 1 サービスのため、ストア内のキーは `<tenantSlug>:<sessionId>`、`sid:<sid>`、`<tenantSlug>:<preAuthId>` とし clientId を含めない
+- `destroySession` はセッションの削除と同時に `<clientId>:sid` の集合から自分のキーを外す。`touchSession` は書く直前にセッションを読み直し、並行する Refresh が更新した Token を古い `lastSeenAt` 更新で上書きしない
+- `OidcClientDeps.sleep` はロック待ちの待機に使う。テストでは即時に返す実装を注入する
 - `PreAuthState` は state / nonce / codeVerifier / returnTo の 4 項目。id と作成時刻は持たず、寿命はストアの TTL で管理する
 - `TenantSession.tenantId` は常に文字列。null にならない
 
-設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。スキーマは `packages/web-core/src/config.ts` の `loadWebCoreConfig`。
+設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。スキーマは `packages/web-core/src/config.ts` の `loadWebCoreConfig`。`CLIENT_SECRET` は 43 文字以上でなければ起動に失敗する。`PUBLIC_SCHEME` が `https` のときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` も必須になる。
 
 ```typescript
 type ServiceConfig = {
   clientId: string;           // CLIENT_ID。crm
-  clientSecret: string;       // CLIENT_SECRET。Secret Store から注入。ローカルは crm-secret
+  clientSecret: string;       // CLIENT_SECRET。Secret Store から注入。43 文字以上。ローカルは crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU
   name: string;               // SERVICE_NAME。CRM。エラー画面やポータルの表示名
   baseHost: string;           // BASE_HOST。crm.sandbox.com。前にテナント slug が付く
   apiBaseUrl: string;         // API_BASE_URL。https://api.crm.sandbox.com

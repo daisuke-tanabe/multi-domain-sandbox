@@ -63,8 +63,9 @@ cp apps/cms-api/.env.example apps/cms-api/.env
 
 | アプリ | 変数 | 内容 |
 | --- | --- | --- |
-| crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。oidc_clients と oidc_client_secrets の登録値と一致させる。`CLIENT_SECRET` は active な secret のいずれか |
-| crm-web / cms-web | `BASE_HOST` `PUBLIC_SCHEME` | テナントのサブドメインを除いたホストと redirect_uri の scheme。`crm.localhost:3001` / `cms.localhost:3003`。Host `<tenant>.<BASE_HOST>` からテナント slug を決め、`<PUBLIC_SCHEME>://<host>/auth/callback` を redirect_uri にする。oidc_clients の `redirect_uri_template` を展開した値と一致する |
+| crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。oidc_clients と oidc_client_secrets の登録値と一致させる。`CLIENT_SECRET` は active な secret のいずれかで、43 文字以上でなければ起動に失敗する |
+| crm-web / cms-web | `BASE_HOST` `PUBLIC_SCHEME` | テナントのサブドメインを除いたホストと redirect_uri の scheme。`crm.localhost:3001` / `cms.localhost:3003`。Host `<tenant>.<BASE_HOST>` からテナント slug を決め、`<PUBLIC_SCHEME>://<host>/auth/callback` を redirect_uri にする。oidc_clients の `redirect_uri_template` を展開した値と一致する。`https` にすると Cookie に Secure と `__Host-` が付き、`REDIS_URL` と https の `ISSUER` / `API_BASE_URL` が必須になる |
+| auth-api | `ISSUER` | Auth Server の公開 URL。`https://` で始まると Cookie に Secure と `__Host-` が付き、`SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk` が必須になる |
 | crm-web / cms-web | `API_BASE_URL` | 呼び出す API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004` |
 | crm-api / cms-api | `API_BASE_URL` | この API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004`。この値がそのまま aud になり、oidc_clients.audience と一致させる。Host が URL のホストと異なるリクエストは 404。`*-api` は `PUBLIC_SCHEME` を持たない |
 | provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` の JSON 配列。本番ホストで oidc_clients、`<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets を投入する |
@@ -81,10 +82,10 @@ auth-api / crm-web / crm-api / cms-web / cms-api の 5 アプリが同時に起�
 
 | サービス | id | client_id | client_secret | redirect_uri_template | API |
 | --- | --- | --- | --- | --- | --- |
-| CRM | `01J00000000000000000000CRM` | `crm` | `crm-secret` | `http://{tenant}.crm.localhost:3001/auth/callback` | http://api.crm.localhost:3002 |
-| CMS | `01J00000000000000000000CMS` | `cms` | `cms-secret` | `http://{tenant}.cms.localhost:3003/auth/callback` | http://api.cms.localhost:3004 |
+| CRM | `01J00000000000000000000CRM` | `crm` | `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` | `http://{tenant}.crm.localhost:3001/auth/callback` | http://api.crm.localhost:3002 |
+| CMS | `01J00000000000000000000CMS` | `cms` | `cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA` | `http://{tenant}.cms.localhost:3003/auth/callback` | http://api.cms.localhost:3004 |
 
-client_secret は `identity.oidc_client_secrets` に SHA-256 ハッシュで入っている。シードの行は `01J0000000000000000CRMSEC1` と `01J0000000000000000CMSSEC1`。サービスは active な secret を複数持てるため、新しい secret を追加してから `CLIENT_SECRET` を差し替え、最後に旧行を revoked にすれば無停止で切り替えられる。本番の client_secret は 32 バイト以上の乱数にする。
+client_secret は `identity.oidc_client_secrets` に SHA-256 ハッシュで入っている。シードの行は `01J0000000000000000CRMSEC1` と `01J0000000000000000CMSSEC1`。サービスは active な secret を複数持てるため、新しい secret を追加してから `CLIENT_SECRET` を差し替え、最後に旧行を revoked にすれば無停止で切り替えられる。client_secret は 32 バイト以上の乱数にし、`CLIENT_SECRET` と provision の `SERVICES[].clientSecret` は 43 文字以上でなければ起動に失敗する。ローカルの固定値も公開前提の値でこの長さを満たす。
 
 | テナント | id | 名前 | 契約サービス |
 | --- | --- | --- | --- |
@@ -152,7 +153,7 @@ pnpm lint
 pnpm test
 ```
 
-テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/web-core/src/app.test.ts` は auth-api とサービスごとの web / api インスタンスをプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、Logout までを通す。テストは 121 件。
+テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/web-core/src/app.test.ts` は auth-api とサービスごとの web / api インスタンスをプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、Logout までを通す。テストは 130 件。同じ Refresh Token の同時提示、別 Client からの Refresh、再ログイン時の旧 SSO Session 破棄、ログインのレート制限、Tenant 側の同時 Refresh のような並行性と悪用への耐性も含む。
 
 起動中のサーバーと PostgreSQL に対する実 HTTP の確認は次で行う。tanaka.crm でのログイン、suzuki.crm と tanaka.cms への SSO、suzuki.cms の拒否、Tenant Logout、Global Logout を順に確認する。
 
@@ -176,8 +177,8 @@ AWS 側はまだテナントごとに Client を持つ旧構成のままで、�
 | Cognito | `COGNITO_ADAPTER=mock` | `COGNITO_ADAPTER=sdk`。USER_SRP_AUTH で実 User Pool に接続 |
 | Session / Code Store | `REDIS_URL` 未設定でインメモリ | `REDIS_URL` で ElastiCache Redis |
 | 署名鍵 | 起動ごとに生成 | `SIGNING_KEY_PEM` を Secrets Manager から注入 |
-| Cookie | プレフィックスなし | `COOKIE_SECURE=true` で `__Host-` / `__Secure-` |
-| client_secret | `CLIENT_SECRET` のローカル固定値。`crm-secret` / `cms-secret` | Terraform が 32 バイト以上の乱数を生成し Secrets Manager に保存。provision が oidc_client_secrets に active で upsert する |
+| Cookie | プレフィックスなし。`ISSUER` と `PUBLIC_SCHEME` が http | `ISSUER` が https、`PUBLIC_SCHEME` が https のとき `__Host-` / `__Secure-`。専用の切り替え変数はない。https のとき auth-api は `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk`、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` がないと起動しない |
+| client_secret | `CLIENT_SECRET` のローカル固定値。`crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` / `cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA` | Terraform が 32 バイト以上の乱数を生成し Secrets Manager に保存。provision が oidc_client_secrets に active で upsert する。どちらも 43 文字以上 |
 | API の aud | `API_BASE_URL` の `http://api.crm.localhost:3002` / `http://api.cms.localhost:3004` | 同じ仕組みで `https://api.<service>.<domain>` |
 | DB | docker compose の初期化 SQL | provision タスクがスキーマとシードを投入 |
 

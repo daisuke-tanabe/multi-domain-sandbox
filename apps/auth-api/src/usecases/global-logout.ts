@@ -1,9 +1,9 @@
 import { decrypt, getErrorMessage, randomToken, signJwt } from "@sandbox/shared";
-import { LOGOUT_TOKEN_TTL_SECONDS } from "../policy.ts";
+import { BACKCHANNEL_TIMEOUT_MS, LOGOUT_TOKEN_TTL_SECONDS } from "../policy.ts";
 import type { SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "./deps.ts";
 import { revokeRefreshTokenFamily } from "./refresh-tokens.ts";
-import { destroySsoSession } from "./sso-session.ts";
+import { destroySsoSession, listAuthorizedClients } from "./sso-session.ts";
 
 interface BackchannelResult {
   readonly clientId: string;
@@ -38,7 +38,10 @@ export function issueLogoutToken(deps: AuthDeps, clientId: string, sid: string):
  * 4. code を発行した Client へ Back-Channel Logout を並列送信。失敗しても完了扱い
  */
 export async function globalLogout(deps: AuthDeps, session: SsoSession): Promise<void> {
-  const families = (await deps.stores.sidRefreshFamilies.get(session.sid)) ?? [];
+  const [families, authorizedClients] = await Promise.all([
+    deps.stores.sidRefreshFamilies.members(session.sid),
+    listAuthorizedClients(deps, session),
+  ]);
   await Promise.all(families.map((familyId) => revokeRefreshTokenFamily(deps, familyId)));
   await deps.stores.sidRefreshFamilies.delete(session.sid);
 
@@ -46,7 +49,7 @@ export async function globalLogout(deps: AuthDeps, session: SsoSession): Promise
   await destroySsoSession(deps, session);
 
   const notifications = await Promise.all(
-    session.authorizedClients.map((clientId) => notifyClient(deps, clientId, session.sid)),
+    authorizedClients.map((clientId) => notifyClient(deps, clientId, session.sid)),
   );
   deps.logger.info("global logout completed", {
     userId: session.userId,
@@ -77,15 +80,17 @@ async function notifyClient(
   sid: string,
 ): Promise<BackchannelResult> {
   const client = await deps.identity.findClient(clientId);
-  if (client === undefined || client.backchannelLogoutUri === null) {
+  if (client === undefined || client.status !== "active" || client.backchannelLogoutUri === null) {
     return { clientId, ok: false, reason: "no_backchannel_uri" };
   }
   try {
     const logoutToken = await issueLogoutToken(deps, clientId, sid);
+    // 応答しない Client でユーザーのログアウトを待たせない
     const res = await deps.fetch(client.backchannelLogoutUri, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", "Cache-Control": "no-store" },
       body: new URLSearchParams({ logout_token: logoutToken }).toString(),
+      signal: AbortSignal.timeout(BACKCHANNEL_TIMEOUT_MS),
     });
     if (!res.ok) return { clientId, ok: false, reason: `status ${res.status}` };
     return { clientId, ok: true };

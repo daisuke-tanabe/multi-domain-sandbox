@@ -115,8 +115,9 @@ aud はサービスごとに異なる。CRM 向けに発行した Token を api.
 | --- | --- |
 | 形式 | 256bitランダム。不透明文字列 |
 | 寿命 | 12時間。SSO Session の絶対期限と同じ |
-| ローテーション | 使用ごとに新しい値を発行。旧値は失効 |
-| 再利用検知 | 失効済み値が使われたら同系列全体を失効 |
+| ローテーション | 使用ごとに新しい値を発行。旧値は失効。消費は GETDEL で先に行い、直後に rotated として書き戻してから検証に進む |
+| 再利用検知 | rotated / revoked の値が使われたら同系列全体を失効。別 Client からの提示も同様 |
+| 同時提示 | 同じ値を同時に 2 回提示しても成功は 1 つ。もう一方は invalid_grant で、系列は失効しない |
 | 紐付け | user_id / tenant_id / sid / client_id / family_id |
 | 失効条件 | SSO Session 失効、ユーザー無効化、テナント停止、契約解除、Membership 削除、Tenant Logout、Global Logout |
 

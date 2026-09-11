@@ -46,13 +46,13 @@ Strict はこれらのクロスサイトナビゲーションで Cookie を送�
 
 ### ローカル開発時の扱い
 
-`__Host-` はHTTPSが必須。ローカルはHTTPのためプレフィックスなしの名前に切り替える。切り替えは設定値で行い、本番ビルドではプレフィックスありを強制する。
+`__Host-` はHTTPSが必須。ローカルはHTTPのためプレフィックスなしの名前に切り替える。切り替えのための専用の設定値は持たず、公開 scheme から導く。auth-api は `ISSUER` が `https://` で始まるとき、`*-web` は `PUBLIC_SCHEME` が `https` のときに Secure とプレフィックスを付ける。https のときは本番の値が揃っていることも起動時に検証する。auth-api は `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk`、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` が必須で、欠けると起動に失敗する。
 
 ## セッションIDのローテーション
 
 | タイミング | 動作 |
 | --- | --- |
-| Cognito認証成功 | 新しい SSO Session ID を発行。認証前に存在した匿名 Cookie があれば破棄 |
+| Cognito認証成功 | 新しい SSO Session ID を発行。Cookie が指す旧 SSO Session があればストアから破棄してから新しい Cookie を書く。Cookie の上書きだけでは旧セッションが期限まで有効なまま残る |
 | code交換成功 | 新しい Tenant Session ID を発行。既存の Tenant Session があれば削除 |
 | Refresh Token更新 | Tenant Session ID は変更しない。Token のみ更新 |
 | Logout | Cookie を Max-Age=0 で削除し、ストアからも削除 |

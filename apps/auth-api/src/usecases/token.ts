@@ -13,6 +13,7 @@ import { checkTenantAccess } from "./authorize.ts";
 import type { AuthDeps } from "./deps.ts";
 import { issueTokens } from "./issue-tokens.ts";
 import {
+  consumeRefreshToken,
   createRefreshTokenFamily,
   revokeRefreshTokenFamily,
   rotateRefreshToken,
@@ -44,8 +45,15 @@ export async function authenticateClient(
   );
   const separator = decoded.indexOf(":");
   if (separator <= 0) return err({ kind: "invalid_client" });
-  const clientId = decodeURIComponent(decoded.slice(0, separator));
-  const clientSecret = decodeURIComponent(decoded.slice(separator + 1));
+  let clientId: string;
+  let clientSecret: string;
+  try {
+    clientId = decodeURIComponent(decoded.slice(0, separator));
+    clientSecret = decodeURIComponent(decoded.slice(separator + 1));
+  } catch {
+    // 不正な percent-encoding。認証失敗として扱う
+    return err({ kind: "invalid_client" });
+  }
 
   const client = await identity.findClient(clientId);
   if (client === undefined || client.status !== "active") return err({ kind: "invalid_client" });
@@ -165,18 +173,27 @@ export async function refreshAccessToken(
   if (refreshTokenValue === undefined || refreshTokenValue === "") {
     return err({ kind: "invalid_grant", reason: "refresh_token_missing" });
   }
-  const stored = await deps.stores.refreshTokens.get(refreshTokenValue);
-  if (stored === undefined)
+  // 先に一回限りで消費する。同じ値を同時に提示されても成功するのは 1 つだけ
+  const consumed = await consumeRefreshToken(deps, refreshTokenValue);
+  if (consumed.kind === "unknown")
     return err({ kind: "invalid_grant", reason: "refresh_token_unknown_or_expired" });
-  if (stored.clientId !== client.clientId)
-    return err({ kind: "invalid_grant", reason: "client_mismatch" });
-  if (stored.status !== "active") {
+  if (consumed.kind === "reused") {
     deps.logger.warn("refresh token reuse detected", {
+      clientId: client.clientId,
+      familyId: consumed.token.familyId,
+    });
+    await revokeRefreshTokenFamily(deps, consumed.token.familyId);
+    return err({ kind: "invalid_grant", reason: "refresh_token_reused" });
+  }
+  const stored = consumed.token;
+  if (stored.clientId !== client.clientId) {
+    // 別 Client から提示された Token は漏洩とみなし、系列ごと失効させる
+    deps.logger.warn("refresh token presented by another client", {
       clientId: client.clientId,
       familyId: stored.familyId,
     });
     await revokeRefreshTokenFamily(deps, stored.familyId);
-    return err({ kind: "invalid_grant", reason: "refresh_token_reused" });
+    return err({ kind: "invalid_grant", reason: "client_mismatch" });
   }
 
   const validated = await validateRefreshContext(deps, client, stored);

@@ -5,8 +5,8 @@ import {
   FakeClock,
   generateCodeVerifier,
   generateSigningKey,
+  createMemoryStoreFactory,
   hashSecret,
-  MemoryKeyValueStore,
   parseEncryptionKey,
   silentLogger,
   type FetchLike,
@@ -140,7 +140,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
   const deps: AuthDeps = {
     issuer: ISSUER,
     clock,
-    stores: createAuthStores(() => new MemoryKeyValueStore(clock)),
+    stores: createAuthStores(createMemoryStoreFactory(clock)),
     identity,
     cognito: new MockCognitoAuthenticator(mockUsers, clock),
     signingKey: await generateSigningKey(),

@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@hono/node-server": "catalog:",
+    "hono": "catalog:",
     "ioredis": "catalog:",
     "jose": "catalog:",
     "pg": "catalog:",

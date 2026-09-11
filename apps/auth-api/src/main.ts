@@ -68,7 +68,7 @@ const deps: AuthDeps = {
   fetch: nodeFetch,
 };
 
-const app = createAuthApp({ deps, cookiePolicy: { secure: config.COOKIE_SECURE } });
+const app = createAuthApp({ deps, cookiePolicy: { secure: config.cookieSecure } });
 
 serve({ fetch: app.fetch, port: config.PORT }, (info) => {
   logger.info("auth-api listening", {
