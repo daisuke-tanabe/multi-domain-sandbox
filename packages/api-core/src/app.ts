@@ -4,6 +4,7 @@ import { secureHeaders } from "hono/secure-headers";
 import type { Clock, JwksSource, Logger } from "@sandbox/shared";
 import { authenticate, type ApiEnv } from "./auth/middleware.ts";
 import type { IdentityReader } from "./ports/identity-reader.ts";
+import type { PermissionReader } from "./ports/permission-reader.ts";
 import type { ProjectRepository } from "./ports/project-repository.ts";
 import { meRoutes } from "./routes/me.ts";
 import { projectRoutes } from "./routes/projects.ts";
@@ -14,6 +15,8 @@ export interface ApiAppOptions {
   readonly audience: string;
   readonly jwks: JwksSource;
   readonly identity: IdentityReader;
+  /** サービス固有の権限の上書き。サービス自身の DB */
+  readonly permissions: PermissionReader;
   readonly projects: ProjectRepository;
   readonly clock: Clock;
   readonly logger: Logger;

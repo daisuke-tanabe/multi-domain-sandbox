@@ -6,7 +6,11 @@ import {
   RemoteJwksSource,
   systemClock,
 } from "@sandbox/shared";
-import { PgIdentityReader, PgProjectRepository } from "./adapters/pg-repositories.ts";
+import {
+  PgIdentityReader,
+  PgPermissionReader,
+  PgProjectRepository,
+} from "./adapters/pg-repositories.ts";
 import { createApiApp } from "./app.ts";
 import { loadApiCoreConfig } from "./config.ts";
 
@@ -24,6 +28,7 @@ export function startApiCore(component: string): void {
     audience: config.API_BASE_URL,
     jwks: new RemoteJwksSource(jwksUrl, nodeFetch, systemClock),
     identity: new PgIdentityReader(pool),
+    permissions: new PgPermissionReader(pool),
     projects: new PgProjectRepository(pool),
     clock: systemClock,
     logger,

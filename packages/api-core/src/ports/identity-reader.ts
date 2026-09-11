@@ -16,12 +16,13 @@ export interface IdentityTenant {
   readonly status: TenantStatus;
 }
 
+/** このテナントのこのサービスへの割り当て。tenant_service_members */
 export interface IdentityMembership {
   readonly role: Role;
   readonly status: MembershipStatus;
 }
 
-/** Access Token の sub と tenant_id に対応する行。存在しないものは undefined */
+/** Access Token の sub / tenant_id / client_id に対応する行。存在しないものは undefined */
 export interface AccessContext {
   readonly user: IdentityUser | undefined;
   readonly tenant: IdentityTenant | undefined;
@@ -29,6 +30,6 @@ export interface AccessContext {
 }
 
 export interface IdentityReader {
-  /** 1 リクエストにつき 1 回、user / tenant / membership をまとめて引く */
-  findAccessContext(userId: string, tenantId: string): Promise<AccessContext>;
+  /** 1 リクエストにつき 1 回、user / tenant / このサービスへの割り当てをまとめて引く */
+  findAccessContext(userId: string, tenantId: string, clientId: string): Promise<AccessContext>;
 }

@@ -4,6 +4,7 @@
 -- サービス (oidc_clients) とテナント (tenants) は別の軸。
 -- テナントは顧客企業であり、複数のサービスを契約できる (tenant_services)。
 -- 認可リクエストのテナントは redirect_uri をサービスのテンプレートに当てて slug を取り出し、tenants から引く。
+-- サービスにログインできるかは tenant_service_members で決める。tenant_members は会社横断の役割にだけ使う。
 -- 主キーはすべてサロゲート ID。client_id や slug は外部に見せる識別子で、UNIQUE 制約で守る。
 
 SET ROLE sandbox_auth;
@@ -38,6 +39,7 @@ CREATE TABLE identity.tenants (
 CREATE TRIGGER tenants_touch_updated_at BEFORE UPDATE ON identity.tenants
   FOR EACH ROW EXECUTE FUNCTION identity.touch_updated_at();
 
+-- 会社横断の役割。管理者や請求担当のような、サービスに依らない立場を表す。ログイン可否には使わない
 CREATE TABLE identity.tenant_members (
   tenant_id     TEXT NOT NULL REFERENCES identity.tenants (id) ON DELETE CASCADE,
   user_id       TEXT NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
@@ -91,6 +93,25 @@ CREATE TABLE identity.tenant_services (
 );
 CREATE INDEX tenant_services_oidc_client_id_idx ON identity.tenant_services (oidc_client_id);
 CREATE TRIGGER tenant_services_touch_updated_at BEFORE UPDATE ON identity.tenant_services
+  FOR EACH ROW EXECUTE FUNCTION identity.touch_updated_at();
+
+-- サービスごとの割り当て。招待はこの単位で行い、役割もサービスごとに持つ
+-- 細かい権限はサービス側の DB (business.member_permissions) で役割の既定に足し引きする
+CREATE TABLE identity.tenant_service_members (
+  tenant_id       TEXT NOT NULL,
+  oidc_client_id  TEXT NOT NULL,
+  user_id         TEXT NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invited', 'disabled')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, oidc_client_id, user_id),
+  -- 契約のないサービスに人を割り当てられない
+  FOREIGN KEY (tenant_id, oidc_client_id)
+    REFERENCES identity.tenant_services (tenant_id, oidc_client_id) ON DELETE CASCADE
+);
+CREATE INDEX tenant_service_members_user_id_idx ON identity.tenant_service_members (user_id);
+CREATE TRIGGER tenant_service_members_touch_updated_at BEFORE UPDATE ON identity.tenant_service_members
   FOR EACH ROW EXECUTE FUNCTION identity.touch_updated_at();
 
 RESET ROLE;

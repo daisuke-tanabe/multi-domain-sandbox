@@ -4,8 +4,9 @@
 
 永続データは Identity DB と Business DB に分け、揮発データは Session Store に置く。
 Identity DB は Auth Server が所有し、API Server は読み取り専用で参照する。判断事項D3。
-ユーザーとテナントは別概念とし、tenant_members が多対多を表す。認可は必ず tenant_members を根拠にする。
+ユーザーとテナントは別概念とし、サービスへのログイン可否と役割は tenant_service_members がテナント × サービス × ユーザーの単位で表す。認可は必ず tenant_service_members を根拠にする。tenant_members は会社横断の役割にだけ使い、ログイン可否には使わない。判断事項D16。
 サービスとテナントも別概念とし、tenant_services が契約を表す。OIDC Client はサービスと1対1で、テナントには紐付かない。判断事項D13。
+細かい権限は Identity DB にも Token にも置かず、各サービスの Business DB の member_permissions が役割の既定に対する allow / deny を持つ。
 主キーはすべてサロゲート ID とし、client_id や slug は UNIQUE 制約で守る公開識別子にする。redirect_uri はサービスごとの `redirect_uri_template` で登録し、client_secret は oidc_client_secrets に複数行持てる。判断事項D15。
 
 ## 全体像
@@ -15,13 +16,15 @@ flowchart LR
     subgraph IdentityDB ["Identity DB  所有: Auth Server"]
         users
         tenants
-        tenant_members
+        tenant_members["tenant_members<br/>会社横断の役割"]
         oidc_clients
         oidc_client_secrets
-        tenant_services
+        tenant_services["tenant_services<br/>契約"]
+        tenant_service_members["tenant_service_members<br/>サービスごとの割り当てと役割"]
     end
     subgraph BusinessDB ["Business DB  所有: API Server"]
         projects["projects 等の業務テーブル<br/>すべて tenant_id を持つ"]
+        member_permissions["member_permissions<br/>役割の既定への allow / deny"]
     end
     subgraph SessionStore ["Session Store  Redis想定"]
         sso["sso:sess:*"]
@@ -44,8 +47,11 @@ flowchart LR
     tenant_members --> tenants
     tenant_services --> tenants
     tenant_services --> oidc_clients
+    tenant_service_members --> tenant_services
+    tenant_service_members --> users
     oidc_client_secrets --> oidc_clients
     projects -. "tenant_id参照。FKなし" .-> tenants
+    member_permissions -. "tenant_id / user_id / client_id 参照。FKなし" .-> tenant_service_members
 ```
 
 Identity DB と Business DB は物理的に同一インスタンスでもよいが、スキーマを分け、API Server の Identity スキーマへの権限は SELECT のみにする。サンドボックスでは `identity` スキーマと `business` スキーマに分けている。
@@ -105,10 +111,10 @@ CREATE TABLE tenant_members (
 CREATE INDEX tenant_members_user_id_idx ON tenant_members (user_id);
 ```
 
-- 1ユーザーが複数テナントに所属できる。テナントごとに role が異なる
-- status=active のみをアクセス可とする。存在しなければ no_membership、存在するが active でなければ membership_inactive
-- role は固定enum。判断事項D8。細粒度権限は API Server の Role→Permission 表で解決する
-- Membership はサービスに依存しない。tanaka の owner は tanaka が契約するすべてのサービスで owner
+- 会社横断の役割。管理者や請求担当のような、サービスに依らない立場を表す。判断事項D16
+- ログイン可否には使わない。`/authorize`、refresh_token grant、API Server はこの表を参照しない
+- サービスへの割り当てと役割は tenant_service_members に持つ。tanaka の owner であっても、tanaka の cms に割り当てがなければ tanaka.cms には入れない
+- role は固定enum。判断事項D8
 
 ### oidc_clients
 
@@ -169,10 +175,35 @@ CREATE TABLE tenant_services (
 CREATE INDEX tenant_services_oidc_client_id_idx ON tenant_services (oidc_client_id);
 ```
 
-- 契約。テナントがそのサービスを利用できるかを表す
-- `/authorize` と refresh_token grant は tenants.status の後、tenant_members の前にこの表を確認する。行がないか status が active でなければ not_contracted。検索キーは oidc_clients.id
-- ポータルは所属テナントごとに、この表で active なサービスだけを入口として表示する
-- テナント追加は tenants と tenant_services の行を足すだけで完了する。redirect_uri はテンプレートから導くため、テナントごとの登録は不要
+- 契約。テナントがそのサービスを利用できるかを表す。購買、請求、席数、解約はこの単位で行う
+- `/authorize` と refresh_token grant は tenants.status の後、tenant_service_members の前にこの表を確認する。行がないか status が active でなければ not_contracted。検索キーは oidc_clients.id
+- ポータルは、この表が active で、かつ tenant_service_members に割り当てがあるサービスだけを入口として表示する
+- テナント追加は tenants と tenant_services の行と、利用者分の tenant_service_members を足すだけで完了する。redirect_uri はテンプレートから導くため、テナントごとの登録は不要
+
+### tenant_service_members
+
+```sql
+CREATE TABLE tenant_service_members (
+  tenant_id       TEXT NOT NULL,
+  oidc_client_id  TEXT NOT NULL,
+  user_id         TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
+  status          TEXT NOT NULL DEFAULT 'active', -- active / invited / disabled
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, oidc_client_id, user_id),
+  FOREIGN KEY (tenant_id, oidc_client_id)
+    REFERENCES tenant_services (tenant_id, oidc_client_id) ON DELETE CASCADE
+);
+CREATE INDEX tenant_service_members_user_id_idx ON tenant_service_members (user_id);
+```
+
+- サービスごとの割り当て。招待はこの単位で行い、役割もサービスごとに持つ。判断事項D16
+- 複合外部キーで契約を参照するため、契約のないサービスに人を割り当てられない。契約を消せば割り当ても CASCADE で消える
+- `/authorize` と refresh_token grant は契約の後にこの表を `(tenant_id, oidc_client_id, user_id)` で引く。行がなければ no_membership、あるが active でなければ membership_inactive。no_membership は「このテナントのこのサービスに割り当てがない」で、別サービスの割り当てでは通らない
+- API Server は Token の tenant_id と client_id、sub でこの表を毎リクエスト再検証し、role を取る。role は Token に載せない
+- 1 ユーザーが同じテナントでもサービスごとに違う役割を持てる。alice は tanaka の crm と cms で owner、suzuki の crm で viewer
+- 細かい権限はこの表には持たない。役割の既定に対する個別の許可 / 拒否は各サービスの DB の member_permissions が持つ
 
 ### 初期データ
 
@@ -207,15 +238,24 @@ client_secret oidc_client_secrets。
 
 suzuki.cms.localhost:3003 の redirect_uri は cms のテンプレートに一致し slug=suzuki も tenants にあるため `/authorize` は受理するが、契約がないため access_denied になる。
 
-Membership tenant_members。
+サービスごとの割り当て tenant_service_members。
+
+| user | tenant | oidc_client_id | サービス | role |
+| --- | --- | --- | --- | --- |
+| alice | tanaka | 01J00000000000000000000CRM | crm | owner |
+| alice | tanaka | 01J00000000000000000000CMS | cms | owner |
+| alice | suzuki | 01J00000000000000000000CRM | crm | viewer |
+| bob | suzuki | 01J00000000000000000000CRM | crm | admin |
+
+suzuki の cms は契約がないため割り当ても存在しない。bob は tanaka のどのサービスにも割り当てがなく、tanaka.crm を開くと no_membership になる。
+carol は Cognito 側にのみ存在し、どのサービスにも割り当てがない。ログインは成功するが `/authorize` で no_membership になり、ポータルには「利用できるサービスがありません。管理者に招待を依頼してください。」と出る。
+
+会社横断の役割 tenant_members。ログイン可否には使わない。
 
 | user | tenant | role |
 | --- | --- | --- |
 | alice | tanaka | owner |
-| alice | suzuki | viewer |
-| bob | suzuki | admin |
-
-carol は Cognito 側にのみ存在し、どのテナントにも所属しない。ログインは成功するが `/authorize` で no_membership になる。
+| bob | suzuki | owner |
 
 ## Business DB
 
@@ -245,6 +285,34 @@ CREATE POLICY projects_tenant_isolation ON projects
 ```
 
 API Server はトランザクション開始時に `SET LOCAL app.tenant_id = :tenant_id` を Token 由来の値で実行する。詳細は [07-api-auth-design.md](./07-api-auth-design.md)。
+
+### member_permissions
+
+サービス固有の細かい権限。役割から導く既定の権限に対して、個別に許可 / 拒否を上書きする。判断事項D16。
+
+```sql
+CREATE TABLE member_permissions (
+  tenant_id   TEXT NOT NULL,   -- Identity DB の tenants.id
+  user_id     TEXT NOT NULL,   -- users.id
+  client_id   TEXT NOT NULL,   -- このサービスの client_id。サンドボックスは 1 DB を複数サービスで共有するため持つ
+  permission  TEXT NOT NULL,   -- projects:write など。API Server の permission 名
+  effect      TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, user_id, client_id, permission)
+);
+ALTER TABLE member_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE member_permissions FORCE ROW LEVEL SECURITY;
+CREATE POLICY member_permissions_tenant_isolation ON member_permissions
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+```
+
+- Token には載せない。API Server がリクエストごとに `app.tenant_id` を設定したトランザクションで読む。変更は次のリクエストから反映される
+- 権限の確定は 役割の既定 ∪ allow − deny。deny が優先し、API Server が知らない permission 名の行は無視する
+- サンドボックスでは crm-api と cms-api が同じ DB を使うため client_id 列で分ける。実運用では各サービスの DB がこの表を持ち、client_id 列は不要になる
+- Identity DB には置かない。Auth Server がサービスごとの権限語彙を知る必要をなくすため
+
+初期データは alice が tanaka の cms で `projects:write` を deny。alice は tanaka.cms の owner だが Project を作れない。
 
 ## Session Store
 
@@ -445,5 +513,5 @@ interface CounterStore {
 | 障害 | 影響 | 対処 |
 | --- | --- | --- |
 | Session Store 停止 | 新規ログインと Refresh が失敗。既存 Tenant Session も参照できない | Redis の冗長化。Auth Code は揮発を許容 |
-| Identity DB 停止 | `/authorize` の契約・Membership 判定と API 認可が失敗 | API Server は Membership を短時間キャッシュしてよいが、キャッシュ期間は Access Token 寿命以下 |
+| Identity DB 停止 | `/authorize` の契約・割り当て判定と API 認可が失敗 | API Server は割り当てを短時間キャッシュしてよいが、キャッシュ期間は Access Token 寿命以下 |
 | Cognito 停止 | 新規認証のみ失敗。SSO Session 有効中のユーザーは影響なし | Cognito Token の更新失敗は SSO Session 失効として扱う |

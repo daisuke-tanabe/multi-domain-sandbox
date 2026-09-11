@@ -16,8 +16,8 @@ export type AccessCheckError = {
  *   1. ユーザーが active
  *   2. テナントが active
  *   3. テナントがこのサービスを契約している (tenant_services)
- *   4. ユーザーがテナントに active で所属している (tenant_members)
- * 契約と Membership は独立なので並列に引き、判定は上の順で行う。
+ *   4. ユーザーがこのテナントのこのサービスに active で割り当てられている (tenant_service_members)
+ * 契約と割り当ては独立なので並列に引き、判定は上の順で行う。細かい権限はサービス側が判定する。
  */
 export async function checkTenantAccess(
   identity: IdentityRepository,
@@ -28,7 +28,7 @@ export async function checkTenantAccess(
   const [user, contract, membership] = await Promise.all([
     identity.findUserById(userId),
     identity.findContract(tenant.id, client.id),
-    identity.findMembership(tenant.id, userId),
+    identity.findServiceMembership(tenant.id, client.id, userId),
   ]);
   if (user === undefined || user.status !== "active")
     return err({ kind: "access_denied", reason: "user_disabled" });

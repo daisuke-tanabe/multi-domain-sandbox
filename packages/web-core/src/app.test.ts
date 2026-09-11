@@ -236,6 +236,18 @@ describe("E12 services share the SSO session but contracts gate access", () => {
     );
   });
 
+  test("a service-side deny override blocks an owner on tanaka.cms from creating a project", async () => {
+    const page = await browser.navigate(`${TANAKA_CMS_ORIGIN}/projects`);
+    const denied = await browser.submitForm(`${TANAKA_CMS_ORIGIN}/projects`, {
+      csrf: readPageCsrf(page.body),
+      name: "cms attempt",
+    });
+
+    expect(page.body).toContain("role: owner");
+    expect(denied.body).toContain("この操作を行う権限がありません");
+    expect(denied.body).not.toContain("cms attempt");
+  });
+
   test("suzuki.cms is refused because suzuki has no cms contract", async () => {
     const result = await browser.navigate(`${SUZUKI_CMS_ORIGIN}/projects`);
 

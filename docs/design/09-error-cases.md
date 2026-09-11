@@ -29,16 +29,16 @@
 | A8 | code_challenge なし / method が S256 以外 | Auth | 302 error=invalid_request | 同上 | |
 | A9 | state なし | Auth | 302 error=invalid_request | 同上 | |
 | A10 | nonce なし | Auth | 302 error=invalid_request | 同上 | |
-| A11 | tenant_members なし | Auth | 302 error=access_denied&error_description=no_membership&state | Tenant 403「テナント tanaka へのアクセス権がありません」 | ログ。SSO Session は維持 |
+| A11 | tenant_service_members にこのテナント × このサービスの割り当てがない。別サービスの割り当てや tenant_members の会社横断の役割があっても該当する | Auth | 302 error=access_denied&error_description=no_membership&state | Tenant 403「テナント tanaka へのアクセス権がありません」 | ログ。SSO Session は維持 |
 | A12 | tenant status が suspended | Auth | 302 error=access_denied&error_description=tenant_suspended | Tenant 403「テナントは利用停止中です」 | ログ |
 | A13 | user status が disabled | Auth | 302 error=access_denied&error_description=user_disabled | Tenant 403「アクセス権がありません」 | ログ |
 | A14 | SSO Session の Cookie はあるがストアにない | Auth | ログイン画面へ | ログインフォーム | Cookie 削除 |
 | A15 | SSO Session アイドル / 絶対期限切れ | Auth | ログイン画面へ | ログインフォーム | SSO Session 削除 |
 | A16 | 認可リクエスト保存失敗。ストア障害 | Auth | 302 error=server_error | Tenant「一時的なエラーです」 | アラート |
 | A17 | tenant_services に契約なし / suspended | Auth | 302 error=access_denied&error_description=not_contracted | Tenant 403「テナント suzuki は CMS を契約していません」 | ログ。SSO Session は維持 |
-| A18 | tenant_members はあるが status が active でない | Auth | 302 error=access_denied&error_description=membership_inactive | Tenant 403「アクセス権がありません」 | ログ |
+| A18 | tenant_service_members に割り当てはあるが status が active でない | Auth | 302 error=access_denied&error_description=membership_inactive | Tenant 403「アクセス権がありません」 | ログ |
 
-アクセス判定は A13 → A12 → A17 → A11 / A18 の順に行い、最初に失敗した理由を error_description に載せる。users、tenant_services、tenant_members の取得は並列に行い、評価順序だけをこの順に固定する。
+アクセス判定は A13 → A12 → A17 → A11 / A18 の順に行い、最初に失敗した理由を error_description に載せる。users、tenant_services、tenant_service_members の取得は並列に行い、評価順序だけをこの順に固定する。no_membership は「このテナントのこのサービスに割り当てがない」を意味し、テナント単位の所属の有無ではない。
 
 ## 2. ログイン。GET/POST /login
 
@@ -94,7 +94,7 @@
 | T8 | 紐付く SSO Session が失効済み | Auth | 400 invalid_grant | |
 | T9 | refresh_token 不在 / 期限切れ / 失効済み | Auth | 400 invalid_grant | 失効済み値の再利用なら系列全体を失効。警告ログ |
 | T10 | refresh_token の client_id 不一致 | Auth | 400 invalid_grant | 警告ログ |
-| T11 | Refresh 時に Membership なし / inactive | Auth | 400 invalid_grant | Refresh Token 失効 |
+| T11 | Refresh 時にこのサービスへの割り当てなし / inactive | Auth | 400 invalid_grant | Refresh Token 失効 |
 | T12 | Refresh 時に user disabled | Auth | 400 invalid_grant | Refresh Token を失効 |
 | T15 | Refresh 時に契約なし / suspended | Auth | 400 invalid_grant | Refresh Token 失効 |
 | T16 | Refresh 時に tenant suspended | Auth | 400 invalid_grant | Refresh Token 失効 |
@@ -113,9 +113,9 @@
 | P6 | exp 切れ | API | 401 invalid_token。error_description=expired | Tenant 側は Refresh 後に1回だけ再試行 |
 | P7 | 必須 claim 欠落 | API | 401 invalid_token | |
 | P8 | users.status が disabled | API | 401 | ログ |
-| P9 | tenant_members なし | API | 403 forbidden | ログ。テナント単位で監視 |
+| P9 | tenant_service_members に Token の client_id のサービスへの割り当てがない / active でない。別サービスの割り当てでは通らない | API | 403 forbidden | ログ。テナント単位で監視 |
 | P10 | tenant status が suspended | API | 403 forbidden | |
-| P11 | permission 不足 | API | 403 forbidden | ログ |
+| P11 | permission 不足。役割の既定にない場合と、自サービス DB の member_permissions の deny で外された場合の両方 | API | 403 forbidden | ログ |
 | P12 | 他テナントのリソース ID | API | 404 not_found。存在の有無を漏らさない | 403 の代わりに 404 を使う理由をコードコメントに残す |
 | P13 | JWKS 取得失敗かつキャッシュなし | API | 503 | アラート |
 | P14 | Identity DB 障害 | API | 503 | アラート。キャッシュがあれば寿命内のみ利用 |
@@ -141,8 +141,10 @@
 | M1 | 署名鍵ローテーション中に旧 kid の Token | Tenant / API | JWKS に旧鍵が残っていれば検証成功。削除は Token 最大寿命経過後 |
 | M2 | Client secret ローテーション中 | Auth | oidc_client_secrets に新旧 2 行が active の間はどちらでも `/token` を通す。サービスの `CLIENT_SECRET` 切替後に旧行を revoked にする |
 | M3 | 時刻ずれ | Tenant / API | 30 秒の許容スキュー。NTP 同期を必須にする |
-| M4 | テナント削除 | Auth / API | tenant_members / tenant_services を CASCADE 削除。oidc_clients は残る。redirect_uri はテンプレート由来のため削除対象がない。既存 Token は Membership 再検証で拒否 |
-| M6 | 契約解除 | Auth | tenant_services を削除または suspended。`/authorize` と Refresh で not_contracted。既存 Access Token は最大15分で失効 |
+| M4 | テナント削除 | Auth / API | tenant_members / tenant_services / tenant_service_members を CASCADE 削除。oidc_clients は残る。redirect_uri はテンプレート由来のため削除対象がない。既存 Token は割り当て再検証で拒否 |
+| M6 | 契約解除 | Auth | tenant_services を削除または suspended。削除すれば tenant_service_members も CASCADE で消える。`/authorize` と Refresh で not_contracted。既存 Access Token は最大15分で失効 |
+| M8 | サービスからの割り当て解除 | Auth / API | tenant_service_members を削除または disabled。`/authorize` と Refresh で no_membership / membership_inactive、API は次のリクエストから 403。同テナントの他サービスには影響しない |
+| M9 | 権限の上書き変更 | API | 自サービス DB の member_permissions を更新。Token を再発行せず次のリクエストから反映される |
 | M7 | サービス廃止 | Auth / Tenant | oidc_clients を disabled。A2 で拒否。oidc_client_secrets と tenant_services は oidc_clients.id を参照するため行を消せば CASCADE で消える。そのサービスの web と api のプロセスを停止し、provision の SERVICES から除く |
 | M5 | Cognito でユーザー削除 | Auth | 次回ログインで L4。既存 SSO Session は期限まで残るため、削除時に Auth の管理 API から SSO Session を失効させる運用を定義 |
 

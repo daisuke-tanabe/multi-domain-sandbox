@@ -22,8 +22,8 @@
 | Token / Cookie のログ出力禁止 | ログフィールドの許可リスト方式。秘密値は型でマーク | 本書 |
 | Cognito Refresh Token のサービス間共有禁止 | Auth Server 内で暗号化保存。境界外へ出す経路を持たない | 04 |
 | Cognito Token の URL 埋め込み禁止 | Front Channel を通る値は code と state のみ | 02 |
-| Tenant ID だけを根拠にした認可禁止 | Token の tenant_id + tenant_members 再検証 | 07 |
-| Tenant Membership による認可 | 毎リクエスト Identity DB 参照 | 07 |
+| Tenant ID だけを根拠にした認可禁止 | Token の tenant_id と client_id + tenant_service_members 再検証 | 07 |
+| サービスへの割り当てによる認可 | 毎リクエスト Identity DB 参照。権限の上書きは自サービス DB 参照。Token に role も permission も載せない | 07 |
 | BOLA / IDOR 対策 | Repository の tenant_id 必須化と RLS | 07 |
 
 ## 脅威と対策
@@ -76,8 +76,9 @@
 | --- | --- |
 | Tenant ID 改ざん | Token 以外の tenant_id を認可に使わない |
 | IDOR / BOLA | 単一リソース取得も tenant_id 条件付き。RLS |
-| 権限昇格 | role は DB から毎回取得。Token の role は無視 |
-| 退会済みユーザーのアクセス | Membership 再検証。Refresh 時にも再検証 |
+| 権限昇格 | role は tenant_service_members から毎回取得。permission は役割の既定と自サービス DB の member_permissions から毎回確定し、deny が優先。Token の role や permissions は無視 |
+| 別サービスの割り当てでの越境 | 割り当ては (tenant, service, user) の単位。Token の client_id に一致する割り当てだけを見る。tenant_members の会社横断の役割ではログインできない |
+| 退会済みユーザーのアクセス | サービスへの割り当てを再検証。Refresh 時にも再検証 |
 | 停止テナントへのアクセス | tenants.status を `/authorize` と API 両方で確認 |
 | 契約解除後のアクセス | tenant_services を `/authorize` と Refresh で確認。Access Token 寿命の 15 分以内に失効 |
 | 同一テナントの別サービスへの Cookie 流用 | tanaka.crm と tanaka.cms は別ホスト。Cookie は届かず、Session Store のキーも clientId で分かれる |

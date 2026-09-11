@@ -13,7 +13,7 @@ Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout �
 | Tenant Logout | 削除 | 失効 | 維持 | 維持 | 維持 |
 | Global Logout | 削除。Back-Channel 経由 | 全系列失効 | 削除 | 削除。Back-Channel 経由 | RevokeToken |
 | SSO Session 期限切れ | 維持。Refresh で失効 | Refresh 時に失効 | 削除 | 同左 | 破棄 |
-| Membership 削除 | 維持。Refresh で失効 | Refresh 時に失効 | 維持 | 維持 | 維持 |
+| サービスへの割り当て削除 | 維持。Refresh で失効 | Refresh 時に失効 | 維持 | 維持。同テナントの他サービスは影響なし | 維持 |
 | 契約解除 | 維持。Refresh で失効 | Refresh 時に失効 | 維持 | 維持。同テナントの他サービスは影響なし | 維持 |
 | ユーザー無効化 | 維持。Refresh で失効 | Refresh 時に失効 | 次回 /authorize で access_denied | 同左 | 管理操作で Revoke |
 

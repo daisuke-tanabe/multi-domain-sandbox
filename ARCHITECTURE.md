@@ -95,12 +95,16 @@ src/
 - 一覧は `SetStore`、一回限りの消費は `getAndDelete`、Refresh はセッション単位のロック。値を読んで書き戻す形の一覧更新や、読んでから消す二段階の消費は書かない
 - ブラウザと Client のサーバーから受ける入力はレート制限と body 上限を通す。制限値は `docs/design/08-security-design.md` に従う
 - API の tenant_id は Access Token 由来のみ。リクエストの値を認可に使わない
+- サービスへのログイン可否は tenant_service_members、細かい権限はサービス側 DB の member_permissions で判定し Token に載せない。`/authorize` と Refresh は user → tenant → 契約 → このサービスへの割り当ての順に確認し、API は Token の tenant_id と client_id で割り当てを毎リクエスト再検証する。tenant_members は会社横断の役割で、ログイン可否には使わない
+- 権限の確定は役割の既定 ∪ allow − deny。deny が優先し、未知の permission 名は無視する。`requirePermission` は確定した集合で判定し、Token の role や permissions claim は無視する
 - Repository は tenant_id を必須引数に取る
 
 ## DB 規約
 
 - 主キーはサロゲート ID。ULID を TEXT で保存する。`client_id` や `slug` のような公開識別子は UNIQUE 制約で守り、外部キーには使わない
-- 関連テーブルの主キーは参照する 2 つのサロゲート ID の組にする
+- 関連テーブルの主キーは参照するサロゲート ID の組にする。tenant_services は `(tenant_id, oidc_client_id)`、tenant_service_members は `(tenant_id, oidc_client_id, user_id)`
+- 契約に従属する表は契約への複合外部キーを持つ。tenant_service_members は `(tenant_id, oidc_client_id)` で tenant_services を参照し、契約のないサービスに人を割り当てられない形にする
+- サービス固有の権限は Identity DB に置かず、そのサービスの business スキーマに置く。business の表はすべて tenant_id を持ち、RLS を ENABLE と FORCE で有効にする。サンドボックスは 1 DB を複数サービスで共有するため member_permissions に client_id を持つ
 - 外部キーの逆引きにはインデックスを張る
 - `updated_at` はトリガーで更新する。アプリ側で更新しない
 
@@ -117,3 +121,4 @@ src/
 - ファイルは kebab-case。型は PascalCase。関数と変数は camelCase
 - テストは対象ファイルと同じディレクトリに `*.test.ts`
 - 真偽値に否定形を使わない
+- 比較は `===` を使う。null と undefined をまとめて判定するときだけ `== null` を許す。oxlint の eqeqeq で強制する

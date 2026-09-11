@@ -8,7 +8,11 @@ import {
   toJwks,
   type SigningKey,
 } from "@sandbox/shared";
-import { MemoryIdentityReader, MemoryProjectRepository } from "./adapters/memory-repositories.ts";
+import {
+  MemoryIdentityReader,
+  MemoryPermissionReader,
+  MemoryProjectRepository,
+} from "./adapters/memory-repositories.ts";
 import { createApiApp } from "./app.ts";
 import type { ApiEnv } from "./auth/middleware.ts";
 
@@ -25,13 +29,14 @@ export interface ApiHarness {
   readonly clock: FakeClock;
   readonly signingKey: SigningKey;
   readonly identity: MemoryIdentityReader;
+  readonly permissions: MemoryPermissionReader;
   readonly projects: MemoryProjectRepository;
 }
 
 /**
  * auth-api の test-support と同じ関係のデータ。
- *   alice: tanaka owner / suzuki viewer
- *   bob  : suzuki admin
+ *   alice: tanaka では crm / cms の owner。suzuki では crm の viewer。tanaka の cms では projects:write を拒否
+ *   bob  : suzuki の crm の admin
  */
 export interface ApiHarnessOptions {
   readonly signingKey?: SigningKey;
@@ -53,12 +58,22 @@ export async function createApiHarness(options: ApiHarnessOptions = {}): Promise
       { id: TANAKA_ID, slug: "tanaka", status: "active" },
       { id: SUZUKI_ID, slug: "suzuki", status: "active" },
     ],
-    memberships: [
-      { tenantId: TANAKA_ID, userId: ALICE_ID, role: "owner", status: "active" },
-      { tenantId: SUZUKI_ID, userId: ALICE_ID, role: "viewer", status: "active" },
-      { tenantId: SUZUKI_ID, userId: BOB_ID, role: "admin", status: "active" },
+    serviceMemberships: [
+      { tenantId: TANAKA_ID, clientId: "crm", userId: ALICE_ID, role: "owner", status: "active" },
+      { tenantId: TANAKA_ID, clientId: "cms", userId: ALICE_ID, role: "owner", status: "active" },
+      { tenantId: SUZUKI_ID, clientId: "crm", userId: ALICE_ID, role: "viewer", status: "active" },
+      { tenantId: SUZUKI_ID, clientId: "crm", userId: BOB_ID, role: "admin", status: "active" },
     ],
   });
+  const permissions = new MemoryPermissionReader([
+    {
+      tenantId: TANAKA_ID,
+      userId: ALICE_ID,
+      clientId: "cms",
+      permission: "projects:write",
+      effect: "deny",
+    },
+  ]);
   const projects = new MemoryProjectRepository([
     { id: "project-t1", tenantId: TANAKA_ID, name: "Tanaka Project 1", createdBy: ALICE_ID },
     { id: "project-s1", tenantId: SUZUKI_ID, name: "Suzuki Project 1", createdBy: BOB_ID },
@@ -68,16 +83,19 @@ export async function createApiHarness(options: ApiHarnessOptions = {}): Promise
     audience,
     jwks: new StaticJwksSource(toJwks([key])),
     identity,
+    permissions,
     projects,
     clock,
     logger: silentLogger,
   });
-  return { app, clock, signingKey: key, identity, projects };
+  return { app, clock, signingKey: key, identity, permissions, projects };
 }
 
 export interface TokenInput {
   readonly userId: string;
   readonly tenantId: string;
+  /** 既定は crm */
+  readonly clientId?: string;
   readonly audience?: string | string[];
   readonly issuer?: string;
   readonly expiresInSeconds?: number;
@@ -96,7 +114,7 @@ export function issueTestAccessToken(harness: ApiHarness, input: TokenInput): Pr
     claims: {
       tenant_id: input.tenantId,
       sid: "sid-1",
-      client_id: "crm",
+      client_id: input.clientId ?? "crm",
       scope: "openid profile email",
       ...input.extraClaims,
     },

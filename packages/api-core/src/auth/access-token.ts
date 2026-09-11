@@ -10,6 +10,8 @@ import {
 export interface AccessTokenClaims {
   readonly userId: string;
   readonly tenantId: string;
+  /** このサービスの client_id。サービス固有の権限を引くときの鍵 */
+  readonly clientId: string;
 }
 
 export type AccessTokenError =
@@ -26,7 +28,7 @@ export interface AccessTokenVerifierOptions {
 
 /**
  * Access Token を検証して認可に使う claims を取り出す。RS256 固定、aud 必須、tenant_id 必須。
- * sid と client_id は使わないが、Auth Server 発行の Access Token であることの確認として存在を要求する。
+ * sid は使わないが、Auth Server 発行の Access Token であることの確認として存在を要求する。
  */
 export async function verifyAccessToken(
   token: string,
@@ -45,5 +47,9 @@ export async function verifyAccessToken(
       return err({ kind: "invalid_token", reason: `${claim} missing` });
     }
   }
-  return ok({ userId: String(payload.sub), tenantId: String(payload.tenant_id) });
+  return ok({
+    userId: String(payload.sub),
+    tenantId: String(payload.tenant_id),
+    clientId: String(payload.client_id),
+  });
 }

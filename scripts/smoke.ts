@@ -86,6 +86,15 @@ check(
   visitedPaths(tanakaCms).join(" -> "),
 );
 
+const deniedOnCms = await browser.submitForm(`${TANAKA_CMS_ORIGIN}/projects`, {
+  csrf: readPageCsrf(tanakaCms.body),
+  name: "cms attempt",
+});
+check(
+  "owner on tanaka.cms cannot create a project because cms denies projects:write for alice",
+  deniedOnCms.body.includes("この操作を行う権限がありません"),
+);
+
 const suzukiCms = await browser.navigate(`${SUZUKI_CMS_ORIGIN}/projects`);
 check(
   "suzuki.cms is refused because suzuki has no cms contract",

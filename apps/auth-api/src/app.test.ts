@@ -619,7 +619,7 @@ describe("portal", () => {
     expect(res.headers.get("Location")).toBe("/login");
   });
 
-  test("logs in without rid and lists the tenants the user belongs to with their roles", async () => {
+  test("logs in without rid and lists the assigned services per tenant with their roles", async () => {
     // Arrange
     const harness = await createHarness();
     const loginPage = await harness.app.request(`${ISSUER}/login`);
@@ -648,19 +648,20 @@ describe("portal", () => {
     expect(body).toContain("alice@example.com");
     expect(body).toContain("http://tanaka.crm.localhost:3001/auth/login");
     expect(body).toContain("http://tanaka.cms.localhost:3003/auth/login");
-    expect(body).toContain("tanaka / owner");
+    expect(body).toContain("crm / owner");
+    expect(body).toContain("cms / owner");
     expect(body).toContain("http://suzuki.crm.localhost:3001/auth/login");
     expect(body).not.toContain("http://suzuki.cms.localhost:3003/auth/login");
-    expect(body).toContain("suzuki / viewer");
+    expect(body).toContain("crm / viewer");
   });
 
-  test("tells a user without memberships that no tenant is available", async () => {
+  test("tells a user without service assignments that nothing is available", async () => {
     const harness = await createHarness();
     const flow = await runLoginFlow(harness, { username: "carol", password: "carol-password" });
 
     const portal = await harness.app.request(`${ISSUER}/`, { headers: { Cookie: flow.cookie } });
 
-    expect(await portal.text()).toContain("所属しているテナントがありません");
+    expect(await portal.text()).toContain("利用できるサービスがありません");
   });
 
   test("sends a logged-in user from /login straight to the portal", async () => {

@@ -1,4 +1,5 @@
 import type { Role } from "@sandbox/shared";
+import type { Permission } from "../permissions.ts";
 
 /**
  * 認可済みのリクエストコンテキスト。tenantId は Access Token 由来の値のみ。
@@ -7,7 +8,12 @@ import type { Role } from "@sandbox/shared";
 export interface TenantContext {
   readonly tenantId: string;
   readonly userId: string;
+  /** Access Token の client_id。このサービスの識別子 */
+  readonly clientId: string;
+  /** tenant_service_members の役割。表示用 */
   readonly role: Role;
+  /** 役割の既定にサービス側の上書きを重ねた結果。認可はこれで判定する */
+  readonly permissions: ReadonlySet<Permission>;
 }
 
 export interface Project {

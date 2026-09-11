@@ -140,6 +140,8 @@ export function logoutDonePage(
 export interface PortalServiceView {
   readonly name: string;
   readonly clientId: string;
+  /** このサービスでの役割 */
+  readonly role: string;
   /** サービス側の /auth/login。SSO Session によりパスワードなしで入れる */
   readonly loginUrl: string;
 }
@@ -147,7 +149,6 @@ export interface PortalServiceView {
 export interface PortalTenantView {
   readonly slug: string;
   readonly name: string;
-  readonly role: string;
   readonly services: ReadonlyArray<PortalServiceView>;
 }
 
@@ -157,7 +158,7 @@ export interface PortalPageProps {
 }
 
 /**
- * ポータル。所属テナントごとに、契約しているサービスの入口を並べる。
+ * ポータル。テナントごとに、割り当てられているサービスの入口と役割を並べる。
  */
 export function portalPage(props: PortalPageProps): HtmlEscapedString | Promise<HtmlEscapedString> {
   return layout(
@@ -167,23 +168,19 @@ export function portalPage(props: PortalPageProps): HtmlEscapedString | Promise<
       <p class="muted">${props.email} としてログイン中</p>
       ${
         props.tenants.length === 0
-          ? html`<p>所属しているテナントがありません。管理者に招待を依頼してください。</p>`
+          ? html`<p>利用できるサービスがありません。管理者に招待を依頼してください。</p>`
           : props.tenants.map(
               (tenant) => html`
-                <h2>${tenant.name} <span class="muted">(${tenant.slug} / ${tenant.role})</span></h2>
-                ${
-                  tenant.services.length === 0
-                    ? html`<p class="muted">契約中のサービスはありません。</p>`
-                    : html`<ul>
-                        ${tenant.services.map(
-                          (service) =>
-                            html`<li>
-                              <a href="${service.loginUrl}">${service.name}</a>
-                              <span class="muted">${service.clientId}</span>
-                            </li>`,
-                        )}
-                      </ul>`
-                }
+                <h2>${tenant.name} <span class="muted">(${tenant.slug})</span></h2>
+                <ul>
+                  ${tenant.services.map(
+                    (service) =>
+                      html`<li>
+                        <a href="${service.loginUrl}">${service.name}</a>
+                        <span class="muted">${service.clientId} / ${service.role}</span>
+                      </li>`,
+                  )}
+                </ul>
               `,
             )
       }

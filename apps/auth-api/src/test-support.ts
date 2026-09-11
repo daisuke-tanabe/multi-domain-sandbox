@@ -21,9 +21,9 @@ import type { AuthDeps } from "./usecases/deps.ts";
  * テスト用の固定データ。db/init/004_seed.sql と同じ関係にする。
  *   サービス : crm, cms
  *   テナント : tanaka (crm と cms を契約), suzuki (crm のみ契約)
- *   alice    : tanaka の owner、suzuki の viewer
- *   bob      : suzuki の admin
- *   carol    : Cognito には存在するがどのテナントにも所属しない
+ *   alice    : tanaka では crm / cms の owner、suzuki では crm の viewer
+ *   bob      : suzuki の crm の admin
+ *   carol    : Cognito には存在するがどのサービスにも割り当てられていない
  */
 export const ISSUER = "http://auth.localhost:3000";
 export const CRM_AUDIENCE = "http://api.crm.localhost:3002";
@@ -123,15 +123,40 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
         status: "active",
       },
     ],
-    memberships: [
-      { tenantId: TANAKA_ID, userId: ALICE_ID, role: "owner", status: "active" },
-      { tenantId: SUZUKI_ID, userId: ALICE_ID, role: "viewer", status: "active" },
-      { tenantId: SUZUKI_ID, userId: "user-bob", role: "admin", status: "active" },
-    ],
     contracts: [
       { tenantId: TANAKA_ID, oidcClientId: CRM_ID, status: "active" },
       { tenantId: TANAKA_ID, oidcClientId: CMS_ID, status: "active" },
       { tenantId: SUZUKI_ID, oidcClientId: CRM_ID, status: "active" },
+    ],
+    serviceMemberships: [
+      {
+        tenantId: TANAKA_ID,
+        oidcClientId: CRM_ID,
+        userId: ALICE_ID,
+        role: "owner",
+        status: "active",
+      },
+      {
+        tenantId: TANAKA_ID,
+        oidcClientId: CMS_ID,
+        userId: ALICE_ID,
+        role: "owner",
+        status: "active",
+      },
+      {
+        tenantId: SUZUKI_ID,
+        oidcClientId: CRM_ID,
+        userId: ALICE_ID,
+        role: "viewer",
+        status: "active",
+      },
+      {
+        tenantId: SUZUKI_ID,
+        oidcClientId: CRM_ID,
+        userId: "user-bob",
+        role: "admin",
+        status: "active",
+      },
     ],
   });
   const encryptionKey = parseEncryptionKey("test", randomBytes(32).toString("base64"));

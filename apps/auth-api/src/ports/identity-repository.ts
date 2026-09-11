@@ -4,6 +4,7 @@
  *
  * サービス (OidcClient) とテナント (Tenant) は別の軸。テナントは顧客企業であり複数のサービスを契約できる。
  * 認可リクエストのテナントは redirect_uri をサービスのテンプレートに当てて slug を取り出し、tenants から引く。
+ * サービスにログインできるかは tenant_service_members で決める。tenant_members は会社横断の役割で、ログイン可否には使わない。
  */
 import type {
   ClientStatus,
@@ -47,7 +48,8 @@ export interface OidcClient {
   readonly backchannelLogoutUri: string | null;
 }
 
-export interface Membership {
+/** テナント × サービスへの割り当て */
+export interface ServiceMembership {
   readonly role: Role;
   readonly status: MembershipStatus;
 }
@@ -63,17 +65,17 @@ export interface NewUser {
   readonly name: string | null;
 }
 
-/** ポータルに並べる、テナントごとの契約サービス */
+/** ポータルに並べる、テナントごとに割り当てられたサービス */
 export interface PortalService {
   readonly clientId: string;
   readonly name: string;
+  readonly role: Role;
   /** そのテナント向けの redirect_uri から導いた origin。ログイン導線に使う */
   readonly origin: string;
 }
 
 export interface PortalEntry {
   readonly tenant: Tenant;
-  readonly role: Role;
   readonly services: ReadonlyArray<PortalService>;
 }
 
@@ -84,9 +86,13 @@ export interface IdentityRepository {
   createUser(user: NewUser): Promise<User>;
   findTenantById(id: string): Promise<Tenant | undefined>;
   findTenantBySlug(slug: string): Promise<Tenant | undefined>;
-  findMembership(tenantId: string, userId: string): Promise<Membership | undefined>;
   /** oidcClientId は OidcClient.id */
   findContract(tenantId: string, oidcClientId: string): Promise<Contract | undefined>;
-  /** ユーザーが active で所属する active なテナントと、そのテナントが契約中のサービス */
+  findServiceMembership(
+    tenantId: string,
+    oidcClientId: string,
+    userId: string,
+  ): Promise<ServiceMembership | undefined>;
+  /** ユーザーが active で割り当てられている、active な契約のサービスをテナントごとにまとめる */
   listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>>;
 }

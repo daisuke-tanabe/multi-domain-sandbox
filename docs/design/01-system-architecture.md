@@ -6,7 +6,7 @@ auth.sandbox.com を独立した OpenID Provider として構築し、Cognito �
 OIDC Client はサービス単位で登録する。サンドボックスのサービスは CRM と CMS の2つで、client_id はそれぞれ `crm` と `cms`。
 テナントは顧客企業であり、サービス横断で共有する。サンドボックスのテナントは `tanaka` と `suzuki` で、tanaka は CRM と CMS を、suzuki は CRM のみを契約している。
 Tenant Web Application は `<tenant>.<service>.sandbox.com` の Host でサービスとテナントを解決する BFF であり、サーバー側セッションを持つ。
-API Server は Resource Server であり、Host から導いた aud と Identity DB の Membership で認可する。
+API Server は Resource Server であり、Host から導いた aud と Identity DB のサービスへの割り当てで認可し、細かい権限は自サービスの DB から読む。招待と役割はサービス単位で、Token には役割も権限も載せない。判断事項D16。
 
 ## 全体構成
 
@@ -27,7 +27,7 @@ flowchart TB
     end
 
     subgraph Identity ["Identity DB  所有者: Auth Server"]
-        IdDB[("users<br/>tenants<br/>tenant_members<br/>oidc_clients<br/>oidc_client_secrets<br/>tenant_services")]
+        IdDB[("users<br/>tenants<br/>tenant_members<br/>oidc_clients<br/>oidc_client_secrets<br/>tenant_services<br/>tenant_service_members")]
     end
 
     subgraph Crm ["CRM  OIDC Client: crm"]
@@ -41,7 +41,7 @@ flowchart TB
     end
 
     Sess[("Tenant Session Store<br/>ストア clientId:sess<br/>キー tenantSlug:sessionId")]
-    BizDB[("Business DB<br/>tenant_idで分離")]
+    BizDB[("Business DB<br/>projects / member_permissions<br/>tenant_idで分離")]
 
     User -- "tenant_session Cookie<br/>ホストごとに別" --> WebCrm
     User -- "tenant_session Cookie<br/>ホストごとに別" --> WebCms
@@ -56,8 +56,8 @@ flowchart TB
     WebCms -- "Bearer Access Token<br/>aud=api.cms" --> ApiCms
     ApiCrm --- BizDB
     ApiCms --- BizDB
-    ApiCrm -- "読み取り専用<br/>Membership検証" --> IdDB
-    ApiCms -- "読み取り専用<br/>Membership検証" --> IdDB
+    ApiCrm -- "読み取り専用<br/>割り当て検証" --> IdDB
+    ApiCms -- "読み取り専用<br/>割り当て検証" --> IdDB
     ApiCrm -- "JWKS取得" --> Auth
     ApiCms -- "JWKS取得" --> Auth
 ```
@@ -71,7 +71,9 @@ flowchart TB
 | サービス | Auth Server を使うプロダクト。OIDC Client と1対1 | `crm` CRM、`cms` CMS |
 | テナント | 顧客企業。サービス横断で共有する | `tanaka` Tanaka Inc.、`suzuki` Suzuki Ltd. |
 | 契約 | テナントがサービスを利用できるか。tenant_services | tanaka→crm、tanaka→cms、suzuki→crm。suzuki は cms を契約していない |
-| Membership | ユーザーのテナント所属と role。tenant_members | alice は tanaka の owner かつ suzuki の viewer。bob は suzuki の admin。carol は所属なし |
+| 割り当て | ユーザーのテナント × サービスへの割り当てと role。tenant_service_members。招待はこの単位 | alice は tanaka の crm と cms の owner、suzuki の crm の viewer。bob は suzuki の crm の admin。carol は割り当てなし |
+| 会社横断の役割 | 管理者や請求担当のような、サービスに依らない立場。tenant_members。ログイン可否には使わない | alice は tanaka の owner、bob は suzuki の owner |
+| 権限の上書き | 役割の既定に対する個別の allow / deny。サービス側 DB の member_permissions。Token には載せない | alice は tanaka の cms で projects:write を deny |
 
 ## ホスト一覧
 
@@ -91,15 +93,15 @@ suzuki.cms.localhost:3003 は redirect_uri が cms のテンプレートに一�
 | レイヤー | ホスト | 責務 | 持つ状態 |
 | --- | --- | --- | --- |
 | 認証 | Cognito | パスワード検証、MFA、ユーザー管理、Cognito Token発行 | Cognitoユーザー |
-| SSO / 認可 | auth.sandbox.com | OpenID Provider。SSOセッション、Client管理、契約とMembershipによるアクセス可否判定、Token発行、ポータル | SSO Session、Auth Code、Refresh Token、Identity DB、署名鍵 |
+| SSO / 認可 | auth.sandbox.com | OpenID Provider。SSOセッション、Client管理、契約とサービスへの割り当てによるアクセス可否判定、Token発行、ポータル | SSO Session、Auth Code、Refresh Token、Identity DB、署名鍵 |
 | アプリケーション | `<tenant>.<service>.sandbox.com` | UI、テナントセッション、OIDC Client、APIへのサーバー間呼び出し | Tenant Session、Access / Refresh Tokenのサーバー側保持 |
-| API | `api.<service>.sandbox.com` | 業務API、Token検証、Membership認可、Tenant Isolation | Business DB |
+| API | `api.<service>.sandbox.com` | 業務API、Token検証、割り当てと権限の認可、Tenant Isolation | Business DB。業務データと権限の上書き |
 
 責務の混在を禁止する。
 
 - Tenant Web Application は Cognito API を呼ばない。Cognito Token を受け取らない
 - API Server はログインを扱わない。Token検証と認可のみ行う
-- Auth Server は業務データを持たない。Identity DB は識別、所属、契約のみ
+- Auth Server は業務データを持たない。Identity DB は識別、契約、サービスへの割り当てのみ。サービス固有の細かい権限は各サービスの DB に置き、Auth Server は権限語彙を知らない
 - ブラウザはいかなる Token も保持しない。Cookie のみ
 
 ## 通信経路の分類
@@ -112,7 +114,7 @@ suzuki.cms.localhost:3003 は redirect_uri が cms のテンプレートに一�
 | Tenant Web App → `api.<service>.sandbox.com` | Back Channel | Bearer Access Token | TLS、JWT署名検証、aud検証 |
 | auth.sandbox.com → Tenant Web App | Back Channel | Back-Channel Logout の logout_token | TLS、JWT署名検証 |
 | auth.sandbox.com → Cognito | Back Channel | InitiateAuth 等 | TLS、App Client Secret |
-| `api.<service>.sandbox.com` → Identity DB | 内部 | Membership読み取り | 読み取り専用DBロール |
+| `api.<service>.sandbox.com` → Identity DB | 内部 | 割り当て読み取り | 読み取り専用DBロール |
 
 Front Channel を通る認証関連の値は Authorization Code と state のみ。
 
@@ -125,17 +127,17 @@ flowchart LR
     Host["Host: suzuki.crm.sandbox.com"] --> Resolve["service = crm<br/>tenantSlug = suzuki<br/>CLIENT_ID と BASE_HOST で解決"]
     Resolve --> Req["/authorize<br/>client_id = crm<br/>redirect_uri = https://suzuki.crm.sandbox.com/auth/callback"]
     Req --> Tenant["redirect_uri を crm の<br/>redirect_uri_template に当てて slug を取り出し<br/>tenants から tenant_id を解決"]
-    Tenant --> Check["user active → tenant active<br/>→ tenant_services → tenant_members"]
-    Check --> Token["ID Token: tenant_slug<br/>Access Token: aud=api.crm, tenant_id"]
-    Token --> Api["API Server<br/>Host が自 API のホストか確認し aud を検証<br/>tenant_members を再検証<br/>リソースのtenant_idと一致確認"]
+    Tenant --> Check["user active → tenant active<br/>→ tenant_services → tenant_service_members"]
+    Check --> Token["ID Token: tenant_slug<br/>Access Token: aud=api.crm, tenant_id, client_id<br/>role も permission も載せない"]
+    Token --> Api["API Server<br/>Host が自 API のホストか確認し aud を検証<br/>tenant_service_members を再検証<br/>member_permissions で権限を確定<br/>リソースのtenant_idと一致確認"]
 ```
 
 - Host はテナント slug の解決と redirect_uri の組み立てにのみ使う。サービスはプロセスの環境変数で固定される
 - 認可リクエストのテナントは Auth Server が client_id と redirect_uri の組から解決する。redirect_uri をサービスの `redirect_uri_template` に当てて slug を取り出し、tenants を slug で引く。テンプレートに一致しないか slug が未知なら `invalid_redirect_uri` でリダイレクトしない。Tenant Web Application が申告した値は使わない
 - すべての認可はテナントに紐付く。ID Token と Access Token には必ず `tenant_id` と `tenant_slug` が載る
-- テナントへのアクセス可否は Auth Server が `/authorize` と refresh_token grant で判定する。順序は user → tenant → 契約 → Membership
+- テナントへのアクセス可否は Auth Server が `/authorize` と refresh_token grant で判定する。順序は user → tenant → 契約 → サービスへの割り当て
 - Tenant Web Application は ID Token の `tenant_slug` が Host から得たテナントと一致することを検証する
-- API Server は Host が `API_BASE_URL` のホストと一致することを確認し、`API_BASE_URL` を aud として Token と照合し、Token の `tenant_id` で Identity DB の Membership を毎回再検証する
+- API Server は Host が `API_BASE_URL` のホストと一致することを確認し、`API_BASE_URL` を aud として Token と照合し、Token の `tenant_id` と `client_id` で Identity DB のこのサービスへの割り当てを毎回再検証する。役割の既定に自サービス DB の権限の上書きを重ねて permission を確定する
 
 ## Auth Server エンドポイント一覧
 
@@ -143,8 +145,8 @@ flowchart LR
 | --- | --- | --- | --- |
 | `/.well-known/openid-configuration` | GET | OIDC Discovery | Client、API Server |
 | `/jwks` | GET | ID Token / Access Token検証用公開鍵 | Client、API Server |
-| `/` | GET | ポータル。SSO Session があれば所属テナントごとに role と契約サービスの入口を表示。なければ `/login` へ | ブラウザ |
-| `/authorize` | GET | 認可エンドポイント。redirect_uri をテンプレートに当ててテナント解決、SSOセッション判定、契約とMembership判定、code発行 | ブラウザ |
+| `/` | GET | ポータル。SSO Session があればテナントごとに割り当てのあるサービスの入口とサービスごとの役割を表示。なければ `/login` へ | ブラウザ |
+| `/authorize` | GET | 認可エンドポイント。redirect_uri をテンプレートに当ててテナント解決、SSOセッション判定、契約とサービスへの割り当て判定、code発行 | ブラウザ |
 | `/login` | GET | ログインフォーム。rid なしはポータル用ログインで、成功後に `/` へ戻る | ブラウザ |
 | `/login` | POST | Cognito InitiateAuth による認証 | ブラウザ |
 | `/login/challenge` | POST | MFA等のチャレンジ応答。フェーズ2 | ブラウザ |
@@ -154,7 +156,7 @@ flowchart LR
 | `/logout` | GET/POST | Global Logout。`client_id` と `tenant` を受け取り、確認画面を経て完了後に元のサービスへ戻るリンクを表示。リンクは `redirect_uri_template` を `tenant` で展開して導く | ブラウザ |
 | `/healthz` | GET | 死活監視 | 監視 |
 
-ポータルの表示例。alice でログインした場合、「Tanaka Inc. (tanaka / owner): CRM, CMS」「Suzuki Ltd. (suzuki / viewer): CRM」を表示する。各リンクは `https://<tenant>.<service>.sandbox.com/auth/login` で、サービスの `redirect_uri_template` をテナント slug で展開した origin から導く。Third-Party Initiated Login として通常の認可フローに合流する。
+ポータルの表示例。alice でログインした場合、「Tanaka Inc. (tanaka)」に CRM `crm / owner` と CMS `cms / owner`、「Suzuki Ltd. (suzuki)」に CRM `crm / viewer` を表示する。契約があっても割り当てのないサービスは出ず、どのサービスにも割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」と出る。各リンクは `https://<tenant>.<service>.sandbox.com/auth/login` で、サービスの `redirect_uri_template` をテナント slug で展開した origin から導く。Third-Party Initiated Login として通常の認可フローに合流する。
 
 ## Tenant Web Application エンドポイント一覧
 
@@ -197,9 +199,11 @@ client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-P
 
 | 追加対象 | 手順 | 既存への影響 |
 | --- | --- | --- |
-| 新テナント | tenants にレコード追加。契約するサービスごとに tenant_services を登録 | なし。redirect_uri の登録、Client 登録、Secret 配布は不要 |
-| 既存テナントの契約追加 | tenant_services を追加 | なし |
-| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services を登録。`apps/<service>-web` と `apps/<service>-api` を追加し、`packages/web-core` と `packages/api-core` を環境変数で起動する。provision の `SERVICES` に追加 | なし |
+| 新テナント | tenants にレコード追加。契約するサービスごとに tenant_services を登録。使う人をサービスごとに tenant_service_members に登録。CRM だけなら tenants 1 行、tenant_services 1 行、利用者数分の割り当て | なし。redirect_uri の登録、Client 登録、Secret 配布は不要 |
+| 既存テナントの契約追加 | tenant_services を追加し、そのサービスを使う人を tenant_service_members に割り当てる | なし |
+| 利用者の招待 | tenant_service_members に (tenant, service, user, role) を追加。招待も役割もサービス単位。外すときはその行を削除または disabled にする | なし。同テナントの他サービスには影響しない |
+| 権限の個別調整 | そのサービスの DB の member_permissions に allow / deny を追加。Auth Server には登録しない | なし。次のリクエストから反映 |
+| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services と利用者分の tenant_service_members を登録。`apps/<service>-web` と `apps/<service>-api` を追加し、`packages/web-core` と `packages/api-core` を環境変数で起動する。provision の `SERVICES` に追加 | なし |
 | client_secret のローテーション | oidc_client_secrets に新 secret を active で追加 → サービスの `CLIENT_SECRET` を差し替え → 旧行を revoked に更新 | なし。切替中は新旧どちらでも `/token` が通る |
 | 管理画面 | 専用clientを登録し、管理用scopeを付与 | なし |
 

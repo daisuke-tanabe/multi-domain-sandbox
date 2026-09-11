@@ -21,4 +21,23 @@ CREATE POLICY projects_tenant_isolation ON business.projects
   USING (tenant_id = current_setting('app.tenant_id', true))
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 
+-- サービス固有の細かい権限。役割から導く既定の権限に対して個別に許可 / 拒否を上書きする
+-- Token には載せず、API がリクエストごとに読む。サンドボックスでは 1 つの DB を複数サービスで共有するため client_id で分ける
+CREATE TABLE business.member_permissions (
+  tenant_id   TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  client_id   TEXT NOT NULL,
+  permission  TEXT NOT NULL,
+  effect      TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, user_id, client_id, permission)
+);
+
+ALTER TABLE business.member_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE business.member_permissions FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY member_permissions_tenant_isolation ON business.member_permissions
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
 RESET ROLE;

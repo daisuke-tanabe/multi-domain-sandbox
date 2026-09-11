@@ -4,9 +4,10 @@ import type { Role } from "@sandbox/shared";
  * ローカルの db/init/004_seed.sql と同じ関係のテストデータ。
  *   サービス : crm, cms
  *   テナント : tanaka (crm と cms を契約), suzuki (crm のみ契約)
- *   alice: tanaka owner / suzuki viewer
- *   bob  : suzuki admin
- *   carol: 所属なし
+ *   alice: tanaka では crm / cms の owner、suzuki では crm の viewer。tanaka の cms では projects:write を拒否
+ *   bob  : suzuki の crm の admin
+ *   carol: 割り当てなし
+ *   tenant_members は会社横断の役割。alice は tanaka の owner、bob は suzuki の owner
  */
 export interface SeedUser {
   /** users.id。ローカルの 004_seed.sql と同じ固定 ID */
@@ -39,6 +40,23 @@ export interface SeedService {
 export interface SeedContract {
   readonly tenantSlug: string;
   readonly clientId: string;
+}
+
+/** サービスごとの割り当て */
+export interface SeedServiceMembership {
+  readonly tenantSlug: string;
+  readonly clientId: string;
+  readonly username: string;
+  readonly role: Role;
+}
+
+/** サービス固有の権限の上書き。business.member_permissions */
+export interface SeedPermissionOverride {
+  readonly tenantSlug: string;
+  readonly clientId: string;
+  readonly username: string;
+  readonly permission: string;
+  readonly effect: "allow" | "deny";
 }
 
 export interface SeedProject {
@@ -90,8 +108,24 @@ export const SEED_CONTRACTS: ReadonlyArray<SeedContract> = [
 
 export const SEED_MEMBERSHIPS: ReadonlyArray<SeedMembership> = [
   { tenantSlug: "tanaka", username: "alice", role: "owner" },
-  { tenantSlug: "suzuki", username: "alice", role: "viewer" },
-  { tenantSlug: "suzuki", username: "bob", role: "admin" },
+  { tenantSlug: "suzuki", username: "bob", role: "owner" },
+];
+
+export const SEED_SERVICE_MEMBERSHIPS: ReadonlyArray<SeedServiceMembership> = [
+  { tenantSlug: "tanaka", clientId: "crm", username: "alice", role: "owner" },
+  { tenantSlug: "tanaka", clientId: "cms", username: "alice", role: "owner" },
+  { tenantSlug: "suzuki", clientId: "crm", username: "alice", role: "viewer" },
+  { tenantSlug: "suzuki", clientId: "crm", username: "bob", role: "admin" },
+];
+
+export const SEED_PERMISSION_OVERRIDES: ReadonlyArray<SeedPermissionOverride> = [
+  {
+    tenantSlug: "tanaka",
+    clientId: "cms",
+    username: "alice",
+    permission: "projects:write",
+    effect: "deny",
+  },
 ];
 
 export const SEED_PROJECTS: ReadonlyArray<SeedProject> = [

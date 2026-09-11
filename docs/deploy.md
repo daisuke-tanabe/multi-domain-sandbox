@@ -41,7 +41,7 @@ crm-web / cms-web / crm-api / cms-api の `main.ts` は `packages/web-core` と 
 | crm-api | `API_BASE_URL` | `https://api.crm.<domain>`。そのまま aud になり、provision が oidc_clients.audience に書く `apiBaseUrl` と同じ値にする |
 | cms-api | `API_BASE_URL` | `https://api.cms.<domain>` |
 | crm-web / cms-web / provision | `PUBLIC_SCHEME` | `https` |
-| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、`https://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`clientSecret` は 32 バイト以上の乱数で 43 文字以上をスキーマで要求する。サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする |
+| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、`https://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`clientSecret` は 32 バイト以上の乱数で 43 文字以上をスキーマで要求する。サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする。シードはテナント、契約、会社横断の役割 tenant_members、サービスごとの割り当て tenant_service_members、業務データ、権限の上書き business.member_permissions を `tools/provision/src/seed-data.ts` の `SEED_SERVICE_MEMBERSHIPS` と `SEED_PERMISSION_OVERRIDES` から投入する |
 
 ## 事前準備
 

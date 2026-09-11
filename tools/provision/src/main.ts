@@ -9,7 +9,9 @@ import { loadConfig } from "./config.ts";
 import {
   SEED_CONTRACTS,
   SEED_MEMBERSHIPS,
+  SEED_PERMISSION_OVERRIDES,
   SEED_PROJECTS,
+  SEED_SERVICE_MEMBERSHIPS,
   SEED_SERVICES,
   SEED_TENANTS,
   SEED_USERS,
@@ -21,7 +23,8 @@ import {
  * 1. ロールとスキーマを作る。db/init の 001 から 003 を順に適用する。冪等になるよう存在確認を挟む
  * 2. ロールのパスワードを Secrets Manager 由来の値に合わせる
  * 3. Cognito にテストユーザーを作り、実際の sub で users を投入する
- * 4. tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / projects を投入する
+ * 4. tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / tenant_service_members
+ *    / projects / member_permissions を投入する
  */
 const logger = createLogger("provision");
 const config = loadConfig();
@@ -175,6 +178,22 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
         [tenant.id, service.id],
       );
     }
+    for (const assignment of SEED_SERVICE_MEMBERSHIPS) {
+      const tenant = tenantBySlug.get(assignment.tenantSlug);
+      const service = serviceByClientId.get(assignment.clientId);
+      const userId = userIds.get(assignment.username);
+      if (tenant === undefined || service === undefined || userId === undefined)
+        throw new Error(
+          `unknown service membership ${assignment.tenantSlug}/${assignment.clientId}`,
+        );
+      await client.query(
+        `INSERT INTO identity.tenant_service_members (tenant_id, oidc_client_id, user_id, role)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (tenant_id, oidc_client_id, user_id)
+           DO UPDATE SET role = EXCLUDED.role, status = 'active'`,
+        [tenant.id, service.id, userId, assignment.role],
+      );
+    }
     await client.query("COMMIT");
     logger.info("identity seeded", { users: userIds.size, tenants: SEED_TENANTS.length });
     return userIds;
@@ -202,6 +221,19 @@ async function seedProjects(userIds: Map<string, string>): Promise<void> {
         `INSERT INTO business.projects (id, tenant_id, name, created_by) VALUES ($1, $2, $3, $4)
          ON CONFLICT (id) DO NOTHING`,
         [project.id, tenant.id, project.name, createdBy],
+      );
+    }
+    for (const override of SEED_PERMISSION_OVERRIDES) {
+      const tenant = tenantBySlug.get(override.tenantSlug);
+      const userId = userIds.get(override.username);
+      if (tenant === undefined || userId === undefined)
+        throw new Error("seed permission override refs invalid");
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant.id]);
+      await client.query(
+        `INSERT INTO business.member_permissions (tenant_id, user_id, client_id, permission, effect)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (tenant_id, user_id, client_id, permission) DO UPDATE SET effect = EXCLUDED.effect`,
+        [tenant.id, userId, override.clientId, override.permission, override.effect],
       );
     }
     await client.query("COMMIT");

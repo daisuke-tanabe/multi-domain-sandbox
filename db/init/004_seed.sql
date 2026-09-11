@@ -3,9 +3,10 @@
 --
 -- サービス : crm, cms
 -- テナント : tanaka (crm と cms を契約), suzuki (crm のみ契約)
--- alice    : tanaka の owner、suzuki の viewer
--- bob      : suzuki の admin のみ
--- carol    : どのテナントにも所属しない
+-- alice    : tanaka では crm / cms の owner。suzuki では crm の viewer。cms では projects:write を個別に拒否
+-- bob      : suzuki の crm の admin
+-- carol    : どのサービスにも割り当てなし
+-- tenant_members は会社横断の役割。alice は tanaka の owner、bob は suzuki の owner
 --
 -- client_secret はローカル固定値。ハッシュは packages/shared/src/secret-hash.ts の sha256 形式
 --   crm : crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU
@@ -23,8 +24,7 @@ INSERT INTO identity.tenants (id, slug, name) VALUES
 
 INSERT INTO identity.tenant_members (tenant_id, user_id, role) VALUES
   ('01J00000000000000000TANAKA0', '01J0000000000000000000ALICE', 'owner'),
-  ('01J00000000000000000SUZUKI0', '01J0000000000000000000ALICE', 'viewer'),
-  ('01J00000000000000000SUZUKI0', '01J00000000000000000000BOB0', 'admin');
+  ('01J00000000000000000SUZUKI0', '01J00000000000000000000BOB0', 'owner');
 
 INSERT INTO identity.oidc_clients (id, client_id, name, audience, redirect_uri_template, backchannel_logout_uri) VALUES
   ('01J00000000000000000000CRM', 'crm', 'CRM', 'http://api.crm.localhost:3002', 'http://{tenant}.crm.localhost:3001/auth/callback', 'http://crm.localhost:3001/auth/backchannel-logout'),
@@ -40,6 +40,13 @@ INSERT INTO identity.tenant_services (tenant_id, oidc_client_id) VALUES
   ('01J00000000000000000TANAKA0', '01J00000000000000000000CMS'),
   ('01J00000000000000000SUZUKI0', '01J00000000000000000000CRM');
 
+-- サービスごとの割り当て。suzuki の cms は契約がないので割り当ても存在しない
+INSERT INTO identity.tenant_service_members (tenant_id, oidc_client_id, user_id, role) VALUES
+  ('01J00000000000000000TANAKA0', '01J00000000000000000000CRM', '01J0000000000000000000ALICE', 'owner'),
+  ('01J00000000000000000TANAKA0', '01J00000000000000000000CMS', '01J0000000000000000000ALICE', 'owner'),
+  ('01J00000000000000000SUZUKI0', '01J00000000000000000000CRM', '01J0000000000000000000ALICE', 'viewer'),
+  ('01J00000000000000000SUZUKI0', '01J00000000000000000000CRM', '01J00000000000000000000BOB0', 'admin');
+
 RESET ROLE;
 
 -- business.projects は FORCE ROW LEVEL SECURITY のため sandbox_api では app.tenant_id なしに挿入できない
@@ -48,3 +55,7 @@ INSERT INTO business.projects (id, tenant_id, name, created_by) VALUES
   ('01J0000000000000000PROJECTT1', '01J00000000000000000TANAKA0', 'Tanaka Project 1', '01J0000000000000000000ALICE'),
   ('01J0000000000000000PROJECTT2', '01J00000000000000000TANAKA0', 'Tanaka Project 2', '01J0000000000000000000ALICE'),
   ('01J0000000000000000PROJECTS1', '01J00000000000000000SUZUKI0', 'Suzuki Project 1', '01J00000000000000000000BOB0');
+
+-- サービス固有の権限の上書き。alice は tanaka の cms では owner だが Project を作れない
+INSERT INTO business.member_permissions (tenant_id, user_id, client_id, permission, effect) VALUES
+  ('01J00000000000000000TANAKA0', '01J0000000000000000000ALICE', 'cms', 'projects:write', 'deny');

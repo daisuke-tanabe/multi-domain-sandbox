@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { bearerChallenge, TOKEN_EXPIRED_DESCRIPTION, type Logger } from "@sandbox/shared";
-import { hasPermission, type Permission } from "../permissions.ts";
+import type { Permission } from "../permissions.ts";
 import type { IdentityTenant, IdentityUser } from "../ports/identity-reader.ts";
 import type { TenantContext } from "../ports/project-repository.ts";
 import {
@@ -79,7 +79,7 @@ export function requirePermission(permission: Permission): MiddlewareHandler<Api
   return async (c, next) => {
     const ctx = c.get("tenantContext");
     if (ctx === undefined) return unauthorized(c, "invalid_request");
-    if (!hasPermission(ctx.role, permission)) return forbidden(c);
+    if (!ctx.permissions.has(permission)) return forbidden(c);
     await next();
   };
 }

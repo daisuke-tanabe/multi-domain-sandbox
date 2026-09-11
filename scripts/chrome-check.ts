@@ -199,8 +199,9 @@ try {
   check(
     "portal lists the tenants the user belongs to",
     portalBody.includes("Sandbox ポータル") &&
-      portalBody.includes("tanaka / owner") &&
-      portalBody.includes("suzuki / viewer"),
+      portalBody.includes("Tanaka Inc.") &&
+      portalBody.includes("crm / owner") &&
+      portalBody.includes("crm / viewer"),
     String(await cdp.evaluate("location.href")),
   );
   await cdp.navigateWith(() =>

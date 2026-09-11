@@ -13,10 +13,10 @@ import {
 import type {
   Contract,
   IdentityRepository,
-  Membership,
   NewUser,
   OidcClient,
   PortalEntry,
+  ServiceMembership,
   Tenant,
   User,
 } from "../ports/identity-repository.ts";
@@ -58,9 +58,9 @@ const portalRow = z.object({
   name: z.string(),
   status: tenantStatusSchema,
   role: roleSchema,
-  client_id: z.string().nullable(),
-  client_name: z.string().nullable(),
-  redirect_uri_template: z.string().nullable(),
+  client_id: z.string(),
+  client_name: z.string(),
+  redirect_uri_template: z.string(),
 });
 
 function toUser(row: z.infer<typeof userRow>): User {
@@ -158,12 +158,17 @@ export class PgIdentityRepository implements IdentityRepository {
     );
   }
 
-  public findMembership(tenantId: string, userId: string): Promise<Membership | undefined> {
+  public findServiceMembership(
+    tenantId: string,
+    oidcClientId: string,
+    userId: string,
+  ): Promise<ServiceMembership | undefined> {
     return queryOne(
       this.pool,
       membershipRow,
-      "SELECT role, status FROM identity.tenant_members WHERE tenant_id = $1 AND user_id = $2",
-      [tenantId, userId],
+      `SELECT role, status FROM identity.tenant_service_members
+        WHERE tenant_id = $1 AND oidc_client_id = $2 AND user_id = $3`,
+      [tenantId, oidcClientId, userId],
     );
   }
 
@@ -177,42 +182,37 @@ export class PgIdentityRepository implements IdentityRepository {
   }
 
   public async listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>> {
+    // 割り当てがあり、契約と Client が有効なサービスだけを並べる
     const result = await this.pool.query(
       `SELECT t.id AS tenant_id, t.slug, t.name, t.status, m.role,
               c.client_id, c.name AS client_name, c.redirect_uri_template
-         FROM identity.tenant_members m
-         JOIN identity.tenants t ON t.id = m.tenant_id
-         LEFT JOIN identity.tenant_services s ON s.tenant_id = t.id AND s.status = 'active'
-         LEFT JOIN identity.oidc_clients c ON c.id = s.oidc_client_id AND c.status = 'active'
-        WHERE m.user_id = $1 AND m.status = 'active' AND t.status = 'active'
+         FROM identity.tenant_service_members m
+         JOIN identity.tenants t ON t.id = m.tenant_id AND t.status = 'active'
+         JOIN identity.tenant_services s
+           ON s.tenant_id = m.tenant_id AND s.oidc_client_id = m.oidc_client_id AND s.status = 'active'
+         JOIN identity.oidc_clients c ON c.id = m.oidc_client_id AND c.status = 'active'
+        WHERE m.user_id = $1 AND m.status = 'active'
         ORDER BY t.slug, c.client_id`,
       [userId],
     );
     // t.slug 順なので、テナントが変わるたびに新しいエントリを積む
-    const entries: Array<{ tenant: Tenant; role: PortalEntry["role"]; services: PortalService[] }> =
-      [];
+    const entries: Array<{ tenant: Tenant; services: PortalService[] }> = [];
     for (const raw of result.rows) {
       const row = portalRow.parse(raw);
       let entry = entries.at(-1);
       if (entry === undefined || entry.tenant.id !== row.tenant_id) {
         entry = {
           tenant: { id: row.tenant_id, slug: row.slug, name: row.name, status: row.status },
-          role: row.role,
           services: [],
         };
         entries.push(entry);
       }
-      if (
-        row.client_id !== null &&
-        row.client_name !== null &&
-        row.redirect_uri_template !== null
-      ) {
-        entry.services.push({
-          clientId: row.client_id,
-          name: row.client_name,
-          origin: new URL(expandRedirectUriTemplate(row.redirect_uri_template, row.slug)).origin,
-        });
-      }
+      entry.services.push({
+        clientId: row.client_id,
+        name: row.client_name,
+        role: row.role,
+        origin: new URL(expandRedirectUriTemplate(row.redirect_uri_template, row.slug)).origin,
+      });
     }
     return entries;
   }

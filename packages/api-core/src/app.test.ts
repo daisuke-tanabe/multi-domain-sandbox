@@ -135,7 +135,7 @@ describe("membership based authorization", () => {
     harness = await createApiHarness();
   });
 
-  test("returns user, tenant and role from tenant_members for a valid token", async () => {
+  test("returns user, tenant, role and permissions from tenant_service_members for a valid token", async () => {
     // Arrange
     const token = await issueTestAccessToken(harness, { userId: ALICE_ID, tenantId: SUZUKI_ID });
 
@@ -150,6 +150,7 @@ describe("membership based authorization", () => {
       user: { id: ALICE_ID },
       tenant: { id: SUZUKI_ID, slug: "suzuki" },
       role: "viewer",
+      permissions: ["projects:read", "tenant:read"],
     });
   });
 
@@ -168,7 +169,7 @@ describe("membership based authorization", () => {
   });
 
   test("returns 403 when the token names a tenant the user does not belong to", async () => {
-    // bob は tanaka に所属しない。Token の tenant_id だけでは認可しない
+    // bob は tanaka のどのサービスにも割り当てられていない。Token の tenant_id だけでは認可しない
     const token = await issueTestAccessToken(harness, { userId: BOB_ID, tenantId: TANAKA_ID });
 
     const res = await harness.app.request(`${API_AUDIENCE}/v1/projects`, {
@@ -183,7 +184,7 @@ describe("membership based authorization", () => {
     const before = await harness.app.request(`${API_AUDIENCE}/v1/projects`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    harness.identity.removeMembership(TANAKA_ID, ALICE_ID);
+    harness.identity.removeServiceMembership(TANAKA_ID, "crm", ALICE_ID);
 
     const after = await harness.app.request(`${API_AUDIENCE}/v1/projects`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -200,6 +201,68 @@ describe("membership based authorization", () => {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ name: "new" }),
+    });
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("service-specific permission overrides", () => {
+  test("a deny override removes a permission the role would grant", async () => {
+    // alice は tanaka の cms で owner だが、cms 側の DB で projects:write を拒否している
+    const cms = await createApiHarness({ audience: CMS_AUDIENCE });
+    const token = await issueTestAccessToken(cms, {
+      userId: ALICE_ID,
+      tenantId: TANAKA_ID,
+      audience: CMS_AUDIENCE,
+      clientId: "cms",
+    });
+
+    const read = await cms.app.request(`${CMS_AUDIENCE}/v1/projects`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const write = await cms.app.request(`${CMS_AUDIENCE}/v1/projects`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "blocked" }),
+    });
+
+    expect(read.status).toBe(200);
+    expect(write.status).toBe(403);
+  });
+
+  test("an allow override grants a permission the role lacks", async () => {
+    const harness = await createApiHarness();
+    harness.permissions.add({
+      tenantId: SUZUKI_ID,
+      userId: ALICE_ID,
+      clientId: "crm",
+      permission: "projects:write",
+      effect: "allow",
+    });
+    const token = await issueTestAccessToken(harness, { userId: ALICE_ID, tenantId: SUZUKI_ID });
+
+    const res = await harness.app.request(`${API_AUDIENCE}/v1/projects`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "granted" }),
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  test("a membership for another service does not open this service", async () => {
+    // alice は suzuki の crm には割り当てがあるが、cms には契約も割り当てもない
+    const cms = await createApiHarness({ audience: CMS_AUDIENCE });
+    const token = await issueTestAccessToken(cms, {
+      userId: ALICE_ID,
+      tenantId: SUZUKI_ID,
+      audience: CMS_AUDIENCE,
+      clientId: "cms",
+    });
+
+    const res = await cms.app.request(`${CMS_AUDIENCE}/v1/me`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
 
     expect(res.status).toBe(403);
@@ -251,12 +314,16 @@ describe("tenant isolation", () => {
     const listB = await harness.projects.list({
       tenantId: SUZUKI_ID,
       userId: ALICE_ID,
+      clientId: "crm",
       role: "viewer",
+      permissions: new Set(),
     });
     const listA = await harness.projects.list({
       tenantId: TANAKA_ID,
       userId: ALICE_ID,
+      clientId: "crm",
       role: "owner",
+      permissions: new Set(),
     });
 
     expect(res.status).toBe(201);

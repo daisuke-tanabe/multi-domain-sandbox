@@ -95,7 +95,14 @@ API Server 向けの Token。JWT 形式で自己完結検証できるように�
 | `sid` | Global Logout 時の失効判定に使える識別子 |
 | `jti` | 失効リストを導入する場合のキー。初期は未使用 |
 
-role や permission は載せない。API Server が tenant_members を毎回参照して解決する。理由は、権限変更を即時反映するためと、Token 発行後の Membership 削除を確実に拒否するため。
+role や permission は載せない。role は API Server が tenant_service_members を毎回参照して解決し、permission は役割の既定に自サービス DB の member_permissions の上書きを重ねて確定する。判断事項D16。理由は次のとおり。
+
+- 権限変更を次のリクエストから反映する。Token に載せると寿命の 15 分間は古い権限で通る
+- Token 発行後のサービスへの割り当て削除を確実に拒否する
+- Auth Server がサービスごとの権限語彙を知らなくてよい。Auth Server が扱うのは client_id と割り当てだけで、permission 名は各サービスが自分の DB で決める
+- Token がサービス数と権限数に比例して肥大化しない
+
+`client_id` は API Server がこのサービスへの割り当てと権限の上書きを引くキーにもなる。
 
 aud はサービスごとに異なる。CRM 向けに発行した Token を api.cms.sandbox.com に出しても aud 不一致で拒否される。
 
@@ -106,7 +113,7 @@ aud はサービスごとに異なる。CRM 向けに発行した Token を api.
 3. `iss` 一致
 4. `aud` に 1 で導いた値が含まれる
 5. `exp` 未来
-6. `tenant_id` と `sub` の Membership を Identity DB で再検証
+6. `tenant_id` `client_id` `sub` でこのサービスへの割り当てを Identity DB で再検証し、権限の上書きを自サービスの DB から読む
 7. 以降は [07-api-auth-design.md](./07-api-auth-design.md)
 
 ## Refresh Token
@@ -119,9 +126,9 @@ aud はサービスごとに異なる。CRM 向けに発行した Token を api.
 | 再利用検知 | rotated / revoked の値が使われたら同系列全体を失効。別 Client からの提示も同様 |
 | 同時提示 | 同じ値を同時に 2 回提示しても成功は 1 つ。もう一方は invalid_grant で、系列は失効しない |
 | 紐付け | user_id / tenant_id / sid / client_id / family_id |
-| 失効条件 | SSO Session 失効、ユーザー無効化、テナント停止、契約解除、Membership 削除、Tenant Logout、Global Logout |
+| 失効条件 | SSO Session 失効、ユーザー無効化、テナント停止、契約解除、サービスへの割り当て削除、Tenant Logout、Global Logout |
 
-refresh_token grant では `/authorize` と同じ順序でアクセス判定を再実行する。user → tenant → 契約 → Membership。
+refresh_token grant では `/authorize` と同じ順序でアクセス判定を再実行する。user → tenant → 契約 → サービスへの割り当て。
 
 Cognito Refresh Token とは無関係。Cognito Refresh Token は Auth Server が Cognito 側のセッション延長にのみ使う。
 

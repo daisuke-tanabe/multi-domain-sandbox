@@ -7,7 +7,8 @@ Sandbox 認証・マルチサービス・マルチテナントSSO基盤の設計
 
 - サービスは Auth Server を利用するプロダクト。OIDC Client 1 件に対応する。サンドボックスでは `crm` と `cms`
 - テナントは顧客企業。サービスをまたいで共有される。サンドボックスでは `tanaka` と `suzuki`
-- 契約は `identity.tenant_services` で表し、テナントがどのサービスを使えるかを決める
+- 契約は `identity.tenant_services` で表し、テナントがどのサービスを使えるかを決める。会社単位で持つ
+- 招待と役割はサービス単位。`identity.tenant_service_members` がテナント × サービス × ユーザーごとに役割を持ち、ログイン可否はこの表で決める。`identity.tenant_members` は会社横断の役割にだけ使う。細かい権限は各サービスの DB の `business.member_permissions` に置き、Token には載せない。判断事項D16
 - ホストは `<tenant>.<service>.<domain>`。認可リクエストのテナントは `client_id` と `redirect_uri` の組で決まる。サービスごとの `redirect_uri_template` に `redirect_uri` を当てて取り出した slug で `tenants` を引く
 
 ## 構成

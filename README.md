@@ -7,7 +7,9 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 
 - サービスは Auth Server を利用するプロダクト。OIDC Client 1 件に対応し、`client_id` はサービス ID。サンドボックスには `crm` と `cms` の 2 サービスがある
 - テナントは顧客企業。サービスをまたいで共有される。サンドボックスには `tanaka` と `suzuki` の 2 テナントがある
-- 契約は `identity.tenant_services` で表す。tanaka は crm と cms、suzuki は crm だけを契約している
+- 契約は `identity.tenant_services` で表す。tanaka は crm と cms、suzuki は crm だけを契約している。購買、請求、席数、解約は会社単位で行う
+- 招待と役割はサービス単位。`identity.tenant_service_members` がテナント × サービス × ユーザーごとに役割を持ち、`/authorize` と API はこの表でログイン可否を決める。`identity.tenant_members` は管理者や請求担当のような会社横断の役割にだけ使い、ログイン可否には使わない
+- 細かい権限は Token に載せず、各サービスの DB の `business.member_permissions` が役割の既定に対する allow / deny を持つ。API がリクエストごとに読み、deny が優先する。サンドボックスは 1 つの DB を crm-api と cms-api で共有するため `client_id` 列を持つ
 - ホストは `<tenant>.<service>.<domain>`。本番なら tanaka.crm.com、suzuki.crm.com、tanaka.cms.com に相当する
 - 認可リクエストのテナントは `client_id` と `redirect_uri` の組で決まる。サービスは `http://{tenant}.crm.localhost:3001/auth/callback` のような `redirect_uri_template` を 1 つ持ち、redirect_uri をテンプレートに当てて取り出した slug で `tenants` を引く。テナント追加に redirect_uri の登録は要らない
 
@@ -21,7 +23,7 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | --- | --- | --- |
 | `apps/auth-api` | OpenID Provider。ログイン画面、認可、Token 発行、SSO Session、ポータル。画面は当面ここで配信し、React の auth-web は次段階で分離する | http://auth.localhost:3000 |
 | `apps/crm-web` | CRM の Tenant Web Application。BFF。1 プロセスで CRM の全テナントのホストを受ける。`main.ts` は `startWebCore("crm-web")` を呼ぶだけ | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
-| `apps/crm-api` | CRM の Resource Server。Bearer 検証、Membership 認可、RLS。`main.ts` は `startApiCore("crm-api")` を呼ぶだけ | http://api.crm.localhost:3002 |
+| `apps/crm-api` | CRM の Resource Server。Bearer 検証、サービスへの割り当てと権限の認可、RLS。`main.ts` は `startApiCore("crm-api")` を呼ぶだけ | http://api.crm.localhost:3002 |
 | `apps/cms-web` | CMS の Tenant Web Application。crm-web と同じ実装をサービス設定だけ変えて起動する | http://tanaka.cms.localhost:3003 / http://suzuki.cms.localhost:3003 |
 | `apps/cms-api` | CMS の Resource Server。crm-api と同じ実装 | http://api.cms.localhost:3004 |
 | `packages/web-core` | `apps/*-web` の実装本体。crm-web と cms-web はこれを起動するだけ。BFF として画面、`/auth/*` の受け口、API 中継、設定スキーマ `config.ts`、起動関数 `start.ts`、テストを持つ | |
@@ -92,19 +94,28 @@ client_secret は `identity.oidc_client_secrets` に SHA-256 ハッシュで入�
 | tanaka | `01J00000000000000000TANAKA0` | Tanaka Inc. | crm、cms |
 | suzuki | `01J00000000000000000SUZUKI0` | Suzuki Ltd. | crm |
 
-テナントの追加は `identity.tenants` と `identity.tenant_services` に行を足すだけでよい。redirect_uri はテンプレートから導くため、テナントごとの登録はない。
+会社のオンボーディングは次の行を足すだけでよい。redirect_uri はテンプレートから導くため、テナントごとの登録はなく、会社ごとの Client 登録もサービスごとのテナントも要らない。
+
+1. `identity.tenants` に 1 行
+2. 契約するサービスごとに `identity.tenant_services` に 1 行。CRM だけなら 1 行
+3. そのサービスを使う人ごとに `identity.tenant_service_members` に役割付きで 1 行。招待はサービス単位
+4. 後から CMS を足すときは `tenant_services` に 1 行と、CMS を使う人の割り当てを足す
+5. 役割より細かい許可 / 拒否が要るときは、そのサービスの DB の `business.member_permissions` に行を足す
 suzuki.cms.localhost:3003 は cms のテンプレートに一致し suzuki も既知のテナントだが、契約がないため開いても `access_denied` になる。テンプレートに一致しない redirect_uri や、`nobody.crm.localhost:3001` のように tenants にない slug は `invalid_redirect_uri` でリダイレクトせず 400 になる。
 
 ## ローカルユーザー
 
 Cognito はモックアダプタで代替している。`apps/auth-api/.env.example` の `MOCK_COGNITO_USERS` と `db/init/004_seed.sql` が対応する。
 
-| ユーザー | パスワード | tanaka | suzuki |
-| --- | --- | --- | --- |
-| alice | alice-password | owner | viewer |
-| bob | bob-password | 所属なし | admin |
-| carol | carol-password | 所属なし | 所属なし |
+役割はテナント × サービスごとに持つ。`tenant_service_members` の列がログインに使う割り当てで、`tenant_members` の列は会社横断の役割でログインには使わない。
 
+| ユーザー | パスワード | tanaka × crm | tanaka × cms | suzuki × crm | tenant_members |
+| --- | --- | --- | --- | --- | --- |
+| alice | alice-password | owner | owner。cms 側で `projects:write` を deny | viewer | tanaka の owner |
+| bob | bob-password | 割り当てなし | 割り当てなし | admin | suzuki の owner |
+| carol | carol-password | 割り当てなし | 割り当てなし | 割り当てなし | なし |
+
+suzuki × cms は契約がないため割り当ての列がない。alice は tanaka.cms の owner だが、`business.member_permissions` の deny により Project を作れない。
 Project のシードは tanaka に「Tanaka Project 1」「Tanaka Project 2」、suzuki に「Suzuki Project 1」がある。
 
 確認できる挙動。
@@ -112,13 +123,13 @@ Project のシードは tanaka に「Tanaka Project 1」「Tanaka Project 2」�
 1. tanaka.crm に未ログインでアクセスすると auth.localhost のログイン画面へ遷移する
 2. alice でログインすると tanaka の Projects が表示される。Cookie は tanaka.crm.localhost と auth.localhost にだけ発行される
 3. そのまま suzuki.crm を開くとログイン画面なしで入れる。role は viewer になり Project 作成は拒否される
-4. そのまま tanaka.cms を開くと、別サービスでもログイン画面なしで入れる。セッションは crm と別に作られ、Access Token の aud は cms の API になる
+4. そのまま tanaka.cms を開くと、別サービスでもログイン画面なしで入れる。セッションは crm と別に作られ、Access Token の aud は cms の API になる。role は owner と表示されるが、cms 側の `projects:write` の deny により Project 作成は「この操作を行う権限がありません」で拒否される
 5. suzuki.cms を開くと 403 になり「テナント suzuki は CMS を契約していません」と表示される。SSO Session は残る
 6. tanaka.crm でログアウトしても suzuki.crm と tanaka.cms はログイン済みのまま。tanaka.crm の Projects を開き直すと SSO Session によりパスワードなしで再ログインされる
 7. ログアウト後の画面にある「Sandbox 全体からログアウト」を押すと auth.localhost の確認画面に移り、SSO Session とすべてのサービス・テナントのセッションが無効化される。完了画面には「CRM (tanaka) に戻る」のように戻り先のリンクが出る
-8. bob で tanaka.crm を開くとアクセス権なしの画面になる。ログイン自体は成功しており suzuki.crm には入れる
-9. carol はどのテナントにも所属していないため、どのホストを開いてもアクセス権なしになる
-10. http://auth.localhost:3000/ を直接開くとポータルになる。未ログインならログインフォーム、ログイン後はテナントごとに role と契約サービスの一覧が出て、各サービスへパスワードなしで入れる
+8. bob で tanaka.crm を開くとアクセス権なしの画面になる。tanaka の crm に割り当てがないため。ログイン自体は成功しており suzuki.crm には入れる
+9. carol はどのサービスにも割り当てられていないため、どのホストを開いてもアクセス権なしになる
+10. http://auth.localhost:3000/ を直接開くとポータルになる。未ログインならログインフォーム、ログイン後はテナントごとに割り当てのあるサービスが `crm / owner` のようにサービスごとの役割付きで並び、各サービスへパスワードなしで入れる。契約があっても割り当てのないサービスは出ない。carol には「利用できるサービスがありません。管理者に招待を依頼してください。」と出る
 
 ## Tenant Logout の挙動について
 
@@ -128,15 +139,17 @@ Sandbox 全体からログアウトしたい場合は、ログアウト後の画
 
 ## アクセス拒否の理由
 
-`/authorize` は user → tenant → 契約 → Membership の順に確認し、失敗すると `redirect_uri` へ `error=access_denied&error_description=<reason>` で戻す。`*-web` は 403 画面を出し、SSO Session は残る。Refresh 時も同じ確認を行う。
+`/authorize` は user → tenant → 契約 → サービスへの割り当て の順に確認し、失敗すると `redirect_uri` へ `error=access_denied&error_description=<reason>` で戻す。`*-web` は 403 画面を出し、SSO Session は残る。Refresh 時も同じ確認を行う。
 
 | reason | 意味 |
 | --- | --- |
 | `user_disabled` | users.status が active でない |
 | `tenant_suspended` | tenants.status が active でない |
 | `not_contracted` | tenant_services に契約がない。suzuki.cms がこれに当たる |
-| `no_membership` | tenant_members に所属がない。bob の tanaka、carol の全テナントがこれに当たる |
-| `membership_inactive` | tenant_members.status が active でない |
+| `no_membership` | tenant_service_members にこのテナント × このサービスの割り当てがない。bob の tanaka、carol の全ホストがこれに当たる。別サービスの割り当てや tenant_members の会社横断の役割では通らない |
+| `membership_inactive` | tenant_service_members.status が active でない |
+
+API は Token の `tenant_id` `client_id` `sub` で同じ割り当てを毎リクエスト再検証し、役割の既定に自サービス DB の `member_permissions` を重ねて権限を確定する。Token には role も permission も載せないため、割り当てや権限の変更は次のリクエストから反映される。
 
 ## ローカル運用の注意
 
@@ -153,9 +166,9 @@ pnpm lint
 pnpm test
 ```
 
-テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/web-core/src/app.test.ts` は auth-api とサービスごとの web / api インスタンスをプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、Logout までを通す。テストは 130 件。同じ Refresh Token の同時提示、別 Client からの Refresh、再ログイン時の旧 SSO Session 破棄、ログインのレート制限、Tenant 側の同時 Refresh のような並行性と悪用への耐性も含む。
+テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/web-core/src/app.test.ts` は auth-api とサービスごとの web / api インスタンスをプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、tanaka.cms の owner が cms 側の deny で Project を作れないこと、Logout までを通す。テストは 134 件。サービスごとの allow / deny の上書き、別サービスの割り当てではこのサービスに入れないこと、ポータルのサービスごとの役割表示、同じ Refresh Token の同時提示、別 Client からの Refresh、再ログイン時の旧 SSO Session 破棄、ログインのレート制限、Tenant 側の同時 Refresh のような並行性と悪用への耐性も含む。
 
-起動中のサーバーと PostgreSQL に対する実 HTTP の確認は次で行う。tanaka.crm でのログイン、suzuki.crm と tanaka.cms への SSO、suzuki.cms の拒否、Tenant Logout、Global Logout を順に確認する。
+起動中のサーバーと PostgreSQL に対する実 HTTP の確認は次で行う。tanaka.crm でのログイン、suzuki.crm と tanaka.cms への SSO、tanaka.cms での Project 作成の拒否、suzuki.cms の拒否、Tenant Logout、Global Logout を順に確認する。
 
 ```bash
 pnpm smoke

@@ -2,10 +2,10 @@ import { expandRedirectUriTemplate } from "@sandbox/shared";
 import type {
   Contract,
   IdentityRepository,
-  Membership,
   NewUser,
   OidcClient,
   PortalEntry,
+  ServiceMembership,
   Tenant,
   User,
 } from "../ports/identity-repository.ts";
@@ -17,18 +17,20 @@ export interface MemoryIdentityData {
   readonly clients: ReadonlyArray<OidcClient>;
   readonly tenants: ReadonlyArray<Tenant>;
   readonly users: ReadonlyArray<User>;
-  readonly memberships: ReadonlyArray<{ tenantId: string; userId: string } & Membership>;
   readonly contracts: ReadonlyArray<{ tenantId: string; oidcClientId: string } & Contract>;
+  readonly serviceMemberships: ReadonlyArray<
+    { tenantId: string; oidcClientId: string; userId: string } & ServiceMembership
+  >;
 }
 
 export class MemoryIdentityRepository implements IdentityRepository {
   private readonly users: Map<string, User>;
-  private memberships: MemoryIdentityData["memberships"];
+  private memberships: MemoryIdentityData["serviceMemberships"];
   private contracts: MemoryIdentityData["contracts"];
 
   constructor(private readonly data: MemoryIdentityData) {
     this.users = new Map(data.users.map((user) => [user.id, user]));
-    this.memberships = data.memberships;
+    this.memberships = data.serviceMemberships;
     this.contracts = data.contracts;
   }
 
@@ -58,13 +60,6 @@ export class MemoryIdentityRepository implements IdentityRepository {
     return this.data.tenants.find((tenant) => tenant.slug === slug);
   }
 
-  public async findMembership(tenantId: string, userId: string): Promise<Membership | undefined> {
-    const found = this.memberships.find(
-      (member) => member.tenantId === tenantId && member.userId === userId,
-    );
-    return found === undefined ? undefined : { role: found.role, status: found.status };
-  }
-
   public async findContract(tenantId: string, oidcClientId: string): Promise<Contract | undefined> {
     const found = this.contracts.find(
       (contract) => contract.tenantId === tenantId && contract.oidcClientId === oidcClientId,
@@ -72,30 +67,46 @@ export class MemoryIdentityRepository implements IdentityRepository {
     return found === undefined ? undefined : { status: found.status };
   }
 
-  public async listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>> {
-    return this.memberships
-      .filter((member) => member.userId === userId && member.status === "active")
-      .flatMap((member) => {
-        const tenant = this.data.tenants.find((candidate) => candidate.id === member.tenantId);
-        if (tenant === undefined || tenant.status !== "active") return [];
-        const services = this.contracts
-          .filter((contract) => contract.tenantId === tenant.id && contract.status === "active")
-          .flatMap((contract) => {
-            const client = this.data.clients.find((c) => c.id === contract.oidcClientId);
-            if (client === undefined || client.status !== "active") return [];
-            const origin = new URL(
-              expandRedirectUriTemplate(client.redirectUriTemplate, tenant.slug),
-            ).origin;
-            return [{ clientId: client.clientId, name: client.name, origin }];
-          });
-        return [{ tenant, role: member.role, services }];
-      });
+  public async findServiceMembership(
+    tenantId: string,
+    oidcClientId: string,
+    userId: string,
+  ): Promise<ServiceMembership | undefined> {
+    const found = this.memberships.find(
+      (member) =>
+        member.tenantId === tenantId &&
+        member.oidcClientId === oidcClientId &&
+        member.userId === userId,
+    );
+    return found === undefined ? undefined : { role: found.role, status: found.status };
   }
 
-  /** テストで Membership を削除するための操作 */
-  public removeMembership(tenantId: string, userId: string): void {
+  public async listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>> {
+    const entries: PortalEntry[] = [];
+    for (const tenant of this.data.tenants) {
+      if (tenant.status !== "active") continue;
+      const services = this.memberships
+        .filter((m) => m.userId === userId && m.tenantId === tenant.id && m.status === "active")
+        .flatMap((membership) => {
+          const contract = this.contracts.find(
+            (c) => c.tenantId === tenant.id && c.oidcClientId === membership.oidcClientId,
+          );
+          const client = this.data.clients.find((c) => c.id === membership.oidcClientId);
+          if (contract?.status !== "active" || client?.status !== "active") return [];
+          const origin = new URL(expandRedirectUriTemplate(client.redirectUriTemplate, tenant.slug))
+            .origin;
+          return [{ clientId: client.clientId, name: client.name, role: membership.role, origin }];
+        });
+      if (services.length > 0) entries.push({ tenant, services });
+    }
+    return entries;
+  }
+
+  /** テストで割り当てを外すための操作。clientId は OAuth の client_id */
+  public removeServiceMembership(tenantId: string, clientId: string, userId: string): void {
+    const client = this.data.clients.find((c) => c.clientId === clientId);
     this.memberships = this.memberships.filter(
-      (member) => !(member.tenantId === tenantId && member.userId === userId),
+      (m) => !(m.tenantId === tenantId && m.oidcClientId === client?.id && m.userId === userId),
     );
   }
 

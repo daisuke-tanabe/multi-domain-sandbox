@@ -23,7 +23,7 @@ client_secret_basic と PKCE を併用し、Client 実装は共通モジュー�
 
 | client_id | 用途 | audience | redirect_uri_template | アクセス判定 |
 | --- | --- | --- | --- | --- |
-| `crm` | CRM の Tenant Web Application | https://api.crm.sandbox.com | `https://{tenant}.crm.sandbox.com/auth/callback` | user → tenant → 契約 → Membership |
+| `crm` | CRM の Tenant Web Application | https://api.crm.sandbox.com | `https://{tenant}.crm.sandbox.com/auth/callback` | user → tenant → 契約 → サービスへの割り当て |
 | `cms` | CMS の Tenant Web Application | https://api.cms.sandbox.com | `https://{tenant}.cms.sandbox.com/auth/callback` | 同上 |
 | `admin-console` | 管理画面。フェーズ2 | 管理 API の origin | 管理画面のホストを含むテンプレート | 管理用 scope で判定。設計はフェーズ2で決める |
 
@@ -34,6 +34,7 @@ Client 1 件は次の行で構成する。
 | oidc_clients | 1 | `id` はサロゲート主キー。`client_id` は UNIQUE の公開識別子。`redirect_uri_template` `audience` `backchannel_logout_uri` |
 | oidc_client_secrets | 1 以上 | active な client_secret のハッシュ。ローテーション中は 2 行 |
 | tenant_services | 契約テナント数 | `(tenant_id, oidc_client_id)`。外部キーは `oidc_clients.id` |
+| tenant_service_members | 契約テナントの利用者数 | `(tenant_id, oidc_client_id, user_id, role)`。このサービスを使う人とサービスごとの役割。契約への複合外部キーを持つ |
 
 ### テナントとサービスの解決
 
@@ -54,9 +55,11 @@ Tenant Web Application がクエリやヘッダでテナントを申告するこ
 ```text
 1. tenants に slug を挿入
 2. 契約するサービスごとに tenant_services に (tenant_id, oidc_client_id) を挿入
+3. そのサービスを使う人ごとに tenant_service_members に (tenant_id, oidc_client_id, user_id, role) を挿入
 ```
 
 redirect_uri はサービスのテンプレートから導くため、テナントごとの登録はない。Client と client_secret もサービスのものをそのまま使う。Tenant Web Application の設定変更は不要。
+CRM だけ契約する会社なら tenants 1 行、tenant_services 1 行、利用者数分の tenant_service_members で完了する。後から CMS を足すときは tenant_services 1 行と、CMS を使う人の割り当てを足す。招待はサービス単位で、役割もサービスごとに決める。判断事項D16。
 
 ### サービス作成時の登録
 
@@ -65,11 +68,13 @@ redirect_uri はサービスのテンプレートから導くため、テナン�
 2. oidc_clients に id、client_id、name、audience、redirect_uri_template、backchannel_logout_uri を挿入
 3. oidc_client_secrets に (oidc_client_id, sha256$<hash>, active) を挿入
 4. 契約テナントごとに tenant_services を挿入
-5. client_secret を Secret Store に `oidc/clients/<client_id>` として保存
-6. そのサービスの web と api のプロセスを追加し、web に CLIENT_ID / CLIENT_SECRET / BASE_HOST / API_BASE_URL、api に API_BASE_URL を与える
+5. 契約テナントの利用者ごとに tenant_service_members を挿入
+6. client_secret を Secret Store に `oidc/clients/<client_id>` として保存
+7. そのサービスの web と api のプロセスを追加し、web に CLIENT_ID / CLIENT_SECRET / BASE_HOST / API_BASE_URL、api に API_BASE_URL を与える
+8. 役割の既定より細かい許可 / 拒否が要るなら、そのサービスの DB に member_permissions を置く。Auth Server には登録しない
 ```
 
-サンドボックスでは provision が `SERVICES` の JSON から 1〜4 を投入する。`redirect_uri_template` は `SERVICES[].baseHost` から `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` として組み立て、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret は revoked にする。
+サンドボックスでは provision が `SERVICES` の JSON から 1〜4 を投入し、`SEED_SERVICE_MEMBERSHIPS` と `SEED_PERMISSION_OVERRIDES` で 5 と 8 のシードを投入する。`redirect_uri_template` は `SERVICES[].baseHost` から `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` として組み立て、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret は revoked にする。
 
 ### client_secret のローテーション
 
@@ -86,7 +91,7 @@ redirect_uri はサービスのテンプレートから導くため、テナン�
 1. 認可リクエストの `redirect_uri` を `client_id` の `redirect_uri_template` に当てる。テンプレートの `{tenant}` より前と後ろが文字列完全一致し、中間が slug の形式 `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$` であることを要求する
 2. 取り出した slug で tenants を検索する。行がなければ不一致として扱う
 3. 不一致の場合、そのURIへリダイレクトせず Auth Server 上でエラー画面を表示する。`invalid_redirect_uri`
-4. 見つかったテナントを認可リクエストのテナントとする。契約や Membership の判定はこのテナントに対して行う
+4. 見つかったテナントを認可リクエストのテナントとする。契約やサービスへの割り当ての判定はこのテナントに対して行う
 5. `/token` でも code に紐付けた `redirect_uri` と再度完全一致検証する
 6. 比較前の正規化は行わない。テンプレートを slug で展開した文字列と redirect_uri が 1 バイトでも違えば不一致。末尾スラッシュ、クエリ、大文字、多段ラベルはすべて拒否する
 7. ローカル開発用の `http://{tenant}.crm.localhost:3001/auth/callback` 等は開発環境の Registry にのみ登録し、本番 Registry には https 以外を登録できないよう制約する
@@ -187,7 +192,7 @@ type OidcClientConfig = ServiceConfig & {
 
 ## Third-Party Initiated Login
 
-auth.sandbox.com のポータルは、所属テナントごとに契約サービスの `https://<tenant>.<service>.sandbox.com/auth/login` へのリンクを並べる。リンク先は通常の `/auth/login` なので、Tenant Web Application 側に専用の入口は不要。
+auth.sandbox.com のポータルは、テナントごとに、ユーザーが割り当てられていて契約と Client が active なサービスの `https://<tenant>.<service>.sandbox.com/auth/login` へのリンクを並べ、サービスごとの役割を `<client_id> / <role>` の形で添える。テナント単位の役割は表示しない。どのサービスにも割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」を表示する。リンク先は通常の `/auth/login` なので、Tenant Web Application 側に専用の入口は不要。
 
 ## 将来拡張との対応
 

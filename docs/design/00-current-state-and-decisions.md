@@ -8,6 +8,7 @@
 OIDC Client はサービス単位で登録し、テナントは顧客としてサービス横断で共有する。テナントがサービスを使えるかは契約で判定する。判断事項D13。
 検証実装はサービスごとに web と api のプロセスを持ち、実装は共有パッケージに置く。判断事項D14。
 Identity DB の主キーはサロゲート ID、redirect_uri はサービスごとのテンプレート、client_secret は複数行でローテーション可能、ハッシュは SHA-256 とする。判断事項D15。
+招待と役割はテナント単位ではなくサービス単位で持つ。契約は会社単位の tenant_services、割り当てはサービス単位の tenant_service_members、細かい権限はサービス側 DB の member_permissions に置き、Token には載せない。判断事項D16。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -52,11 +53,11 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 | Cognitoの位置 | Auth Serverの内部認証バックエンド。Cognito Tokenはauth.sandbox.comの外に出さない |
 | Tenant Web Application | BFF構成。サーバー側セッション + Cookie。ブラウザはTokenを持たない |
 | Client登録 | サービスごとに1 Client。redirect_uri はサービスごとの `redirect_uri_template` で、テナントは契約 tenant_services でサービスに紐付ける。テナント追加に Client 登録も redirect_uri 登録も不要 |
-| テナントアクセス可否 | `/authorize` 時にAuth Serverが user → tenant → 契約 → Membership の順に検証 |
+| テナントアクセス可否 | `/authorize` 時にAuth Serverが user → tenant → 契約 → サービスへの割り当て の順に検証 |
 | API認証 | Auth Server発行のAccess Token。JWT RS256。aud=サービスごとのAPI origin。BFFがサーバー間で送信 |
-| API認可 | Token検証 → sub / tenant_id取得 → DBでMembership再検証 → Role → データアクセス。Tokenのroleは信用しない |
+| API認可 | Token検証 → sub / tenant_id / client_id取得 → DBでこのサービスへの割り当てを再検証 → Role の既定に自サービス DB の権限の上書きを重ねて Permission → データアクセス。Tokenにroleもpermissionも載せない |
 | Tenant Isolation | Token内tenant_idとリソースのtenant_idの一致をアプリ層で強制。可能ならDB RLSで二重化 |
-| Identity DB | users / tenants / tenant_members はAuth Serverが所有。API Serverは読み取り参照 |
+| Identity DB | users / tenants / tenant_services / tenant_service_members / tenant_members はAuth Serverが所有。API Serverは読み取り参照。サービス固有の権限は各サービスの DB に置く |
 | Logout | Tenant Logoutは自セッションのみ。Global LogoutはOIDC Back-Channel Logoutで拡張 |
 
 ## 4. 人間の判断が必要な事項
@@ -79,6 +80,7 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 | D13 | OIDC Client はサービス単位。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定。2026-09-11 決定 |
 | D14 | apps はサービスごとに web と api を 1 組ずつ持ち、実装は packages/web-core と packages/api-core に共有する。auth は auth-api に改名。2026-09-11 決定 |
 | D15 | Identity DB の主キーはサロゲート ID。redirect_uri はサービスごとの `redirect_uri_template`。client_secret は oidc_client_secrets に複数行持ちローテーション可能。ハッシュは SHA-256。2026-09-11 決定 |
+| D16 | 招待と役割はサービス単位。契約は会社単位の tenant_services、割り当ては tenant_service_members、細かい権限はサービス側 DB の member_permissions。tenant_members は会社横断の役割にだけ使う。Token に role も permission も載せない。2026-09-11 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -105,7 +107,7 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 
 ### D3. Identity DBの所有者
 
-問題点。users / tenants / tenant_members は、Auth Serverがアクセス可否判定に使い、API Serverが認可に使う。両者から参照されるデータの所有者を決めないと境界が崩れる。
+問題点。users / tenants と所属関係の表は、Auth Serverがアクセス可否判定に使い、API Serverが認可に使う。両者から参照されるデータの所有者を決めないと境界が崩れる。
 
 | 選択肢 | メリット | デメリット |
 | --- | --- | --- |
@@ -140,11 +142,11 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 
 ### D8. Roleモデル
 
-推奨。初期は `owner` `admin` `member` `viewer` の固定enum。細粒度権限はAPI Server側のRole→Permissionマッピングで表現し、DBにはroleのみ保存する。
+推奨。初期は `owner` `admin` `member` `viewer` の固定enum。細粒度権限はAPI Server側のRole→Permissionマッピングで表現し、Identity DBにはroleのみ保存する。役割はサービスごとに持ち、個別の許可 / 拒否はサービス側 DB の member_permissions で役割の既定に重ねる。D16 で具体化した。
 
 ### D9. ユーザーとMembershipの自動作成
 
-推奨。usersはCognito認証成功時にJIT作成する。tenant_membersは自動作成しない。招待フローは本設計のスコープ外とし、初期はシード投入で代替する。
+推奨。usersはCognito認証成功時にJIT作成する。tenant_service_membersとtenant_membersは自動作成しない。招待フローは本設計のスコープ外とし、初期はシード投入で代替する。招待の単位はサービスで、D16 に従う。
 
 ### D10. アクセス権のないテナントへのアクセス時の挙動
 
@@ -174,7 +176,7 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 - `oidc_clients.client_id` はサービスID。サンドボックスでは `crm` と `cms`。client_secret はサービス単位で持ち、テナントには紐付かない
 - `oidc_clients.audience` にそのサービスのAPI originを持ち、Access Tokenのaudにする
 - 認可リクエストのテナントは client_id と redirect_uri の組から解決する。解決方法は当初テナント×サービスごとの redirect_uri 行だったが、D15 でサービスごとの `redirect_uri_template` に置き換えた
-- `identity.tenant_services(tenant_id, oidc_client_id, status)` が契約。`/authorize` と refresh_token grant で user → tenant → 契約 → Membership の順に検証する
+- `identity.tenant_services(tenant_id, oidc_client_id, status)` が契約。`/authorize` と refresh_token grant で user → tenant → 契約 → サービスへの割り当て の順に検証する。割り当ての表は D16 で tenant_service_members に定めた
 - ホストは `<tenant>.<service>.<domain>`。Tenant Web Applicationは Host からサービスとテナントを解決する
 - Back-Channel Logout URIはサービス単位。logout_tokenのsidでそのサービスの全テナントのセッションを削除する
 
@@ -231,6 +233,34 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 - `*-api` の環境変数は `API_HOST` から `API_BASE_URL` に改名し、provision が `oidc_clients.audience` に書く `apiBaseUrl` と同じ値を与える。aud はその値そのもので、Host が URL のホストと異なるリクエストは 404
 - `updated_at` はトリガー `identity.touch_updated_at()` で更新する
 
+### D16. 招待と役割の単位。テナントではなくサービス
+
+問題点。D13 までの所属は tenant_members の 1 行で表し、テナントに所属していれば契約済みのすべてのサービスに同じ役割で入れた。B2B では契約は会社単位だが、人の割り当てはサービス単位で行いたい。「CRM だけ使える人」や「CRM では admin だが CMS では viewer」を表せず、サービス単位で利用者を外すこともできない。監査で「誰がどのサービスをいつから使えたか」を会社ごとに答えられない。細かい権限を Token に載せると、権限を変えても Token 寿命の間は反映されず、Auth Server がサービスごとの権限語彙を知る必要が生じる。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| 招待と役割 | A. 契約は会社単位の tenant_services に置き、割り当てと役割はサービス単位の tenant_service_members に置く | 購買、請求、席数、解約が会社単位で完結する。会社の管理者がサービスごとに人を割り当て、サービスごとに外せる。監査が会社ごとに「誰がどのサービスをいつから」を答えられる。Google Workspace、Microsoft 365、Atlassian と同じ形で、組織がライセンスを持ち、人への割り当てはサービスごと | 表が 1 つ増える。招待をサービスごとに行う |
+| 招待と役割 | B. ユーザーごとにサービスのライセンスを持つ | 個人単位で細かく制御できる | 会社単位の解約やオフボーディングが難しい。請求の単位が不明確になる |
+| 招待と役割 | C. テナント単位の所属だけ。従来の tenant_members | 表が少ない | 「CRM だけ」やサービスごとの役割を表せない。サービス単位で外せない |
+| 細かい権限 | A. Token に載せず、各サービスが自分の DB に持ちリクエストごとに読む | 変更が即時に反映される。Auth Server がサービスの権限語彙を知らなくてよい。Token がサービスごとの語彙で肥大化しない | API がリクエストごとに 1 クエリ増える |
+| 細かい権限 | B. Token に permissions claim を載せる | API が DB を引かずに判定できる | 変更が Token 寿命まで反映されない。Auth Server が全サービスの権限語彙を持つ。Token が大きくなる |
+
+決定はどちらも A。理由は、B2B の契約単位と割り当て単位を分けることで請求と解約を会社単位に保ちながら、サービスごとの利用者管理と監査を成立させられるため。細かい権限を Token に載せない理由は、権限変更を即時に反映し、認証基盤をサービスの語彙から独立させるため。
+
+具体化。
+
+- `identity.tenant_service_members(tenant_id, oidc_client_id, user_id, role, status, created_at, updated_at)`。主キーは `(tenant_id, oidc_client_id, user_id)`。`(tenant_id, oidc_client_id)` は tenant_services への複合外部キーで、契約のないサービスに人を割り当てられない。user_id にインデックス、updated_at はトリガー
+- `identity.tenant_members(tenant_id, user_id, role, status)` は残すが、管理者や請求担当のような会社横断の役割にだけ使う。ログイン可否には使わない
+- `/authorize` と refresh_token grant は user active → tenant active → 契約 active → このサービスへの割り当て active の順に判定する。理由コードは `user_disabled` `tenant_suspended` `not_contracted` `no_membership` `membership_inactive` のまま。`no_membership` は「このテナントのこのサービスに割り当てがない」を意味し、別サービスの割り当てでは通らない
+- ポータルはテナントごとに、割り当てがあり契約と Client が active なサービスだけを並べ、役割を `<client_id> / <role>` で示す。割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」を表示する。テナント単位の役割はポータルに出さない
+- Token は変わらない。ID Token と Access Token は sub、tenant_id、tenant_slug、sid、client_id を持ち、role も permission も載せない
+- api-core は `IdentityReader.findAccessContext(userId, tenantId, clientId)` で users、tenants、oidc_clients、tenant_service_members を 1 回の JOIN で引く。割り当ては Token の client_id に一致するものだけを見る
+- `business.member_permissions(tenant_id, user_id, client_id, permission, effect)`。effect は allow / deny。projects と同じ RLS ポリシーを持ち、`PermissionReader.listOverrides` が app.tenant_id を設定したトランザクションで読む。`resolvePermissions(role, overrides)` は役割の既定 ∪ allow − deny で、deny が優先し、未知の permission 名は無視する。`TenantContext` は clientId、role、permissions を持ち、`requirePermission` は permissions の集合で判定する。`/v1/me` は permissions をソート済み配列で返す
+- サンドボックスでは 1 つの DB を crm-api と cms-api が共有するため member_permissions に client_id 列を持つ。実運用では各サービスの DB がこの表を持ち、client_id 列は不要になる
+- 会社のオンボーディング。CRM だけ契約する会社は tenants 1 行、tenant_services 1 行、利用者数分の tenant_service_members。後から CMS を足すときは tenant_services 1 行と CMS を使う人の割り当て。サービスごとのテナントも、会社ごとの Client 登録も要らない
+- provision は `SEED_SERVICE_MEMBERSHIPS` で tenant_service_members、`SEED_PERMISSION_OVERRIDES` で member_permissions を投入する
+- シード。tenant_service_members は alice が tanaka × crm の owner、tanaka × cms の owner、suzuki × crm の viewer、bob が suzuki × crm の admin、carol は割り当てなし。member_permissions は alice が tanaka × cms で `projects:write` を deny。alice は tanaka.cms の owner だが Project を作れず、smoke と web のテストが「この操作を行う権限がありません」を確認する。tenant_members は alice が tanaka の owner、bob が suzuki の owner
+
 ## 5. 移行計画
 
 グリーンフィールドのため、構築順序として記述する。
@@ -238,10 +268,10 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 | フェーズ | 内容 | 完了条件 |
 | --- | --- | --- |
 | 0 | 判断事項D1からD4の決定 | 本ドキュメントの承認 |
-| 1 | Identity DBとClient Registryの構築。Cognito User Pool作成 | seedデータでusers / tenants / tenant_members / oidc_clients / tenant_servicesが投入できる |
+| 1 | Identity DBとClient Registryの構築。Cognito User Pool作成 | seedデータでusers / tenants / tenant_members / oidc_clients / tenant_services / tenant_service_membersが投入できる |
 | 2 | Auth Server。`/authorize` `/login` `/token` `/jwks` `/userinfo` | 初回ログインシーケンスが通る |
 | 3 | Tenant Web Application。OIDC Client共通モジュール | 別テナントSSOと別サービスSSOのシーケンスが通る |
-| 4 | API Server。Token検証とMembership認可、Tenant Isolation | 他テナントデータへのアクセスが拒否される |
+| 4 | API Server。Token検証、サービスへの割り当てと権限の認可、Tenant Isolation | 他テナントデータへのアクセスが拒否される |
 | 5 | Tenant Logout。エラーケース対応 | エラーケース一覧のテストが通る |
 | 6 | MFA、Global Logout、Refresh Tokenローテーション | 拡張シーケンスが通る |
 

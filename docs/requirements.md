@@ -97,7 +97,7 @@ UI、現在のログイン状態の管理、自サービスセッションの管
 
 ```text
 Cognito                → ユーザー本人であることの認証
-auth.sandbox.com       → Sandbox全体のSSO。契約とMembershipによるアクセス可否
+auth.sandbox.com       → Sandbox全体のSSO。契約とサービスごとの割り当てによるアクセス可否
 tanaka.crm.sandbox.com → CRMにおけるTanakaのアプリケーションセッション
 suzuki.crm.sandbox.com → CRMにおけるSuzukiのアプリケーションセッション
 tanaka.cms.sandbox.com → CMSにおけるTanakaのアプリケーションセッション
@@ -109,7 +109,7 @@ api.cms.sandbox.com    → CMSのAPI認証・認可およびデータアクセ�
 
 ## 6. 初回ログインフロー
 
-未ログインで tanaka.crm.sandbox.com へアクセスすると、Authorization Request で auth.sandbox.com へ遷移し、SSO Sessionがなければ自前ログイン画面でCognito APIによる認証を行う。認証成功後にSSO Sessionを作成し、テナントの契約とMembershipを確認してからAuthorization Codeを発行してTanakaのCRMへ戻す。CRMはCodeを検証しTanaka用Sessionを作成する。
+未ログインで tanaka.crm.sandbox.com へアクセスすると、Authorization Request で auth.sandbox.com へ遷移し、SSO Sessionがなければ自前ログイン画面でCognito APIによる認証を行う。認証成功後にSSO Sessionを作成し、テナントの契約とそのサービスへの割り当てを確認してからAuthorization Codeを発行してTanakaのCRMへ戻す。CRMはCodeを検証しTanaka用Sessionを作成する。
 
 ## 7. 別テナント・別サービスへのSSO
 
@@ -158,13 +158,14 @@ Cognito User Pool上のユーザー識別子をSandboxにおけるユーザー�
 ## 15. Tenantモデル
 
 ```text
-users           id, cognito_sub, ...
-tenants         id, slug, ...
-tenant_members  tenant_id, user_id, role, ...
-tenant_services tenant_id, client_id, status   # 契約
+users                  id, cognito_sub, ...
+tenants                id, slug, ...
+tenant_services        tenant_id, client_id, status              # 契約。会社単位
+tenant_service_members tenant_id, client_id, user_id, role, ...  # サービスごとの割り当てと役割。招待はこの単位
+tenant_members         tenant_id, user_id, role, ...             # 会社横断の役割。ログイン可否には使わない
 ```
 
-Tenantは顧客企業であり、サービスをまたいで同一である。サービスの利用可否はtenant_servicesの契約で判定する。サブドメインからTenantとサービスを特定する。URL上のTenant ID / slugをそのまま認可情報として信頼してはいけない。必ずサーバー側で Authenticated User → Tenant → 契約 → Tenant Membership → Role / Permission → Authorization を検証する。
+Tenantは顧客企業であり、サービスをまたいで同一である。サービスの利用可否はtenant_servicesの契約で判定し、ユーザーがそのサービスにログインできるかとその役割はtenant_service_membersでテナント × サービスごとに判定する。会社の管理者は契約したサービスごとに人を割り当て、サービスごとに外せる。細かい権限は各サービスが自分のDBで役割の既定に対する許可 / 拒否として持ち、Tokenには載せない。サブドメインからTenantとサービスを特定する。URL上のTenant ID / slugをそのまま認可情報として信頼してはいけない。必ずサーバー側で Authenticated User → Tenant → 契約 → サービスへの割り当て → Role / Permission → Authorization を検証する。
 
 ## 16. Tenant Isolation
 
@@ -172,7 +173,7 @@ Tenant間のデータ分離を保証する。API Serverではリクエストに�
 
 ## 17. API認証
 
-Request → Authentication → User Identity → Tenant Membership → Role / Permission → Authorization → Data Access の順序で処理する。
+Request → Authentication → User Identity → サービスへの割り当て → Role / Permission → Authorization → Data Access の順序で処理する。Role はIdentity DBのtenant_service_membersから、Permission は役割の既定に自サービスDBの上書きを重ねて毎リクエスト確定する。
 
 ## 18. Token設計
 
@@ -190,7 +191,7 @@ auth.sandbox.com/logout によるGlobal Logoutで、SSO Session、各サービ�
 
 ## 20. セキュリティ要件
 
-HTTPS、Secure Cookie、HttpOnly Cookie、適切なSameSite設定、Authorization Codeの短命化と一回限り利用、redirect_uriの厳格な検証、stateによるCSRF対策、nonce検証、Open Redirect対策、Session Fixation対策、ログイン成功時のSession IDローテーション、Token / Cookieのログ出力禁止、Cognito Refresh Tokenのサービス間共有禁止、Cognito TokenのURL埋め込み禁止、Tenant IDだけを根拠にした認可禁止、Tenant Membershipによる認可、BOLA / IDOR対策。
+HTTPS、Secure Cookie、HttpOnly Cookie、適切なSameSite設定、Authorization Codeの短命化と一回限り利用、redirect_uriの厳格な検証、stateによるCSRF対策、nonce検証、Open Redirect対策、Session Fixation対策、ログイン成功時のSession IDローテーション、Token / Cookieのログ出力禁止、Cognito Refresh Tokenのサービス間共有禁止、Cognito TokenのURL埋め込み禁止、Tenant IDだけを根拠にした認可禁止、サービスごとの割り当てによる認可、BOLA / IDOR対策。
 
 ## 21. システム境界
 

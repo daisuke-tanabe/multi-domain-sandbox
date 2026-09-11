@@ -5,6 +5,11 @@ import type {
   IdentityTenant,
   IdentityUser,
 } from "../ports/identity-reader.ts";
+import type {
+  PermissionOverride,
+  PermissionReader,
+  PermissionSubject,
+} from "../ports/permission-reader.ts";
 import type { Project, ProjectRepository, TenantContext } from "../ports/project-repository.ts";
 
 /**
@@ -13,15 +18,22 @@ import type { Project, ProjectRepository, TenantContext } from "../ports/project
 export interface MemoryIdentityData {
   readonly users: ReadonlyArray<IdentityUser>;
   readonly tenants: ReadonlyArray<IdentityTenant>;
-  readonly memberships: ReadonlyArray<{ tenantId: string; userId: string } & IdentityMembership>;
+  /** clientId は OAuth の client_id */
+  readonly serviceMemberships: ReadonlyArray<
+    { tenantId: string; clientId: string; userId: string } & IdentityMembership
+  >;
 }
 
 export class MemoryIdentityReader implements IdentityReader {
   constructor(private data: MemoryIdentityData) {}
 
-  public async findAccessContext(userId: string, tenantId: string): Promise<AccessContext> {
-    const membership = this.data.memberships.find(
-      (member) => member.tenantId === tenantId && member.userId === userId,
+  public async findAccessContext(
+    userId: string,
+    tenantId: string,
+    clientId: string,
+  ): Promise<AccessContext> {
+    const membership = this.data.serviceMemberships.find(
+      (m) => m.tenantId === tenantId && m.clientId === clientId && m.userId === userId,
     );
     return {
       user: this.data.users.find((user) => user.id === userId),
@@ -31,14 +43,40 @@ export class MemoryIdentityReader implements IdentityReader {
     };
   }
 
-  /** テストで Membership を削除するための操作 */
-  public removeMembership(tenantId: string, userId: string): void {
+  /** テストで割り当てを外すための操作 */
+  public removeServiceMembership(tenantId: string, clientId: string, userId: string): void {
     this.data = {
       ...this.data,
-      memberships: this.data.memberships.filter(
-        (member) => !(member.tenantId === tenantId && member.userId === userId),
+      serviceMemberships: this.data.serviceMemberships.filter(
+        (m) => !(m.tenantId === tenantId && m.clientId === clientId && m.userId === userId),
       ),
     };
+  }
+}
+
+export class MemoryPermissionReader implements PermissionReader {
+  private overrides: Array<PermissionSubject & PermissionOverride>;
+
+  constructor(initial: ReadonlyArray<PermissionSubject & PermissionOverride> = []) {
+    this.overrides = [...initial];
+  }
+
+  public async listOverrides(
+    subject: PermissionSubject,
+  ): Promise<ReadonlyArray<PermissionOverride>> {
+    return this.overrides
+      .filter(
+        (o) =>
+          o.tenantId === subject.tenantId &&
+          o.userId === subject.userId &&
+          o.clientId === subject.clientId,
+      )
+      .map((o) => ({ permission: o.permission, effect: o.effect }));
+  }
+
+  /** テストで上書きを足すための操作 */
+  public add(override: PermissionSubject & PermissionOverride): void {
+    this.overrides.push(override);
   }
 }
 
