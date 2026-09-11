@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import { clientIp, rateLimit, type CookiePolicy } from "@sandbox/shared";
 import { RATE_LIMITS } from "./policy.ts";
+import { adminRoutes } from "./routes/admin.ts";
 import { authorizeRoutes } from "./routes/authorize.ts";
 import { discoveryRoutes } from "./routes/discovery.ts";
 import { loginRoutes } from "./routes/login.ts";
@@ -59,12 +60,14 @@ export function createAuthApp(options: AuthAppOptions): Hono {
     rateLimit("authorize", { store: deps.stores.rateLimits, ...RATE_LIMITS.authorize }),
   );
   app.use("/token", rateLimit("token", { store: deps.stores.rateLimits, ...RATE_LIMITS.token }));
+  app.use("/admin/*", rateLimit("admin", { store: deps.stores.rateLimits, ...RATE_LIMITS.token }));
   app.use("/logout", rateLimit("logout", { store: deps.stores.rateLimits, ...RATE_LIMITS.login }));
 
   app.route("/", discoveryRoutes(deps));
   app.route("/", authorizeRoutes(deps, cookiePolicy));
   app.route("/", loginRoutes(deps, cookiePolicy));
   app.route("/", tokenRoutes(deps));
+  app.route("/", adminRoutes(deps));
   app.route("/", userinfoRoutes(deps));
   app.route("/", logoutRoutes(deps, cookiePolicy));
   app.route("/", portalRoutes(deps, cookiePolicy));

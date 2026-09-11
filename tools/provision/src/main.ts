@@ -9,8 +9,6 @@ import { loadConfig } from "./config.ts";
 import {
   SEED_CONTRACTS,
   SEED_MEMBERSHIPS,
-  SEED_PERMISSION_OVERRIDES,
-  SEED_PROJECTS,
   SEED_SERVICE_MEMBERSHIPS,
   SEED_SERVICES,
   SEED_TENANTS,
@@ -18,24 +16,27 @@ import {
 } from "./seed-data.ts";
 
 /**
- * RDS 向けの初期化タスク。ローカルの docker-entrypoint-initdb.d の代わりに ECS の一回限りタスクとして実行する。
+ * identity DB 向けの初期化タスク。ローカルの docker-entrypoint-initdb.d の代わりに ECS の一回限りタスクとして実行する。
+ * サービスの DB (crm / cms) はここでは扱わない。各サービスの db/<service>/init を同様に適用する
  *
- * 1. ロールとスキーマを作る。db/init の 001 から 003 を順に適用する。冪等になるよう存在確認を挟む
+ * 1. ロールとスキーマを作る。db/identity/init の 001 と 002 を適用する。冪等になるよう存在確認を挟む
  * 2. ロールのパスワードを Secrets Manager 由来の値に合わせる
  * 3. Cognito にテストユーザーを作り、実際の sub で users を投入する
- * 4. tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / tenant_service_members
- *    / projects / member_permissions を投入する
+ * 4. tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / tenant_service_members を投入する
  */
 const logger = createLogger("provision");
 const config = loadConfig();
 const here = dirname(fileURLToPath(import.meta.url));
 const initDir = resolveInitDir();
 
-/** コンテナでは /app/db/init、リポジトリでは <root>/db/init */
+/** コンテナでは /app/db/identity/init、リポジトリでは <root>/db/identity/init */
 function resolveInitDir(): string {
-  const candidates = [join(here, "..", "db", "init"), join(here, "..", "..", "..", "db", "init")];
+  const candidates = [
+    join(here, "..", "db", "identity", "init"),
+    join(here, "..", "..", "..", "db", "identity", "init"),
+  ];
   const found = candidates.find((candidate) => existsSync(candidate));
-  if (found === undefined) throw new Error("db/init directory not found");
+  if (found === undefined) throw new Error("db/identity/init directory not found");
   return found;
 }
 
@@ -48,22 +49,13 @@ async function applySchema(): Promise<void> {
   try {
     // 001_roles.sql 相当。RDS のマスターは superuser ではないため、ロール作成 → 自分をメンバーに →
     // スキーマ作成の順にする。CREATE SCHEMA AUTHORIZATION はそのロールのメンバーである必要がある
-    for (const role of ["sandbox_auth", "sandbox_api"] as const) {
-      const exists = await client.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [role]);
-      const password = role === "sandbox_auth" ? config.AUTH_DB_PASSWORD : config.API_DB_PASSWORD;
-      const attributes = role === "sandbox_api" ? "LOGIN NOBYPASSRLS" : "LOGIN";
-      const statement = exists.rowCount === 0 ? "CREATE ROLE" : "ALTER ROLE";
-      await client.query(
-        `${statement} ${role} ${attributes} PASSWORD '${escapeLiteral(password)}'`,
-      );
-      await client.query(`GRANT ${role} TO CURRENT_USER`);
-    }
-    await client.query("CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION sandbox_auth");
-    await client.query("CREATE SCHEMA IF NOT EXISTS business AUTHORIZATION sandbox_api");
-    await client.query("GRANT USAGE ON SCHEMA identity TO sandbox_api");
+    const exists = await client.query("SELECT 1 FROM pg_roles WHERE rolname = 'sandbox_auth'");
+    const statement = exists.rowCount === 0 ? "CREATE ROLE" : "ALTER ROLE";
     await client.query(
-      "ALTER DEFAULT PRIVILEGES FOR ROLE sandbox_auth IN SCHEMA identity GRANT SELECT ON TABLES TO sandbox_api",
+      `${statement} sandbox_auth LOGIN PASSWORD '${escapeLiteral(config.AUTH_DB_PASSWORD)}'`,
     );
+    await client.query("GRANT sandbox_auth TO CURRENT_USER");
+    await client.query("CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION sandbox_auth");
     logger.info("roles and schemas ensured");
 
     const identityExists = await client.query(
@@ -72,13 +64,6 @@ async function applySchema(): Promise<void> {
     if (identityExists.rowCount === 0) {
       await client.query(await readFile(join(initDir, "002_identity.sql"), "utf8"));
       logger.info("identity schema created");
-    }
-    const businessExists = await client.query(
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'business' AND table_name = 'projects'",
-    );
-    if (businessExists.rowCount === 0) {
-      await client.query(await readFile(join(initDir, "003_business.sql"), "utf8"));
-      logger.info("business schema created");
     }
   } finally {
     client.release();
@@ -97,7 +82,7 @@ async function resolveSubs(): Promise<Map<string, string>> {
   return ensureCognitoUsers(SEED_USERS, config.COGNITO, logger);
 }
 
-async function seedIdentity(subs: Map<string, string>): Promise<Map<string, string>> {
+async function seedIdentity(subs: Map<string, string>): Promise<void> {
   const client = await pool.connect();
   const userIds = new Map<string, string>();
   try {
@@ -187,16 +172,14 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
           `unknown service membership ${assignment.tenantSlug}/${assignment.clientId}`,
         );
       await client.query(
-        `INSERT INTO identity.tenant_service_members (tenant_id, oidc_client_id, user_id, role)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (tenant_id, oidc_client_id, user_id)
-           DO UPDATE SET role = EXCLUDED.role, status = 'active'`,
-        [tenant.id, service.id, userId, assignment.role],
+        `INSERT INTO identity.tenant_service_members (tenant_id, oidc_client_id, user_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (tenant_id, oidc_client_id, user_id) DO UPDATE SET status = 'active'`,
+        [tenant.id, service.id, userId],
       );
     }
     await client.query("COMMIT");
     logger.info("identity seeded", { users: userIds.size, tenants: SEED_TENANTS.length });
-    return userIds;
   } catch (error: unknown) {
     await client.query("ROLLBACK");
     throw new Error("identity seed failed", { cause: error });
@@ -205,52 +188,10 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
   }
 }
 
-async function seedProjects(userIds: Map<string, string>): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SET LOCAL ROLE sandbox_api");
-    for (const project of SEED_PROJECTS) {
-      const tenant = tenantBySlug.get(project.tenantSlug);
-      const createdBy = userIds.get(project.createdBy);
-      if (tenant === undefined || createdBy === undefined)
-        throw new Error("seed project refs invalid");
-      // RLS の WITH CHECK を通すため tenant ごとに app.tenant_id を設定する
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant.id]);
-      await client.query(
-        `INSERT INTO business.projects (id, tenant_id, name, created_by) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (id) DO NOTHING`,
-        [project.id, tenant.id, project.name, createdBy],
-      );
-    }
-    for (const override of SEED_PERMISSION_OVERRIDES) {
-      const tenant = tenantBySlug.get(override.tenantSlug);
-      const userId = userIds.get(override.username);
-      if (tenant === undefined || userId === undefined)
-        throw new Error("seed permission override refs invalid");
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant.id]);
-      await client.query(
-        `INSERT INTO business.member_permissions (tenant_id, user_id, client_id, permission, effect)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (tenant_id, user_id, client_id, permission) DO UPDATE SET effect = EXCLUDED.effect`,
-        [tenant.id, userId, override.clientId, override.permission, override.effect],
-      );
-    }
-    await client.query("COMMIT");
-    logger.info("projects seeded", { count: SEED_PROJECTS.length });
-  } catch (error: unknown) {
-    await client.query("ROLLBACK");
-    throw new Error("project seed failed", { cause: error });
-  } finally {
-    client.release();
-  }
-}
-
 try {
   await applySchema();
   const subs = await resolveSubs();
-  const userIds = await seedIdentity(subs);
-  await seedProjects(userIds);
+  await seedIdentity(subs);
   logger.info("provision completed");
 } finally {
   await pool.end();

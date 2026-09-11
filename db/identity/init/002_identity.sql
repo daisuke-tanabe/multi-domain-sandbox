@@ -4,7 +4,8 @@
 -- サービス (oidc_clients) とテナント (tenants) は別の軸。
 -- テナントは顧客企業であり、複数のサービスを契約できる (tenant_services)。
 -- 認可リクエストのテナントは redirect_uri をサービスのテンプレートに当てて slug を取り出し、tenants から引く。
--- サービスにログインできるかは tenant_service_members で決める。tenant_members は会社横断の役割にだけ使う。
+-- identity が持つのは「誰がどのテナントのどのサービスに入れるか」(tenant_service_members) まで。
+-- サービス内の役割と権限は各サービスの DB が持つ。tenant_members は会社横断の役割にだけ使う。
 -- 主キーはすべてサロゲート ID。client_id や slug は外部に見せる識別子で、UNIQUE 制約で守る。
 
 SET ROLE sandbox_auth;
@@ -16,10 +17,11 @@ BEGIN
 END
 $$;
 
+-- cognito_sub は招待直後は NULL。初回ログイン時にメールで照合して埋める
 CREATE TABLE identity.users (
   id            TEXT PRIMARY KEY,
-  cognito_sub   TEXT NOT NULL UNIQUE,
-  email         TEXT NOT NULL,
+  cognito_sub   TEXT UNIQUE,
+  email         TEXT NOT NULL UNIQUE,
   name          TEXT,
   status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -43,8 +45,8 @@ CREATE TRIGGER tenants_touch_updated_at BEFORE UPDATE ON identity.tenants
 CREATE TABLE identity.tenant_members (
   tenant_id     TEXT NOT NULL REFERENCES identity.tenants (id) ON DELETE CASCADE,
   user_id       TEXT NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
-  role          TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
-  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invited', 'disabled')),
+  role          TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, user_id)
@@ -95,14 +97,12 @@ CREATE INDEX tenant_services_oidc_client_id_idx ON identity.tenant_services (oid
 CREATE TRIGGER tenant_services_touch_updated_at BEFORE UPDATE ON identity.tenant_services
   FOR EACH ROW EXECUTE FUNCTION identity.touch_updated_at();
 
--- サービスごとの割り当て。招待はこの単位で行い、役割もサービスごとに持つ
--- 細かい権限はサービス側の DB (business.member_permissions) で役割の既定に足し引きする
+-- サービスへの割り当て。招待はこの単位で行う。役割は持たず、サービス側の DB が持つ
 CREATE TABLE identity.tenant_service_members (
   tenant_id       TEXT NOT NULL,
   oidc_client_id  TEXT NOT NULL,
   user_id         TEXT NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
-  role            TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
-  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invited', 'disabled')),
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, oidc_client_id, user_id),

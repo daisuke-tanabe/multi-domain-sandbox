@@ -12,21 +12,22 @@ pnpm workspace のモノレポ。
 ```text
 apps/auth-api         auth.sandbox.com。OpenID Provider。ログイン画面とポータルも当面ここが返す
 apps/crm-web          <tenant>.crm.sandbox.com。CRM の Web。BFF として Cookie セッションと API 中継を持つ
-apps/crm-api          api.crm.sandbox.com。CRM の Resource Server
+apps/crm-api          api.crm.sandbox.com。CRM の Resource Server。definition.ts に役割と権限、end-users/ にエンドユーザーの routes と repository
 apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ構成
-apps/cms-api          api.cms.sandbox.com。CMS の Resource Server
+apps/cms-api          api.cms.sandbox.com。CMS の Resource Server。definition.ts に役割と権限、posts/ に投稿の routes と repository
 packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
 packages/web-core     apps/*-web の実装本体。crm-web と cms-web はこれを起動するだけ。BFF として画面、/auth/* の受け口、API 中継、設定スキーマを持つ
-packages/api-core     apps/*-api の実装本体。crm-api と cms-api はこれを起動するだけ。auth-api は使わない。Token 検証、Membership 認可、routes、adapters、設定スキーマを持つ
-tools/provision       AWS 専用。RDS のスキーマ作成、Cognito テストユーザー作成、シード投入
-db/                   PostgreSQL の初期化 SQL とシード
+packages/api-core     apps/*-api のフレームワーク。auth-api は使わない。ServiceDefinition、Token 検証、member 解決と権限の確定、/v1/me と /v1/members、MemberRepository、AuthAdminClient、withTenant、設定スキーマ、起動関数を持つ
+tools/provision       AWS 専用。identity DB のスキーマ作成、Cognito テストユーザー作成、シード投入。サービスの DB は扱わない
+db/identity, db/crm, db/cms  各 DB の初期化 SQL とシード。DB はサービスごとに分かれ、コンテナも分かれる
 docs/                 仕様と設計
 ```
 
-apps/crm-web / cms-web / crm-api / cms-api はエントリポイントだけを持つ。`main.ts` は `startWebCore("crm-web")` や `startApiCore("crm-api")` を呼ぶ 2 行で、設定スキーマと依存の組み立ては `packages/web-core/src/config.ts` `start.ts` と `packages/api-core/src/config.ts` `start.ts` にある。
-サービスごとに web と api を 1 プロセスずつ動かし、実装は packages に置いて共有する。
-サービスを増やすときは apps に web と api を 1 組追加し、`.env` でサービス固有の値を渡す。
+apps/crm-web / cms-web はエントリポイントだけを持つ。`main.ts` は `startWebCore("crm-web")` を呼ぶ 2 行で、設定スキーマと依存の組み立ては `packages/web-core/src/config.ts` `start.ts` にある。
+apps/crm-api / cms-api は `definition.ts` でサービスの役割と権限を `defineService` で宣言し、サービス固有の routes と repository を持つ。`main.ts` は定義、スキーマ名、routes を `startApiCore` に渡す。Token 検証、member 行の解決、権限の確定、`/v1/me`、管理アカウントの `/v1/members` は `packages/api-core` が提供し、apps 側には書かない。
+サービスごとに web と api を 1 プロセスずつ動かし、共通の実装は packages に置いて共有する。
+サービスを増やすときは apps に web と api を 1 組追加し、api 側に `definition.ts` と routes を書き、`db/<service>/init` に members と permission_overrides を含む DB を用意し、`.env` でサービス固有の値を渡す。
 `*-web` はクライアントを意味する。ただし Token と Cookie をブラウザへ出さない BFF 方式のため、画面の配信と `/auth/*`、API 中継を担う薄いサーバーは必ず残す。
 
 ## 技術スタック
@@ -77,7 +78,8 @@ src/
 - routes は ports を直接呼ばず usecases を呼ぶ
 - usecases は adapters を import しない。ports だけに依存する
 - main.ts と start.ts でのみ adapters を組み立てる
-- `*-api` の認証は `usecases/resolve-tenant-context.ts` に置く。Host 確認、Bearer 検証、user / tenant / membership の取得と判定までを usecase が行い、`auth/middleware.ts` はその Result を HTTP ステータスに写像するだけにする
+- `*-api` の認証は `packages/api-core/src/usecases/resolve-tenant-context.ts` に置く。Host 確認、Bearer 検証、自サービス DB の member 行の取得と JIT 作成、上書きの適用による権限の確定までを usecase が行い、`auth/middleware.ts` はその Result を HTTP ステータスに写像するだけにする。identity DB は参照しない
+- `*-api` のサービス固有ルートは `apps/<service>-api/src/<resource>/routes.ts` と `repository.ts` に置く。routes は `requirePermission` で要求 permission を宣言し、repository は `withTenant` で `app.tenant_id` を設定したトランザクションの中で SQL を実行する
 
 ## エラー規約
 
@@ -95,7 +97,8 @@ src/
 - 一覧は `SetStore`、一回限りの消費は `getAndDelete`、Refresh はセッション単位のロック。値を読んで書き戻す形の一覧更新や、読んでから消す二段階の消費は書かない
 - ブラウザと Client のサーバーから受ける入力はレート制限と body 上限を通す。制限値は `docs/design/08-security-design.md` に従う
 - API の tenant_id は Access Token 由来のみ。リクエストの値を認可に使わない
-- サービスへのログイン可否は tenant_service_members、細かい権限はサービス側 DB の member_permissions で判定し Token に載せない。`/authorize` と Refresh は user → tenant → 契約 → このサービスへの割り当ての順に確認し、API は Token の tenant_id と client_id で割り当てを毎リクエスト再検証する。tenant_members は会社横断の役割で、ログイン可否には使わない
+- サービスへのログイン可否は tenant_service_members、役割と細かい権限はサービス側 DB の members と permission_overrides で判定し Token に載せない。`/authorize` と Refresh は user → tenant → 契約 → このサービスへの割り当ての順に確認し、API は Token の tenant_id と sub で自サービス DB の member 行を毎リクエスト読む。tenant_members は会社横断の役割で、ログイン可否には使わない
+- auth-api の管理 API `/admin/service-members` は client_secret_basic で認証し、呼び出した Client 自身のサービスへの割り当てだけを操作させる。`/token` と同じレート制限を通す
 - 権限の確定は役割の既定 ∪ allow − deny。deny が優先し、未知の permission 名は無視する。`requirePermission` は確定した集合で判定し、Token の role や permissions claim は無視する
 - Repository は tenant_id を必須引数に取る
 
@@ -104,7 +107,9 @@ src/
 - 主キーはサロゲート ID。ULID を TEXT で保存する。`client_id` や `slug` のような公開識別子は UNIQUE 制約で守り、外部キーには使わない
 - 関連テーブルの主キーは参照するサロゲート ID の組にする。tenant_services は `(tenant_id, oidc_client_id)`、tenant_service_members は `(tenant_id, oidc_client_id, user_id)`
 - 契約に従属する表は契約への複合外部キーを持つ。tenant_service_members は `(tenant_id, oidc_client_id)` で tenant_services を参照し、契約のないサービスに人を割り当てられない形にする
-- サービス固有の権限は Identity DB に置かず、そのサービスの business スキーマに置く。business の表はすべて tenant_id を持ち、RLS を ENABLE と FORCE で有効にする。サンドボックスは 1 DB を複数サービスで共有するため member_permissions に client_id を持つ
+- DB はサービスごとに分ける。identity DB は auth-api だけが接続し、crm-api は crm DB、cms-api は cms DB にしか接続しない。識別子の共有は user_id と tenant_id の値だけで、DB 間の外部キーや JOIN はない
+- identity が持つのは「誰がどのテナントのどのサービスに入れるか」まで。役割と細かい権限はサービスの DB の members と permission_overrides に置き、Token には載せない。役割の語彙はサービスごとに定義する
+- サービスの DB の表はすべて tenant_id を持ち、RLS を ENABLE と FORCE で有効にする。表の所有者はアプリのロールと分け、アプリのロールは NOBYPASSRLS にする
 - 外部キーの逆引きにはインデックスを張る
 - `updated_at` はトリガーで更新する。アプリ側で更新しない
 

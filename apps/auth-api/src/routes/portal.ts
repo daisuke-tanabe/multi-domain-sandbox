@@ -8,7 +8,7 @@ import { noStore, readSsoCookie } from "./helpers.ts";
 /**
  * ポータル。auth.sandbox.com を直接開いたときの入口。
  * SSO Session がなければ rid なしのログインフォームへ送り、ログイン後にここへ戻る。
- * 一覧はサービスごとの割り当て (tenant_service_members) から作る。役割もサービスごとに出す。
+ * 一覧はサービスごとの割り当て (tenant_service_members) から作る。
  * リンク先はサービス側の /auth/login。Third-Party Initiated Login の形で通常のフローに合流する。
  */
 export function portalRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
@@ -32,7 +32,6 @@ export function portalRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
           services: entry.services.map((service) => ({
             name: service.name,
             clientId: service.clientId,
-            role: service.role,
             loginUrl: `${service.origin}/auth/login`,
           })),
         })),

@@ -15,7 +15,6 @@ const envSchema = z
   .object({
     DATABASE_URL: z.string().min(1),
     AUTH_DB_PASSWORD: z.string().min(1),
-    API_DB_PASSWORD: z.string().min(1),
     PUBLIC_SCHEME: publicSchemeEnv.default("https"),
     SERVICES: jsonArrayEnv(serviceSchema),
     COGNITO_REGION: z.string().min(1).optional(),

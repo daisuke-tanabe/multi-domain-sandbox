@@ -95,14 +95,13 @@ API Server 向けの Token。JWT 形式で自己完結検証できるように�
 | `sid` | Global Logout 時の失効判定に使える識別子 |
 | `jti` | 失効リストを導入する場合のキー。初期は未使用 |
 
-role や permission は載せない。role は API Server が tenant_service_members を毎回参照して解決し、permission は役割の既定に自サービス DB の member_permissions の上書きを重ねて確定する。判断事項D16。理由は次のとおり。
+role や permission は載せない。role は API Server が自サービス DB の members を毎回参照して解決し、permission は役割の既定に permission_overrides の上書きを重ねて確定する。判断事項D16、D17。理由は次のとおり。
 
 - 権限変更を次のリクエストから反映する。Token に載せると寿命の 15 分間は古い権限で通る
-- Token 発行後のサービスへの割り当て削除を確実に拒否する
-- Auth Server がサービスごとの権限語彙を知らなくてよい。Auth Server が扱うのは client_id と割り当てだけで、permission 名は各サービスが自分の DB で決める
+- Auth Server がサービスごとの役割と権限の語彙を知らなくてよい。Auth Server が扱うのは client_id と割り当てだけで、role と permission の名前は各サービスが自分の DB で決める
 - Token がサービス数と権限数に比例して肥大化しない
 
-`client_id` は API Server がこのサービスへの割り当てと権限の上書きを引くキーにもなる。
+Token 発行後のサービスへの割り当て削除は Refresh 時に Auth Server が拒否し、Access Token 寿命の 15 分以内に反映される。`client_id` は API Server がこのサービスの Token であることを確かめる claim で、`tenant_id` と `sub` が自サービス DB の members を引くキーになる。
 
 aud はサービスごとに異なる。CRM 向けに発行した Token を api.cms.sandbox.com に出しても aud 不一致で拒否される。
 

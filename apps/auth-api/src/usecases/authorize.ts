@@ -17,7 +17,7 @@ export type AccessCheckError = {
  *   2. テナントが active
  *   3. テナントがこのサービスを契約している (tenant_services)
  *   4. ユーザーがこのテナントのこのサービスに active で割り当てられている (tenant_service_members)
- * 契約と割り当ては独立なので並列に引き、判定は上の順で行う。細かい権限はサービス側が判定する。
+ * 契約と割り当ては独立なので並列に引き、判定は上の順で行う。役割と権限はサービス側が判定する。
  */
 export async function checkTenantAccess(
   identity: IdentityRepository,

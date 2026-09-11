@@ -140,8 +140,6 @@ export function logoutDonePage(
 export interface PortalServiceView {
   readonly name: string;
   readonly clientId: string;
-  /** このサービスでの役割 */
-  readonly role: string;
   /** サービス側の /auth/login。SSO Session によりパスワードなしで入れる */
   readonly loginUrl: string;
 }
@@ -158,7 +156,7 @@ export interface PortalPageProps {
 }
 
 /**
- * ポータル。テナントごとに、割り当てられているサービスの入口と役割を並べる。
+ * ポータル。テナントごとに、入れるサービスの入口を並べる。役割はサービス側が持つのでここには出ない。
  */
 export function portalPage(props: PortalPageProps): HtmlEscapedString | Promise<HtmlEscapedString> {
   return layout(
@@ -177,7 +175,7 @@ export function portalPage(props: PortalPageProps): HtmlEscapedString | Promise<
                     (service) =>
                       html`<li>
                         <a href="${service.loginUrl}">${service.name}</a>
-                        <span class="muted">${service.clientId} / ${service.role}</span>
+                        <span class="muted">${service.clientId}</span>
                       </li>`,
                   )}
                 </ul>

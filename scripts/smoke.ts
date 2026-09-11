@@ -27,85 +27,62 @@ check("discovery document is served", discovery.status === 200);
 
 const browser = new Browser(dispatch);
 
-const loginPage = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+const loginPage = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 check(
   "anonymous access to tanaka.crm redirects to the auth login page",
   loginPage.finalUrl.host === AUTH_HOST && loginPage.finalUrl.pathname === "/login",
   visitedPaths(loginPage).join(" -> "),
 );
 
-const loggedIn = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, {
+const loggedIn = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, {
   username: "alice",
   password: SEED_USER_PASSWORD,
 });
 check(
-  "alice logs in and sees tanaka projects on crm as owner",
+  "alice logs in and is owner on tanaka.crm with end_users:create",
   loggedIn.response.status === 200 &&
-    loggedIn.body.includes("Tanaka Project 1") &&
-    loggedIn.body.includes("role: owner"),
+    loggedIn.body.includes("role: owner") &&
+    /end_users:create<\/td>\s*<td>yes/.test(loggedIn.body),
   `status ${loggedIn.response.status}`,
 );
 
-const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
 check(
   "suzuki.crm is entered via SSO without a login page and with viewer role",
   tenantB.response.status === 200 &&
-    tenantB.body.includes("Suzuki Project 1") &&
-    !tenantB.body.includes("Tanaka Project 1") &&
     tenantB.body.includes("role: viewer") &&
+    /end_users:create<\/td>\s*<td>no/.test(tenantB.body) &&
     !visitedPaths(tenantB).includes(`${AUTH_HOST}/login`),
   visitedPaths(tenantB).join(" -> "),
 );
 
-const denied = await browser.submitForm(`${SUZUKI_CRM_ORIGIN}/projects`, {
-  csrf: readPageCsrf(tenantB.body),
-  name: "viewer attempt",
-});
+const tanakaCms = await browser.navigate(`${TANAKA_CMS_ORIGIN}/dashboard`);
 check(
-  "viewer cannot create a project on suzuki.crm",
-  denied.body.includes("この操作を行う権限がありません"),
-);
-
-const pageA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
-const created = await browser.submitForm(`${TANAKA_CRM_ORIGIN}/projects`, {
-  csrf: readPageCsrf(pageA.body),
-  name: `smoke ${new Date().toISOString()}`,
-});
-check(
-  "owner creates a project on tanaka.crm through the API and PostgreSQL",
-  created.body.includes("smoke "),
-);
-
-const tanakaCms = await browser.navigate(`${TANAKA_CMS_ORIGIN}/projects`);
-check(
-  "tanaka.cms (another service) is entered via SSO and shows the same tenant data",
+  "tanaka.cms (another service) is entered via SSO with its own role vocabulary",
   tanakaCms.response.status === 200 &&
-    tanakaCms.body.includes("Tanaka Project 1") &&
     tanakaCms.body.includes("CMS") &&
+    tanakaCms.body.includes("role: owner") &&
     !visitedPaths(tanakaCms).includes(`${AUTH_HOST}/login`),
   visitedPaths(tanakaCms).join(" -> "),
 );
-
-const deniedOnCms = await browser.submitForm(`${TANAKA_CMS_ORIGIN}/projects`, {
-  csrf: readPageCsrf(tanakaCms.body),
-  name: "cms attempt",
-});
 check(
-  "owner on tanaka.cms cannot create a project because cms denies projects:write for alice",
-  deniedOnCms.body.includes("この操作を行う権限がありません"),
+  "cms denies posts:create for alice through its own permission override",
+  /posts:create<\/td>\s*<td>no/.test(tanakaCms.body) &&
+    /posts:update<\/td>\s*<td>yes/.test(tanakaCms.body),
 );
 
-const suzukiCms = await browser.navigate(`${SUZUKI_CMS_ORIGIN}/projects`);
+const suzukiCms = await browser.navigate(`${SUZUKI_CMS_ORIGIN}/dashboard`);
 check(
   "suzuki.cms is refused because suzuki has no cms contract",
   suzukiCms.response.status === 403 && suzukiCms.body.includes("契約していません"),
   `status ${suzukiCms.response.status}`,
 );
 
+const pageA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 const loggedOut = await browser.submitForm(`${TANAKA_CRM_ORIGIN}/auth/logout`, {
-  csrf: readPageCsrf(created.body),
+  csrf: readPageCsrf(pageA.body),
 });
-const tenantBAfter = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+const tenantBAfter = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
 check(
   "tenant logout on tanaka.crm keeps suzuki.crm logged in",
   loggedOut.body.includes("未ログインです") && tenantBAfter.response.status === 200,

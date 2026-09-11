@@ -22,9 +22,10 @@
 | Token / Cookie のログ出力禁止 | ログフィールドの許可リスト方式。秘密値は型でマーク | 本書 |
 | Cognito Refresh Token のサービス間共有禁止 | Auth Server 内で暗号化保存。境界外へ出す経路を持たない | 04 |
 | Cognito Token の URL 埋め込み禁止 | Front Channel を通る値は code と state のみ | 02 |
-| Tenant ID だけを根拠にした認可禁止 | Token の tenant_id と client_id + tenant_service_members 再検証 | 07 |
-| サービスへの割り当てによる認可 | 毎リクエスト Identity DB 参照。権限の上書きは自サービス DB 参照。Token に role も permission も載せない | 07 |
+| Tenant ID だけを根拠にした認可禁止 | Token の tenant_id と sub で自サービス DB の members を読む。リクエストの tenant_id は使わない | 07 |
+| サービスへの割り当てによる認可 | Auth Server が Token 発行時と Refresh 時に割り当てを検証。役割と権限の上書きは自サービス DB を毎リクエスト参照。Token には役割も権限も載せない | 07 |
 | BOLA / IDOR 対策 | Repository の tenant_id 必須化と RLS | 07 |
+| サービスからの招待 | 管理 API は client_secret_basic で Client を認証し、その Client のサービスへの割り当てだけを操作させる | 本書 |
 
 ## 脅威と対策
 
@@ -76,12 +77,15 @@
 | --- | --- |
 | Tenant ID 改ざん | Token 以外の tenant_id を認可に使わない |
 | IDOR / BOLA | 単一リソース取得も tenant_id 条件付き。RLS |
-| 権限昇格 | role は tenant_service_members から毎回取得。permission は役割の既定と自サービス DB の member_permissions から毎回確定し、deny が優先。Token の role や permissions は無視 |
-| 別サービスの割り当てでの越境 | 割り当ては (tenant, service, user) の単位。Token の client_id に一致する割り当てだけを見る。tenant_members の会社横断の役割ではログインできない |
-| 退会済みユーザーのアクセス | サービスへの割り当てを再検証。Refresh 時にも再検証 |
-| 停止テナントへのアクセス | tenants.status を `/authorize` と API 両方で確認 |
+| 権限昇格 | role は自サービス DB の members から毎回取得。permission は役割の既定と permission_overrides から毎回確定し、deny が優先。Token の role や permissions は無視。語彙にない role や permission は 400 |
+| 別サービスの割り当てでの越境 | 割り当ては (tenant, service, user) の単位。Auth Server は認可リクエストの client_id に一致する割り当てだけを見る。tenant_members の会社横断の役割ではログインできない。API の aud がサービスごとに違うため、別サービスの Token では API に入れない |
+| 別サービスの DB への到達 | DB がサービスごとに分かれ、接続情報も別。crm-api は cms の DB に接続できない |
+| 退会済みユーザーのアクセス | サービスへの割り当てを `/authorize` と Refresh で再検証。Access Token 寿命の 15 分以内に失効。サービス側で members.status を disabled にすれば次のリクエストから 403 |
+| 停止テナントへのアクセス | tenants.status を `/authorize` と Refresh で確認 |
 | 契約解除後のアクセス | tenant_services を `/authorize` と Refresh で確認。Access Token 寿命の 15 分以内に失効 |
 | 同一テナントの別サービスへの Cookie 流用 | tanaka.crm と tanaka.cms は別ホスト。Cookie は届かず、Session Store のキーも clientId で分かれる |
+| 表の所有者による RLS の回避 | サービスの DB の表は postgres が所有し、アプリのロールは NOBYPASSRLS の利用者。FORCE ROW LEVEL SECURITY が所有者に効かないため、所有者とアプリのロールを分ける |
+| 自分自身の管理権限の喪失 | `DELETE /v1/members/:userId` は自分自身を拒否する。owner が自分を消して管理者不在になることを防ぐ |
 
 ### 並行性
 
@@ -116,6 +120,19 @@ Tenant 側の `ensureFreshAccessToken` はセッション単位のロック `<te
 | 通知先が応答しない | `fetch` に `AbortSignal.timeout(5000)` を付ける。`BACKCHANNEL_TIMEOUT_MS`。1 サービスの停止が Global Logout 全体を止めない |
 | 停止した Client への送信 | `oidc_clients.status` が `active` でない Client と `backchannel_logout_uri` を持たない Client は通知対象から外す |
 | 無認証エンドポイントへの書き込み増幅 | `/auth/backchannel-logout` は IP あたり 60 回/分に制限し、body を 16 KB に制限 |
+
+### 管理 API と招待
+
+| 脅威 | 対策 |
+| --- | --- |
+| 管理 API の無認証呼び出し | `/admin/*` は client_secret_basic を要求し、`/token` と同じ `authenticateClient` で active な secret と照合する。失敗は 401 `invalid_client` と `WWW-Authenticate: Basic realm="admin"` |
+| 別サービスの割り当ての操作 | 操作対象の oidc_client_id は認証した Client 自身。リクエストで指定させない。crm の secret で cms への割り当ては作れない |
+| 契約のないテナントへの招待 | tenant_services が active でなければ 403 `not_contracted`。tenant_service_members の複合外部キーでも DB 層で拒否される |
+| 管理 API の連打 | `/admin/*` に `/token` と同じ IP あたり 300 回/分のレート制限。body は 16 KB |
+| 招待メールの乗っ取り。同じメールで別の Cognito ユーザーがログイン | users.email は UNIQUE。初回ログイン時に同じメールの行が既に別の cognito_sub に紐付いていれば、既存行を書き換えず新規行も作らずログインを拒否する。紐付けるのは cognito_sub が NULL の行だけ |
+| 招待で存在しないテナントや人を探る | tenant_not_found と user_not_found は 404 で、Client 認証済みのサービスにしか返さない |
+| サービス側だけに member 行が残る | 招待は Auth Server を先に呼び、拒否されればサービスの DB に書かない。削除は Auth Server を先に呼び、`user_not_found` でも自 DB の行は消す |
+| API から Auth Server への通信失敗 | 5 秒でタイムアウトし 503 `temporarily_unavailable`。招待は再試行で冪等。upsert のため二重に作られない |
 
 ## HTTP セキュリティヘッダ
 
@@ -176,6 +193,7 @@ https で公開する構成で、起動ごとに生成される署名鍵、イ�
 | auth-api | `POST /login` | IP × ユーザー名あたり 10 回/分 | `RATE_LIMITS.loginPerUser` |
 | auth-api | `/authorize` | IP あたり 120 回/分 | `RATE_LIMITS.authorize` |
 | auth-api | `/token` | IP あたり 300 回/分 | `RATE_LIMITS.token` |
+| auth-api | `/admin/*` | IP あたり 300 回/分 | `RATE_LIMITS.token` を流用。サービスのサーバーから来るため `/token` と同じ |
 | auth-api | `/logout` | IP あたり 60 回/分 | `RATE_LIMITS.login` を流用 |
 | crm-web / cms-web | `/auth/*` | IP あたり 60 回/分 | `AUTH_ROUTE_RATE_LIMIT` |
 | crm-web / cms-web | `/auth/backchannel-logout` | IP あたり 60 回/分 | `AUTH_ROUTE_RATE_LIMIT` |
@@ -188,16 +206,17 @@ https で公開する構成で、起動ごとに生成される署名鍵、イ�
 | --- | --- | --- |
 | auth-api | 全ルート | 16 KB |
 | crm-web / cms-web | `/auth/*` と `/auth/backchannel-logout` | 16 KB |
-| crm-api / cms-api | 全ルート | 16 KB |
+| crm-api / cms-api | 全ルート | 64 KB |
 
-Hono の `bodyLimit` を使う。フォーム、Token リクエスト、logout_token、業務 API の JSON はいずれも数 KB で足りる。
+Hono の `bodyLimit` を使う。フォーム、Token リクエスト、logout_token は数 KB で足りる。業務 API は CMS の投稿本文を含むため 64 KB にしている。
 
 ## 未対応
 
 判断済みで、現時点では実装していない項目。
 
 - Refresh Token、SSO Session ID、code は平文のキーで保存している。キーをハッシュにすれば Redis の読み取り漏洩時の影響を減らせる
-- RLS を掛けた `business.projects` の所有者が実行時ロールの `sandbox_api` になっている。マイグレーション用の所有者ロールを分ければ、将来の SQL インジェクションで RLS を無効化されることを防げる
+- 招待した人への通知メールは送っていない。招待された人は自分で Cognito のアカウントを持ち、サービスの URL を開く必要がある
+- 招待の解除は Auth Server の割り当てを消すだけで、その人の有効な Access Token と Tenant Session は Refresh まで残る。即時に切るには Auth Server 側で sid の Refresh Token 系列を失効させる管理操作が要る
 - logout_token は `sub` に sid を入れ、`typ` が `logout+jwt` ではなく `JWT` になっている
 - ログインフォームの CSRF トークンは rid に紐付かず、使用時に消費しない。テナント側の state 検証が補っている
 - 認可レスポンスの `iss` は存在する場合だけ検証している。Discovery の `authorization_response_iss_parameter_supported` を読んで必須化すればダウングレードを塞げる

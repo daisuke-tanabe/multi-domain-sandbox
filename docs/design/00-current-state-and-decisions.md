@@ -8,7 +8,8 @@
 OIDC Client はサービス単位で登録し、テナントは顧客としてサービス横断で共有する。テナントがサービスを使えるかは契約で判定する。判断事項D13。
 検証実装はサービスごとに web と api のプロセスを持ち、実装は共有パッケージに置く。判断事項D14。
 Identity DB の主キーはサロゲート ID、redirect_uri はサービスごとのテンプレート、client_secret は複数行でローテーション可能、ハッシュは SHA-256 とする。判断事項D15。
-招待と役割はテナント単位ではなくサービス単位で持つ。契約は会社単位の tenant_services、割り当てはサービス単位の tenant_service_members、細かい権限はサービス側 DB の member_permissions に置き、Token には載せない。判断事項D16。
+招待と役割はテナント単位ではなくサービス単位で持つ。契約は会社単位の tenant_services、割り当てはサービス単位の tenant_service_members に置く。判断事項D16。
+DB はサービスごとに分け、identity は「入れるか」だけを持つ。役割と権限はサービスの DB の members と permission_overrides に置き、Token には載せない。招待はサービスの画面から auth-api の管理 API を経由して行い、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。判断事項D17。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -55,9 +56,10 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 | Client登録 | サービスごとに1 Client。redirect_uri はサービスごとの `redirect_uri_template` で、テナントは契約 tenant_services でサービスに紐付ける。テナント追加に Client 登録も redirect_uri 登録も不要 |
 | テナントアクセス可否 | `/authorize` 時にAuth Serverが user → tenant → 契約 → サービスへの割り当て の順に検証 |
 | API認証 | Auth Server発行のAccess Token。JWT RS256。aud=サービスごとのAPI origin。BFFがサーバー間で送信 |
-| API認可 | Token検証 → sub / tenant_id / client_id取得 → DBでこのサービスへの割り当てを再検証 → Role の既定に自サービス DB の権限の上書きを重ねて Permission → データアクセス。Tokenにroleもpermissionも載せない |
-| Tenant Isolation | Token内tenant_idとリソースのtenant_idの一致をアプリ層で強制。可能ならDB RLSで二重化 |
-| Identity DB | users / tenants / tenant_services / tenant_service_members / tenant_members はAuth Serverが所有。API Serverは読み取り参照。サービス固有の権限は各サービスの DB に置く |
+| API認可 | Token検証 → sub / tenant_id / client_id取得 → 自サービス DB の members から Role → 役割の既定に permission_overrides を重ねて Permission → データアクセス。Tokenにroleもpermissionも載せず、API は Identity DB を参照しない |
+| Tenant Isolation | Token内tenant_idとリソースのtenant_idの一致をアプリ層で強制。DB RLSで二重化 |
+| Identity DB | users / tenants / tenant_services / tenant_service_members / tenant_members はAuth Serverが所有し、Auth Server だけが接続する。役割と権限、業務データは各サービスの DB に置く。判断事項D17 |
+| 招待 | サービスの画面から。サービスの API が Auth Server の管理 API で割り当てを登録し、自 DB に役割付きの member 行を作る。判断事項D17 |
 | Logout | Tenant Logoutは自セッションのみ。Global LogoutはOIDC Back-Channel Logoutで拡張 |
 
 ## 4. 人間の判断が必要な事項
@@ -80,7 +82,8 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 | D13 | OIDC Client はサービス単位。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定。2026-09-11 決定 |
 | D14 | apps はサービスごとに web と api を 1 組ずつ持ち、実装は packages/web-core と packages/api-core に共有する。auth は auth-api に改名。2026-09-11 決定 |
 | D15 | Identity DB の主キーはサロゲート ID。redirect_uri はサービスごとの `redirect_uri_template`。client_secret は oidc_client_secrets に複数行持ちローテーション可能。ハッシュは SHA-256。2026-09-11 決定 |
-| D16 | 招待と役割はサービス単位。契約は会社単位の tenant_services、割り当ては tenant_service_members、細かい権限はサービス側 DB の member_permissions。tenant_members は会社横断の役割にだけ使う。Token に role も permission も載せない。2026-09-11 決定 |
+| D16 | 招待と役割はサービス単位。契約は会社単位の tenant_services、割り当ては tenant_service_members。tenant_members は会社横断の役割にだけ使う。Token に role も permission も載せない。2026-09-11 決定。役割の置き場所は D17 で見直し |
+| D17 | DB はサービスごとに分け、PostgreSQL のコンテナも分ける。identity は「入れるか」だけを持ち、役割と権限はサービスの DB の members と permission_overrides に置く。招待はサービスの画面から auth-api の管理 API を経由し、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。画面は次の段階で React Router v7 の SPA にする。2026-09-11 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -142,11 +145,11 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 
 ### D8. Roleモデル
 
-推奨。初期は `owner` `admin` `member` `viewer` の固定enum。細粒度権限はAPI Server側のRole→Permissionマッピングで表現し、Identity DBにはroleのみ保存する。役割はサービスごとに持ち、個別の許可 / 拒否はサービス側 DB の member_permissions で役割の既定に重ねる。D16 で具体化した。
+推奨。初期は `owner` `admin` `member` `viewer` の固定enum。細粒度権限はAPI Server側のRole→Permissionマッピングで表現する。D16 でサービスごとの役割に改め、D17 で役割そのものをサービスの DB に移した。役割の語彙はサービスごとに `ServiceDefinition` で宣言し、CRM は owner / admin / member / viewer、CMS は owner / editor / viewer。個別の許可 / 拒否はサービス側 DB の permission_overrides で役割の既定に重ねる。Identity DB は役割を持たない。
 
 ### D9. ユーザーとMembershipの自動作成
 
-推奨。usersはCognito認証成功時にJIT作成する。tenant_service_membersとtenant_membersは自動作成しない。招待フローは本設計のスコープ外とし、初期はシード投入で代替する。招待の単位はサービスで、D16 に従う。
+推奨。usersはCognito認証成功時にJIT作成する。tenant_service_membersとtenant_membersは自動作成しない。招待の単位はサービスで、D16 に従う。当初は招待フローをスコープ外としてシード投入で代替したが、D17 でサービスの画面から auth-api の管理 API を経由する招待を実装した。招待された人は users にメールで事前作成され、初回ログイン時に cognito_sub が紐付く。サービスの DB の member 行は招待時に作られ、auth を通れるのに member 行がない人は最初の API 呼び出しで最下位の役割で作られる。
 
 ### D10. アクセス権のないテナントへのアクセス時の挙動
 
@@ -261,6 +264,48 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 - provision は `SEED_SERVICE_MEMBERSHIPS` で tenant_service_members、`SEED_PERMISSION_OVERRIDES` で member_permissions を投入する
 - シード。tenant_service_members は alice が tanaka × crm の owner、tanaka × cms の owner、suzuki × crm の viewer、bob が suzuki × crm の admin、carol は割り当てなし。member_permissions は alice が tanaka × cms で `projects:write` を deny。alice は tanaka.cms の owner だが Project を作れず、smoke と web のテストが「この操作を行う権限がありません」を確認する。tenant_members は alice が tanaka の owner、bob が suzuki の owner
 
+上記の具体化のうち、tenant_service_members の role 列、business スキーマと member_permissions の client_id 列、`IdentityReader` による API からの Identity DB 参照、provision の `SEED_PERMISSION_OVERRIDES`、projects のシードは D17 で置き換えた。現在の形は D17 を正とする。
+
+### D17. DB の分割と役割の置き場所、招待の経路
+
+問題点。D16 は役割を identity の tenant_service_members に持ち、API がリクエストごとに Identity DB を参照して割り当てと役割を再検証する形だった。この形では Auth Server の DB にサービスの語彙である役割が入り、CMS の editor のようにサービスごとに違う語彙を identity の CHECK 制約で表せない。API が Identity DB に接続するため、サービスを別リポジトリや別インフラに分けたときに Identity DB の接続情報とスキーマをサービスへ配る必要が生じ、DB のスキーマ変更が全サービスに波及する。サンドボックスは 1 つの DB を crm と cms で共有していたため business スキーマに client_id 列が要り、実運用の形と乖離していた。招待の経路もなく、シードでしか人を足せなかった。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| DB の構成 | A. サービスごとに DB と PostgreSQL コンテナを分ける。identity は auth-api だけが接続し、crm-api は crm DB、cms-api は cms DB だけに接続する。共有するのは user_id と tenant_id の値だけ | サービスが自分の DB だけで完結し、別リポジトリや別インフラに分けられる。Identity DB のスキーマ変更がサービスに波及しない。実運用の形と同じ | ローカルのコンテナが 3 つになる。DB 間の整合はアプリが保つ。AWS の RDS 構成の見直しが要る |
+| DB の構成 | B. 1 つの DB を identity / business スキーマで分ける。従来 | コンテナが 1 つで済む | API が Identity DB に接続する。サービス側の表に client_id 列が要る。サービスを分けたときに形が変わる |
+| 役割の置き場所 | A. サービスの DB の members に置く。identity は「入れるか」だけを持つ | 役割の語彙をサービスごとに自由に決められる。Auth Server がサービスの語彙を知らない。役割の変更がサービスの中で閉じる | 「入れるか」と役割が別の DB にあり、招待時に 2 か所へ書く |
+| 役割の置き場所 | B. identity の tenant_service_members に role 列を持つ。従来 | 割り当てと役割が 1 行で済む | identity の CHECK 制約が全サービスの語彙を持つ。API が Identity DB を参照する |
+| 役割の置き場所 | C. Token に role や permissions を載せる | API が DB を引かずに判定できる | 変更が Token 寿命まで反映されない。Auth Server が全サービスの語彙を持つ。D16 で却下済み |
+| 権限の判定 | A. API が自分の DB の members と permission_overrides をリクエストごとに読む | 変更が即時に反映される。Identity DB への接続が不要 | リクエストごとに自 DB を 2 回読む |
+| 権限の判定 | B. API がリクエストごとに auth-api に問い合わせる | DB を分けても identity の状態を即時に見られる | API の可用性が auth-api に依存する。リクエストごとに HTTP が増える。auth が Token 発行時と Refresh 時に判定済みの「入れるか」を二重に確認するだけで得るものが少ない |
+| 招待の経路 | A. サービスの画面から。サービスの API が auth-api の管理 API を client_secret_basic で呼んで「入れる」を登録し、返った user_id で自分の DB に役割付きの member 行を作る | 管理者はサービスの中で招待から役割の設定まで完結できる。auth-api は Client 自身のサービスへの割り当てだけを操作させればよく、権限の語彙を知らない | サービスの API が auth-api の Back Channel を 1 つ増やす。auth-api に Client 認証付きの管理 API が要る |
+| 招待の経路 | B. auth のポータルからだけ招待する | 招待の入口が 1 か所 | ポータルがサービスごとの役割を知る必要がある。役割はサービスの DB にあるため、ポータルから設定できない |
+| 未登録ユーザーの招待 | A. users にメールで事前作成し cognito_sub を NULL にしておき、初回ログイン時に同じメールの行へ sub を紐付ける | Cognito に存在する前でも招待できる。招待した人の user_id が招待時に確定し、サービスの DB に member 行を先に作れる | users.email に UNIQUE が要る。同じメールが別の Cognito ユーザーに紐付く事故を防ぐ判定が要る |
+| 未登録ユーザーの招待 | B. 初回ログインで JIT 作成されるまで待つ | users の列を変えない | 招待時に user_id が決まらず、サービスの DB に役割を置けない |
+| 画面 | A. 当面は `/dashboard` で role と権限の表を出すプレースホルダにし、次の段階で React Router v7 の SPA にする | API を先に揃え、画面の作り直しを 1 回にできる | 招待や権限編集の画面が一時的にない |
+| 画面 | B. Hono の HTML で招待や権限編集の画面まで作る | すぐに画面で確認できる | SPA 化で捨てる画面を作る |
+
+決定はすべて A。理由は次のとおり。
+
+- サービスが自分の DB と自分の役割語彙だけで完結し、Auth Server は「誰がどのテナントのどのサービスに入れるか」だけを持つ。認証基盤とサービスの境界が DB の境界と一致する
+- 権限の変更は次のリクエストから反映され、API は auth-api の可用性に依存しない。「入れるか」は Token 発行時と Refresh 時に判定済みで、割り当てを外された人は最大 15 分で Refresh に失敗する
+- 招待をサービスの中で完結させ、auth-api は Client 認証で自サービスの割り当てだけを操作させる。メールでの事前作成により、招待時に user_id が確定する
+- 画面は SPA で作り直すため、Hono の HTML はプレースホルダに留める
+
+具体化。
+
+- docker compose は `db-identity` 5432、`db-crm` 5433、`db-cms` 5434 の 3 コンテナ。初期化 SQL は `db/identity/init` `db/crm/init` `db/cms/init`。ロールは `sandbox_auth` `crm_app` `cms_app`。business スキーマ、`sandbox_api` ロール、projects 表は廃止
+- `identity.users.cognito_sub` は NULL 可の UNIQUE、`email` は NOT NULL UNIQUE。`identity.tenant_service_members(tenant_id, oidc_client_id, user_id, status)` から role 列を外す
+- ログイン時の users の解決は cognito_sub → 同じメールで cognito_sub が NULL の行に紐付け → JIT 作成の順。同じメールが別の sub に紐付いていればログインを拒否する
+- auth-api に `/admin/service-members` を追加。GET は一覧、POST は `{tenant_id, email, name?}` で事前作成と割り当ての upsert、DELETE は `{tenant_id, user_id}` で割り当ての削除。client_secret_basic で認証し、呼び出した Client のサービスに限る。テナントがそのサービスを契約していなければ 403 `not_contracted`。`/token` と同じレート制限
+- `packages/api-core` はサービス API のフレームワークになる。`ServiceDefinition` で役割の順序、既定の役割、権限、役割ごとの既定を宣言し、`members:read` `members:invite` `members:manage` は自動で足す。`MemberRepository` が `<schema>.members` と `<schema>.permission_overrides` を扱い、`resolveTenantContext` は Host 確認 → Token 検証 → member 行の取得か既定の役割での JIT 作成 → 上書きの適用の順で `TenantContext` を作る。`/v1/me` と `/v1/members` はどのサービスにも付く。`AuthAdminClient` が auth-api の管理 API を呼ぶ
+- `apps/crm-api` は owner / admin / member / viewer と `end_users:*` を宣言し、`/v1/end-users` の CRUD を持つ。`end_users:unmask` がなければメールと電話をマスクする。`apps/cms-api` は owner / editor / viewer と `posts:*` を宣言し、`/v1/posts` の CRUD を持つ
+- `*-api` の環境変数は `PORT` `API_BASE_URL` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` `CLIENT_ID` `CLIENT_SECRET`。`DATABASE_URL` は自サービスの DB、`CLIENT_ID` と `CLIENT_SECRET` は管理 API の Client 認証で `*-web` と同じ値
+- `packages/web-core` は `/dashboard` で `/v1/me` を呼び、role と Permission / Granted の表を出す。E2E の harness は実物の crm-api / cms-api を接続する
+- provision は identity DB だけを扱い、`SEED_SERVICE_MEMBERSHIPS` は役割を持たない。crm / cms の DB の初期化は AWS では未整備
+- シード。identity では alice が tanaka × crm、tanaka × cms、suzuki × crm に入れ、bob が suzuki × crm に入れる。crm の members は alice が tanaka で owner、suzuki で viewer、bob が suzuki で admin。suzuki の alice に `end_users:unmask` の allow。cms の members は alice が tanaka で owner で、`posts:create` の deny。crm の end_users は tanaka に 3 件、suzuki に 2 件。cms の posts は tanaka に 2 件。dave はモック Cognito にだけ存在し、招待と初回ログインの紐付けの確認に使う
+
 ## 5. 移行計画
 
 グリーンフィールドのため、構築順序として記述する。
@@ -271,8 +316,10 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 | 1 | Identity DBとClient Registryの構築。Cognito User Pool作成 | seedデータでusers / tenants / tenant_members / oidc_clients / tenant_services / tenant_service_membersが投入できる |
 | 2 | Auth Server。`/authorize` `/login` `/token` `/jwks` `/userinfo` | 初回ログインシーケンスが通る |
 | 3 | Tenant Web Application。OIDC Client共通モジュール | 別テナントSSOと別サービスSSOのシーケンスが通る |
-| 4 | API Server。Token検証、サービスへの割り当てと権限の認可、Tenant Isolation | 他テナントデータへのアクセスが拒否される |
+| 4 | API Server。Token検証、自サービス DB の役割と権限による認可、Tenant Isolation | 他テナントデータへのアクセスが拒否される |
 | 5 | Tenant Logout。エラーケース対応 | エラーケース一覧のテストが通る |
 | 6 | MFA、Global Logout、Refresh Tokenローテーション | 拡張シーケンスが通る |
+| 7 | サービスごとの DB、管理 API による招待、サービス固有の API | 招待した人が初回ログインで紐付き、サービスの画面から役割と権限を変えられる |
+| 8 | React Router v7 の SPA。エンドユーザー、投稿、招待、権限編集の画面 | 画面から 7 の操作ができる |
 
 既存システムがある適用先では、フェーズ2完了後に既存ログインを `/auth/login` へ差し替え、Cognito Tokenを直接使う箇所をAPI Server経由へ置き換える工程をフェーズ3と4の間に挟む。

@@ -45,7 +45,7 @@ function layout(
           <h1>${serviceName} <span class="muted">${tenantSlug}</span></h1>
           <nav>
             <a href="/">Home</a>
-            <a href="/projects">Projects</a>
+            <a href="/dashboard">Dashboard</a>
             ${
               viewer === undefined
                 ? html`<a href="/auth/login">ログイン</a>`
@@ -84,7 +84,7 @@ export function homePage(props: HomePageProps): Html {
         props.justLoggedOut
           ? html`<p>
               ${tenantSlug} からログアウトしました。auth.sandbox の SSO Session
-              は残っているため、Projects を開くとパスワードなしで再ログインされます。
+              は残っているため、Dashboard を開くとパスワードなしで再ログインされます。
               すべてのテナントからログアウトするには
               <a href="${props.globalLogoutUrl}">Sandbox 全体からログアウト</a>
               を使います。
@@ -94,12 +94,12 @@ export function homePage(props: HomePageProps): Html {
       ${
         viewer === undefined
           ? html`<p>
-              未ログインです。<a href="/auth/login?return_to=/projects"
-                >ログインして Projects を見る</a
+              未ログインです。<a href="/auth/login?return_to=/dashboard"
+                >ログインして Dashboard を見る</a
               >
             </p>`
           : html`<p>
-              ログイン済みです。<a href="/projects">Projects</a> へ進めます。
+              ログイン済みです。<a href="/dashboard">Dashboard</a> へ進めます。
               <a href="${props.globalLogoutUrl}">Sandbox 全体からログアウト</a>
             </p>`
       }
@@ -111,52 +111,41 @@ export function homePage(props: HomePageProps): Html {
   );
 }
 
-export interface ProjectRow {
-  readonly id: string;
-  readonly name: string;
-}
-
-export interface ProjectsPageProps {
+export interface DashboardPageProps {
   readonly serviceName: string;
   readonly tenantSlug: string;
   readonly viewer: Viewer;
   readonly role: string;
-  readonly projects: ReadonlyArray<ProjectRow>;
-  readonly notice?: string;
+  readonly permissions: ReadonlyArray<string>;
+  readonly availablePermissions: ReadonlyArray<string>;
 }
 
-export function projectsPage(props: ProjectsPageProps): Html {
+export function dashboardPage(props: DashboardPageProps): Html {
+  const granted = new Set(props.permissions);
   return layout(
     props.serviceName,
     props.tenantSlug,
-    "Projects",
+    "Dashboard",
     props.viewer,
     html`
-      <h2>Projects</h2>
+      <h2>Dashboard</h2>
       <p class="muted">role: ${props.role}</p>
-      ${props.notice === undefined ? "" : html`<p class="error">${props.notice}</p>`}
       <table>
         <thead>
           <tr>
-            <th>ID</th>
-            <th>Name</th>
+            <th>Permission</th>
+            <th>Granted</th>
           </tr>
         </thead>
         <tbody>
-          ${props.projects.map(
-            (project) => html`<tr>
-              <td>${project.id}</td>
-              <td>${project.name}</td>
+          ${props.availablePermissions.map(
+            (permission) => html`<tr>
+              <td>${permission}</td>
+              <td>${granted.has(permission) ? "yes" : "no"}</td>
             </tr>`,
           )}
         </tbody>
       </table>
-      <h3>Project を作成</h3>
-      <form method="post" action="/projects">
-        <input type="hidden" name="csrf" value="${props.viewer.csrfToken}" />
-        <input type="text" name="name" required placeholder="project name" />
-        <button type="submit">作成</button>
-      </form>
     `,
   );
 }

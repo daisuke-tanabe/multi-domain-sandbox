@@ -56,6 +56,8 @@
 | L10 | Cognito IdToken 検証失敗 | Auth | 500 | 「一時的なエラーです」 | アラート。設定不整合の疑い |
 | L11 | users JIT 作成失敗 | Auth | 500 | 同上 | アラート |
 | L12 | レート制限超過 | Auth | 429 | 「しばらく待ってから再試行してください」 | |
+| L13 | users.status が disabled | Auth | 200 フォーム再表示 | L3 と同一文言 | 警告ログ。SSO Session を作らない |
+| L14 | 同じメールの users 行が既に別の cognito_sub に紐付いている | Auth | 200 フォーム再表示 | L3 と同一文言 | 警告ログ。既存行を書き換えず新規行も作らない。SSO Session を作らない |
 
 ## 3. コールバック。GET /auth/callback
 
@@ -111,16 +113,41 @@
 | P4 | iss 不一致 | API | 401 invalid_token | 警告ログ |
 | P5 | aud が Host 由来の値と不一致。他サービスの Token や ID Token の誤送信を含む | API | 401 invalid_token | ログ |
 | P6 | exp 切れ | API | 401 invalid_token。error_description=expired | Tenant 側は Refresh 後に1回だけ再試行 |
-| P7 | 必須 claim 欠落 | API | 401 invalid_token | |
-| P8 | users.status が disabled | API | 401 | ログ |
-| P9 | tenant_service_members に Token の client_id のサービスへの割り当てがない / active でない。別サービスの割り当てでは通らない | API | 403 forbidden | ログ。テナント単位で監視 |
-| P10 | tenant status が suspended | API | 403 forbidden | |
-| P11 | permission 不足。役割の既定にない場合と、自サービス DB の member_permissions の deny で外された場合の両方 | API | 403 forbidden | ログ |
+| P7 | 必須 claim 欠落。sub / tenant_id / tenant_slug / sid / client_id | API | 401 invalid_token | |
+| P8 | 自サービス DB の members に行がない | API | defaultRole で行を作って続行 | ログ。email と name は NULL |
+| P9 | members.status が disabled | API | 403 forbidden | ログ。テナント単位で監視 |
+| P10 | users や tenants の停止、割り当ての削除 | Auth | API は検知しない。Refresh で invalid_grant になり最大 15 分で失効 | |
+| P11 | permission 不足。役割の既定にない場合と、自サービス DB の permission_overrides の deny で外された場合の両方 | API | 403 forbidden | ログ |
 | P12 | 他テナントのリソース ID | API | 404 not_found。存在の有無を漏らさない | 403 の代わりに 404 を使う理由をコードコメントに残す |
-| P13 | JWKS 取得失敗かつキャッシュなし | API | 503 | アラート |
-| P14 | Identity DB 障害 | API | 503 | アラート。キャッシュがあれば寿命内のみ利用 |
+| P13 | JWKS 取得失敗かつキャッシュなし | API | 503 temporarily_unavailable | アラート |
+| P14 | 自サービスの DB 障害 | API | 500 server_error | アラート。他サービスと Auth Server には影響しない |
 | P15 | RLS 設定漏れ。app.tenant_id 未設定 | DB | クエリが 0 件になる | 起動時テストで検知する |
 | P16 | Host が API_BASE_URL のホストと一致しない | API | 404 not_found。Token 検証に進まない | ログ |
+| P17 | body の JSON が不正、または role / permission が ServiceDefinition の語彙にない | API | 400 invalid_request | CRM の admin を CMS に送った場合を含む |
+| P18 | body が 64 KB を超える | API | 413 | |
+
+## 5.1 管理アカウント。/v1/members
+
+| # | ケース | 検知 | 応答 | 副作用 |
+| --- | --- | --- | --- | --- |
+| Q1 | 招待で Auth Server が tenant_not_found / not_contracted | API | 403 | サービスの DB に行を作らない |
+| Q2 | 削除で Auth Server が user_not_found | API | 自 DB の行を消して 204 | Auth Server 側に割り当てがなくても自 DB を整える |
+| Q3 | Auth Server に到達できない / 5 秒でタイムアウト / 応答が解釈できない | API | 503 temporarily_unavailable | アラート。招待は再試行で冪等 |
+| Q4 | 自分自身を削除 | API | 400 cannot_remove_self | |
+| Q5 | 役割変更、上書き、削除の対象が members にない | API | 404 not_found | |
+| Q6 | 上書きが 50 件を超える | API | 400 invalid_request | |
+
+## 5.2 Auth Server の管理 API。/admin/service-members
+
+| # | ケース | 検知 | 応答 | 副作用 |
+| --- | --- | --- | --- | --- |
+| R1 | Client 認証失敗。Basic なし、secret 不一致、revoked 済み | Auth | 401 invalid_client。WWW-Authenticate: Basic realm="admin" | 警告ログ |
+| R2 | tenant_id が不正、body の形式が不正 | Auth | 400 invalid_request | |
+| R3 | tenant_id が tenants にない | Auth | 404 tenant_not_found | |
+| R4 | テナントが呼び出し元のサービスを契約していない / suspended | Auth | 403 not_contracted | |
+| R5 | 削除の user_id が users にない | Auth | 404 user_not_found | |
+| R6 | 招待のメールが users にある | Auth | 既存の行に割り当てを upsert して 201。linked は cognito_sub の有無 | 冪等。既に割り当てがあれば active に戻す |
+| R7 | レート制限超過 | Auth | 429 | |
 
 ## 6. Logout
 
@@ -141,12 +168,13 @@
 | M1 | 署名鍵ローテーション中に旧 kid の Token | Tenant / API | JWKS に旧鍵が残っていれば検証成功。削除は Token 最大寿命経過後 |
 | M2 | Client secret ローテーション中 | Auth | oidc_client_secrets に新旧 2 行が active の間はどちらでも `/token` を通す。サービスの `CLIENT_SECRET` 切替後に旧行を revoked にする |
 | M3 | 時刻ずれ | Tenant / API | 30 秒の許容スキュー。NTP 同期を必須にする |
-| M4 | テナント削除 | Auth / API | tenant_members / tenant_services / tenant_service_members を CASCADE 削除。oidc_clients は残る。redirect_uri はテンプレート由来のため削除対象がない。既存 Token は割り当て再検証で拒否 |
+| M4 | テナント削除 | Auth / API | tenant_members / tenant_services / tenant_service_members を CASCADE 削除。oidc_clients は残る。redirect_uri はテンプレート由来のため削除対象がない。既存 Token は Refresh で拒否。サービスの DB の members と業務データは各サービスが tenant_id で消す |
 | M6 | 契約解除 | Auth | tenant_services を削除または suspended。削除すれば tenant_service_members も CASCADE で消える。`/authorize` と Refresh で not_contracted。既存 Access Token は最大15分で失効 |
-| M8 | サービスからの割り当て解除 | Auth / API | tenant_service_members を削除または disabled。`/authorize` と Refresh で no_membership / membership_inactive、API は次のリクエストから 403。同テナントの他サービスには影響しない |
-| M9 | 権限の上書き変更 | API | 自サービス DB の member_permissions を更新。Token を再発行せず次のリクエストから反映される |
+| M8 | サービスからの割り当て解除 | Auth / API | `DELETE /v1/members/:userId` が Auth Server の割り当てを消してから自 DB の行を消す。`/authorize` と Refresh で no_membership、既存 Access Token は最大 15 分で失効。同テナントの他サービスには影響しない |
+| M9 | 役割と権限の上書き変更 | API | `PATCH /v1/members/:userId` と `PUT /v1/members/:userId/permissions` で自サービス DB を更新。Token を再発行せず次のリクエストから反映される |
+| M10 | 招待した人が初回ログインするまで | Auth | users に cognito_sub が NULL の行と割り当てがあり、サービスの DB に member 行がある。`linked: false`。初回ログインで同じメールの行に sub が紐付く |
 | M7 | サービス廃止 | Auth / Tenant | oidc_clients を disabled。A2 で拒否。oidc_client_secrets と tenant_services は oidc_clients.id を参照するため行を消せば CASCADE で消える。そのサービスの web と api のプロセスを停止し、provision の SERVICES から除く |
-| M5 | Cognito でユーザー削除 | Auth | 次回ログインで L4。既存 SSO Session は期限まで残るため、削除時に Auth の管理 API から SSO Session を失効させる運用を定義 |
+| M5 | Cognito でユーザー削除 | Auth | 次回ログインで L4。既存 SSO Session は期限まで残るため、削除時に SSO Session を失効させる運用を定義。`/admin/service-members` は割り当てしか扱わない |
 
 ## ユーザー向けメッセージ方針
 

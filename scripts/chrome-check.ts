@@ -19,10 +19,10 @@ import { createReporter } from "./check-reporter.ts";
  */
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 9223;
-const TANAKA_CRM = `${TANAKA_CRM_ORIGIN}/projects`;
-const SUZUKI_CRM = `${SUZUKI_CRM_ORIGIN}/projects`;
-const TANAKA_CMS = `${TANAKA_CMS_ORIGIN}/projects`;
-const SUZUKI_CMS = `${SUZUKI_CMS_ORIGIN}/projects`;
+const TANAKA_CRM = `${TANAKA_CRM_ORIGIN}/dashboard`;
+const SUZUKI_CRM = `${SUZUKI_CRM_ORIGIN}/dashboard`;
+const TANAKA_CMS = `${TANAKA_CMS_ORIGIN}/dashboard`;
+const SUZUKI_CMS = `${SUZUKI_CMS_ORIGIN}/dashboard`;
 const LOGIN_URL_PREFIX = `${AUTH_ORIGIN}/login`;
 
 type CdpMessage = {
@@ -152,7 +152,7 @@ try {
   const afterLogin = String(await cdp.evaluate("location.href"));
   const afterLoginBody = String(await cdp.evaluate("document.body.innerText"));
   check(
-    "submitting the login form navigates to tanaka.crm projects",
+    "submitting the login form navigates to tanaka.crm dashboard",
     afterLogin === TANAKA_CRM && afterLoginBody.includes("role: owner"),
     `${afterLogin}; csp errors: ${consoleErrors.length}`,
   );
@@ -200,8 +200,8 @@ try {
     "portal lists the tenants the user belongs to",
     portalBody.includes("Sandbox ポータル") &&
       portalBody.includes("Tanaka Inc.") &&
-      portalBody.includes("crm / owner") &&
-      portalBody.includes("crm / viewer"),
+      portalBody.includes("Suzuki Ltd.") &&
+      portalBody.includes("CMS"),
     String(await cdp.evaluate("location.href")),
   );
   await cdp.navigateWith(() =>

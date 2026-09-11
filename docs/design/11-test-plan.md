@@ -5,13 +5,13 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / api-core / web-core / shared で 134 件が通っている。oidc-client は web-core のテストを通して検証する。crm-web / crm-api / cms-web / cms-api の `main.ts` は `packages/web-core` と `packages/api-core` の起動関数を呼ぶだけのため、テストは共有パッケージ側に置く。
+現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 133 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶだけのため web のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続する。
 
 ## テストピラミッド
 
 | 層 | 対象 | ツール | 実行タイミング |
 | --- | --- | --- | --- |
-| Unit | PKCE 計算、JWT 生成と検証、Cookie 属性、redirect_uri テンプレート照合、secret ハッシュ、Host 解決、return_to 検証、Role→Permission | Vitest | 毎コミット |
+| Unit | PKCE 計算、JWT 生成と検証、JWKS の再取得制御、Cookie 属性、redirect_uri テンプレート照合、secret ハッシュ、Host 解決、return_to 検証、Role→Permission | Vitest | 毎コミット |
 | Integration | Auth / Tenant / API の各エンドポイント。ストアと Cognito はモック | Vitest + Hono テストクライアント | 毎コミット |
 | E2E | 5種のプロセスと7ホストをまたぐフロー。ブラウザ相当のクライアントで Cookie を追う | Vitest。ブラウザ確認は Chrome DevTools スクリプト | PR ごと |
 | Security | 攻撃シナリオの再現 | Vitest | PR ごと |
@@ -28,6 +28,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | secret ハッシュ `hashSecret` / `verifySecret` | `sha256$` で始まる。元の secret で true、別の secret で false。`plain` や `scrypt$a$b` のような形式外の保存値は false |
 | secret ローテーション `verifySecretAgainstAny` | active なハッシュが複数あるとき、いずれかに一致すれば true。どれにも一致しない、または一覧が空なら false |
 | アクセス判定 | user_disabled → tenant_suspended → not_contracted → no_membership / membership_inactive の順で最初の理由を返す。user、契約、サービスへの割り当ては並列取得。割り当ては認可リクエストの client_id のサービスだけを見る |
+| users の解決 | cognito_sub で一致する行 → 同じメールで cognito_sub が NULL の行に紐付け → JIT 作成の順。同じメールが別の sub に紐付いていれば拒否 |
 | ID Token 生成 | 必須 claims の存在。aud=client_id。nonce / sid / tenant_id / tenant_slug の反映 |
 | Access Token 生成 | aud に client.audience と issuer。role を含まない。tenant_id と client_id の反映 |
 | logout_token 生成 | aud=client_id。sid と events。nonce なし |
@@ -44,6 +45,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | `MemoryKeyValueStore.setIfAbsent` | 未登録なら true で書き、登録済みなら false で書かない。TTL 経過後は再取得できる |
 | `MemorySetStore` | 同時に add した要素がすべて残り、remove で個別に外せる |
 | `MemoryCounterStore` | increment が 1 から加算され、窓の経過後に 1 に戻る |
+| `RemoteJwksSource` | 通常取得の直後でも未知の kid による強制再取得は 1 回通り、その後 60 秒は間引かれる。同時の取得要求は 1 回の fetch にまとまる |
 
 ### Tenant Web Application と OIDC Client モジュール
 
@@ -65,7 +67,9 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | --- | --- |
 | Host → aud | API_BASE_URL がそのまま aud になり、URL のホストだけを受け付ける |
 | Access Token 検証 | aud 不一致で拒否。ID Token を渡すと拒否。alg=none 拒否 |
-| Role→Permission | 4 role の permission 集合。allow の上書きで役割にない permission が加わり、deny の上書きで役割にある permission が外れる。deny が優先し、未知の permission 名は無視する |
+| ServiceDefinition | `members:read` `members:invite` `members:manage` が自動で足される。`isRole` `isPermission` が語彙外を拒否する |
+| resolvePermissions | 役割の既定に対し、allow の上書きで役割にない permission が加わり、deny の上書きで役割にある permission が外れる。deny が優先し、未知の permission 名は無視する |
+| マスキング | `mask` がメールを先頭 1 文字とドメイン、電話を末尾 4 桁だけ残す |
 | Repository | tenant_id 引数の必須性。省略で型エラーになること |
 
 ## Integration テスト
@@ -89,8 +93,12 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | 正常 | refresh_token grant でローテーションされ、旧値が失効する |
 | 正常 | /revoke が冪等 |
 | 正常 | /.well-known/openid-configuration と /jwks の内容 |
-| ポータル | alice で「Tanaka Inc. (tanaka)」に CRM `crm / owner` と CMS `cms / owner`、「Suzuki Ltd. (suzuki)」に CRM `crm / viewer` のみ。suzuki.cms のリンクは出ない。リンクは `<tenant>.<service>` の /auth/login。テナント単位の役割は表示しない |
+| ポータル | alice で「Tanaka Inc. (tanaka)」に CRM と CMS、「Suzuki Ltd. (suzuki)」に CRM のみ。suzuki.cms のリンクは出ない。リンクは `<tenant>.<service>` の /auth/login。役割は表示しない |
 | ポータル | どのサービスにも割り当てのない carol は「利用できるサービスがありません。管理者に招待を依頼してください。」 |
+| 管理 API | R1。Basic 認証なしで `/admin/service-members` を呼ぶと 401 |
+| 管理 API | 招待と初回ログインの紐付け。crm の secret で dave のメールを tanaka に招待すると 201 で `linked: false`。dave がログインすると code が発行され、一覧の `linked` が true になり、`findUserByCognitoSub` が招待時の user_id を返す |
+| 管理 API | R4。cms の secret で cms を契約していない suzuki に招待すると 403 |
+| 管理 API | 割り当ての解除。alice を tanaka × crm から DELETE で外すと 204 で、次の認可が `access_denied` `no_membership` になる |
 | Global Logout | `sso:clients` のサービスごとに1通の logout_token。aud がサービス。完了画面に「CRM (tanaka) に戻る」。リンク先は redirect_uri_template を tenant で展開した origin |
 | 並行性と悪用 | 同じ Refresh Token を同時に 2 回提示すると成功は 1 つで、もう一方は invalid_grant。系列は失効せず、成功側の新 Token で次の Refresh が通る |
 | 並行性と悪用 | 別 Client の Basic 認証で Refresh Token を提示すると invalid_grant になり、その後の正規 Client からの提示も invalid_grant。系列全体が失効する |
@@ -110,47 +118,56 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | O1-O3 | Tenant Logout |
 | O6 | Back-Channel Logout。aud のサービスの全テナントのセッションが消え、他サービスは残る |
 | 正常 | apiFetch が Bearer を付与し、期限切れ時に Refresh 後1回だけ再試行する |
-| 権限 | tanaka.cms では `role: owner` と表示されるが、cms 側の `projects:write` の deny により Project 作成が「この操作を行う権限がありません」で拒否され、一覧に増えない。tanaka.crm では同じ alice が作成できる |
+| 権限 | tanaka.cms の Dashboard は `role: owner` だが、cms 側の `posts:create` の deny により表の `posts:create` が no、`posts:update` が yes。suzuki.crm の Dashboard は `role: viewer` で `end_users:create` が no、上書きにより `end_users:unmask` が yes。tanaka.crm では `end_users:create` が yes |
 
 ### API Server
 
+crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-api/src/app.test.ts`。api-core の共通部分はこの 2 つで検証する。
+
 | 番号 | テスト |
 | --- | --- |
-| P1-P14 | 各エラー応答 |
+| P1-P7, P13 | 各エラー応答 |
 | P5 | crm 向け Access Token を cms-api の Host api.cms.localhost:3004 に送ると 401 |
 | P16 | API_BASE_URL のホストと一致しない Host は 404。Token の有無に関わらず |
+| P17 | CRM の役割 `admin` を CMS の招待に送ると 400。CRM に未知の permission を上書きで送ると 400 |
 | 正常 | cms 向け Access Token を cms-api の Host api.cms.localhost:3004 に送ると 200 |
 | 正常 | 有効な Token で自テナントのデータのみ返る |
-| P12 | 他テナントのリソース ID で 404 |
-| 権限 | viewer で projects:write が 403 |
-| 権限 | deny の上書きで役割が持つ permission が外れる。tanaka × cms の alice は owner だが `GET /v1/projects` が 200、`POST /v1/projects` が 403 |
-| 権限 | allow の上書きで役割にない permission が付く。suzuki × crm の viewer alice に `projects:write` の allow を足すと `POST /v1/projects` が 201 |
-| 割り当て | Token 有効中に tenant_service_members を削除すると次のリクエストで 403 |
-| 割り当て | 別サービスの割り当てではこのサービスに入れない。suzuki の crm にしか割り当てのない alice が cms 向け Token で cms-api を呼ぶと 403 |
-| 正常 | `/v1/me` が tenant_service_members の role と確定した permissions のソート済み配列を返す。suzuki の alice は `viewer` と `["projects:read", "tenant:read"]` |
+| P12 | 他テナントのリソース ID で 404。有効な Token でも他テナントの end_users は見えない |
+| CRM マスキング | owner はマスクなし。unmask のない member はメールが `a***@example.com`、電話が `***-****-1234` で `masked: true`。読み取り自体は通る |
+| CRM 上書き | allow の上書きで役割にない permission が付く。suzuki × crm の viewer alice は `end_users:unmask` の allow によりマスクなしで読める |
+| CRM 役割 | viewer は作成できず、member は更新でき、削除は owner と admin だけ |
+| P8 | auth を通れるが member 行がない人は最初の呼び出しで viewer の行が作られる |
+| 管理アカウント | owner が `POST /v1/members` で招待すると `AuthAdminClient.invite` が呼ばれ、返った user_id で指定した役割の member 行ができる。201 で `linked` を返す |
+| 管理アカウント | owner は役割を変え、上書きを置き換えられる。viewer は 403 |
+| 管理アカウント | 削除で `AuthAdminClient.revoke` が呼ばれ、自 DB の行が消える。未知の permission の上書きは 400 |
+| CMS 上書き | deny の上書きで役割が持つ permission が外れる。tanaka × cms の alice は owner だが `GET /v1/posts` と `PATCH` が通り、`POST /v1/posts` が 403 |
+| CMS 招待 | owner が editor を招待すると、その人は投稿を作成と削除できる |
+| CMS 語彙 | CRM の役割名は CMS で受け付けない |
+| 正常 | `/v1/me` が members の role と確定した permissions のソート済み配列、サービスの roles と permissions の語彙を返す。suzuki の alice は `viewer` と `["end_users:read", "end_users:unmask", "members:read"]` |
 | role | Token に role claim があっても無視し DB の role を使う |
 | RLS | app.tenant_id 未設定で 0 件。PostgreSQL 使用時のみ |
 
 ## E2E テスト
 
-ローカルでは auth-api の `auth.localhost:3000`、crm-web の `tanaka.crm.localhost:3001` `suzuki.crm.localhost:3001`、crm-api の `api.crm.localhost:3002`、cms-web の `tanaka.cms.localhost:3003` `suzuki.cms.localhost:3003`、cms-api の `api.cms.localhost:3004` を起動し、Cognito はモックアダプタを使う。ユーザーは alice。tanaka では crm と cms の owner、suzuki では crm の viewer。tanaka の cms では `projects:write` を deny されている。
+ローカルでは auth-api の `auth.localhost:3000`、crm-web の `tanaka.crm.localhost:3001` `suzuki.crm.localhost:3001`、crm-api の `api.crm.localhost:3002`、cms-web の `tanaka.cms.localhost:3003` `suzuki.cms.localhost:3003`、cms-api の `api.cms.localhost:3004` を起動し、Cognito はモックアダプタを使う。ユーザーは alice。identity では tanaka の crm と cms、suzuki の crm に入れる。CRM の DB では tanaka で owner、suzuki で viewer で `end_users:unmask` を allow されている。CMS の DB では tanaka で owner で `posts:create` を deny されている。
 
 | # | シナリオ | 確認内容 |
 | --- | --- | --- |
-| E1 | 初回ログイン | tanaka.crm 未ログイン → ログイン画面 → 認証 → Tanaka Project 1 / 2 を表示。Cookie が tanaka.crm と auth にそれぞれ1つ。Domain 属性なし |
-| E2 | 別テナント SSO | E1 後に suzuki.crm へアクセス → ログイン画面を経由せず Suzuki Project 1 を表示。ネットワークログにログイン画面の GET がないこと |
+| E1 | 初回ログイン | tanaka.crm 未ログイン → ログイン画面 → 認証 → Dashboard に `role: owner` と権限の表。Cookie が tanaka.crm と auth にそれぞれ1つ。Domain 属性なし |
+| E2 | 別テナント SSO | E1 後に suzuki.crm へアクセス → ログイン画面を経由せず Dashboard に `role: viewer`。ネットワークログにログイン画面の GET がないこと |
 | E3 | Tenant Logout | tanaka.crm でログアウト → tanaka.crm は未ログイン、suzuki.crm と tanaka.cms はログイン済み。auth の Cookie は残る |
-| E4 | 他テナントデータ拒否 | tanaka.crm のセッションで suzuki の project ID を指定 → 404 |
+| E4 | 他テナントデータ拒否 | tanaka の Token で suzuki の end_user ID を指定 → 404 |
 | E5 | 割り当てなし | どのサービスにも割り当てのない carol が tanaka.crm へアクセス → 403 アクセス権なし画面。ログイン画面は出ない。SSO Session は残る |
 | E6 | Tenant Session 期限切れ復帰 | tanaka.crm の Session を強制失効 → 再アクセスで無画面復帰 |
 | E7 | SSO Session 期限切れ | SSO Session を強制失効 → suzuki.crm へアクセスでログイン画面 |
 | E8 | 認証失敗 | パスワード誤りでフォーム再表示。SSO Cookie が発行されない |
 | E9 | 再訪 | E1 後に tanaka.crm を再読み込み → auth への通信が発生しない |
-| E10 | role の差 | 同じ alice が tanaka では project を作成でき、suzuki では viewer のため 403 |
+| E10 | role の差 | 同じ alice が tanaka では owner で `end_users:create` が yes、suzuki では viewer で no だが、上書きで `end_users:unmask` が yes。各サービスの DB が決める |
 | E11 | Global Logout | auth の `/logout?client_id=crm&tenant=tanaka` でログアウト → tanaka.crm / suzuki.crm 両方が未ログイン。完了画面に「CRM (tanaka) に戻る」 |
 | E12 | 別サービス SSO と契約判定 | E1 後に tanaka.cms へアクセス → ログイン画面なしで code を取得し cms 向け Token でログイン。suzuki.cms へアクセス → 403「テナント suzuki は CMS を契約していません」。crm から Global Logout → Back-Channel で tanaka.cms も未ログイン |
-| E13 | サービスごとの権限 | tanaka.cms では owner と表示されるが、cms 側の deny により Project 作成が「この操作を行う権限がありません」で拒否される。tanaka.crm では作成できる。smoke と web のテストで確認する |
-| E14 | ポータルのサービスごとの役割 | alice のポータルに `crm / owner` `cms / owner` `crm / viewer` が並び、suzuki.cms は出ない。carol は「利用できるサービスがありません」 |
+| E13 | サービスごとの権限 | tanaka.cms では owner と表示されるが、cms 側の deny により `posts:create` が no で `posts:update` が yes。smoke と web のテストで確認する |
+| E14 | ポータル | alice のポータルに tanaka の CRM と CMS、suzuki の CRM が並び、suzuki.cms は出ない。役割は出ない。carol は「利用できるサービスがありません」 |
+| E15 | 招待と初回ログイン | alice が tanaka の crm に dave を招待 → identity に dave の users 行と割り当て、crm の DB に member 行。dave がログインすると同じ users 行に sub が紐付き tanaka.crm に入れる。auth-api のテストで確認する |
 
 各シナリオで以下を横断的に検証する。
 
@@ -183,19 +200,24 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | S16 | crm の Access Token を api.cms に送る | aud 不一致で 401 |
 | S17 | suzuki 向けの code を tanaka.crm の callback で受ける | redirect_uri 不一致で invalid_grant。通過しても tenant_slug 不一致で 401 |
 | S18 | 契約のない suzuki.cms の redirect_uri で /authorize | access_denied not_contracted。code は発行されない |
-| S19 | 別サービスの割り当てで自サービスの API を呼ぶ | 割り当ては (tenant, service, user) の単位。Token の client_id に一致する割り当てがなければ 403 |
-| S20 | Token に permissions claim を付けて送る | 無視され、役割の既定と member_permissions から確定した権限だけで判定する |
+| S19 | 別サービスの割り当てで自サービスの API を呼ぶ | 割り当ては (tenant, service, user) の単位。Auth Server が認可リクエストの client_id に一致する割り当てがなければ code を出さず、API の aud も違うため別サービスの Token は 401 |
+| S20 | Token に permissions claim を付けて送る | 無視され、役割の既定と permission_overrides から確定した権限だけで判定する |
+| S21 | 管理 API を Basic 認証なしや別サービスの secret で呼ぶ | 401 invalid_client。認証した Client 自身の割り当てしか操作できない |
+| S22 | 契約のないテナントへ招待 | 403 not_contracted。users にも tenant_service_members にも行が増えない |
+| S23 | 招待済みのメールで別の Cognito ユーザーがログイン | 既存行に紐付かず、ログインが拒否される |
+| S24 | 語彙にない role や permission | 400 invalid_request。members と permission_overrides に書かれない |
 
 ## テスト環境
 
 | 項目 | 内容 |
 | --- | --- |
-| Cognito | `CognitoAuthenticator` インターフェースのモック実装。固定ユーザー alice / bob / carol と失敗パターンを設定できる |
+| Cognito | `CognitoAuthenticator` インターフェースのモック実装。固定ユーザー alice / bob / carol / dave と失敗パターンを設定できる。dave は identity にいない |
 | Session Store | インメモリ実装。TTL を進めるためのテスト用クロック |
-| Identity DB | ローカル PostgreSQL。RLS テストは PostgreSQL 必須 |
+| Identity DB | テストはインメモリの `IdentityRepository`。RLS テストはローカル PostgreSQL 必須 |
+| サービスの DB | テストは `MemoryMemberRepository` と各サービスのインメモリ Repository。`MemoryAuthAdminClient` が auth-api の管理 API を代替する |
 | web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003 |
-| api インスタンス | サービスごとに別インスタンス。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
-| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`packages/web-core/src/app.test.ts`、`packages/api-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
+| api インスタンス | サービスごとに別インスタンス。`apps/crm-api/src/test-support.ts` と `apps/cms-api/src/test-support.ts` が実物の定義と routes で組み立て、web-core の harness もこれを使う。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
+| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |
 | 時刻 | 注入可能なクロックで期限切れを再現 |
 
@@ -214,6 +236,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | --- | --- |
 | 2. Auth Server | Auth の Unit / Integration |
 | 3. Tenant Web Application | E1 / E2 / E8 / E9 / E12 |
-| 4. API Server | E4 / E10 / E13 / P 系 / S7-S10 / S16 / S19-S20 |
+| 4. API Server | E4 / E10 / E13 / P 系 / S7-S10 / S16 / S19-S20 / S24 |
 | 5. Logout とエラー | E3 / E5-E7 / 全エラーケース / S1-S6 / S11-S15 / S17-S18 |
 | 6. 拡張 | E11 / MFA シーケンス |
+| 7. サービスごとの DB と招待 | E15 / Q 系 / R 系 / S21-S23 |

@@ -21,9 +21,10 @@ import type { AuthDeps } from "./usecases/deps.ts";
  * テスト用の固定データ。db/init/004_seed.sql と同じ関係にする。
  *   サービス : crm, cms
  *   テナント : tanaka (crm と cms を契約), suzuki (crm のみ契約)
- *   alice    : tanaka では crm / cms の owner、suzuki では crm の viewer
- *   bob      : suzuki の crm の admin
+ *   alice    : tanaka の crm / cms、suzuki の crm に入れる
+ *   bob      : suzuki の crm に入れる
  *   carol    : Cognito には存在するがどのサービスにも割り当てられていない
+ *   dave     : Cognito には存在するが identity に無い。招待と初回ログインの紐付けに使う
  */
 export const ISSUER = "http://auth.localhost:3000";
 export const CRM_AUDIENCE = "http://api.crm.localhost:3002";
@@ -63,6 +64,13 @@ const mockUsers = [
     sub: "cognito-carol",
     email: "carol@example.com",
     name: "Carol",
+  },
+  {
+    username: "dave",
+    password: "dave-password",
+    sub: "cognito-dave",
+    email: "dave@example.com",
+    name: "Dave",
   },
 ];
 
@@ -133,28 +141,24 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
         tenantId: TANAKA_ID,
         oidcClientId: CRM_ID,
         userId: ALICE_ID,
-        role: "owner",
         status: "active",
       },
       {
         tenantId: TANAKA_ID,
         oidcClientId: CMS_ID,
         userId: ALICE_ID,
-        role: "owner",
         status: "active",
       },
       {
         tenantId: SUZUKI_ID,
         oidcClientId: CRM_ID,
         userId: ALICE_ID,
-        role: "viewer",
         status: "active",
       },
       {
         tenantId: SUZUKI_ID,
         oidcClientId: CRM_ID,
         userId: "user-bob",
-        role: "admin",
         status: "active",
       },
     ],

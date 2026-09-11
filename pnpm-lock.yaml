@@ -135,19 +135,43 @@ importers:
 
   apps/cms-api:
     dependencies:
+      '@hono/zod-validator':
+        specifier: 'catalog:'
+        version: 0.9.1(hono@4.13.7)(zod@4.5.4)
       '@sandbox/api-core':
         specifier: workspace:*
         version: link:../../packages/api-core
+      '@sandbox/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      hono:
+        specifier: 'catalog:'
+        version: 4.13.7
+      pg:
+        specifier: 'catalog:'
+        version: 8.23.0
       tsx:
         specifier: 'catalog:'
         version: 4.23.13
+      ulid:
+        specifier: 'catalog:'
+        version: 3.0.2
+      zod:
+        specifier: 'catalog:'
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
+      '@types/pg':
+        specifier: 'catalog:'
+        version: 8.23.1
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
 
   apps/cms-web:
     dependencies:
@@ -167,19 +191,43 @@ importers:
 
   apps/crm-api:
     dependencies:
+      '@hono/zod-validator':
+        specifier: 'catalog:'
+        version: 0.9.1(hono@4.13.7)(zod@4.5.4)
       '@sandbox/api-core':
         specifier: workspace:*
         version: link:../../packages/api-core
+      '@sandbox/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      hono:
+        specifier: 'catalog:'
+        version: 4.13.7
+      pg:
+        specifier: 'catalog:'
+        version: 8.23.0
       tsx:
         specifier: 'catalog:'
         version: 4.23.13
+      ulid:
+        specifier: 'catalog:'
+        version: 3.0.2
+      zod:
+        specifier: 'catalog:'
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
+      '@types/pg':
+        specifier: 'catalog:'
+        version: 8.23.1
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
 
   apps/crm-web:
     dependencies:
@@ -317,6 +365,12 @@ importers:
       '@sandbox/auth-api':
         specifier: workspace:*
         version: link:../../apps/auth-api
+      '@sandbox/cms-api':
+        specifier: workspace:*
+        version: link:../../apps/cms-api
+      '@sandbox/crm-api':
+        specifier: workspace:*
+        version: link:../../apps/crm-api
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3

@@ -3,33 +3,35 @@ import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import type { Clock, JwksSource, Logger } from "@sandbox/shared";
 import { authenticate, type ApiEnv } from "./auth/middleware.ts";
-import type { IdentityReader } from "./ports/identity-reader.ts";
-import type { PermissionReader } from "./ports/permission-reader.ts";
-import type { ProjectRepository } from "./ports/project-repository.ts";
+import type { AuthAdminClient } from "./ports/auth-admin.ts";
+import type { MemberRepository } from "./ports/member-repository.ts";
 import { meRoutes } from "./routes/me.ts";
-import { projectRoutes } from "./routes/projects.ts";
+import { memberRoutes } from "./routes/members.ts";
+import type { ServiceDefinition } from "./service-definition.ts";
 
 export interface ApiAppOptions {
   readonly issuer: string;
   /** この API の公開 URL。aud として検証し、Host がこの URL のホストと違うリクエストは 404 */
   readonly audience: string;
   readonly jwks: JwksSource;
-  readonly identity: IdentityReader;
-  /** サービス固有の権限の上書き。サービス自身の DB */
-  readonly permissions: PermissionReader;
-  readonly projects: ProjectRepository;
+  readonly definition: ServiceDefinition;
+  readonly members: MemberRepository;
+  readonly authAdmin: AuthAdminClient;
   readonly clock: Clock;
   readonly logger: Logger;
+  /** サービス固有のルート。/v1/* 配下に置き、authenticate の後ろに mount される */
+  readonly routes: ReadonlyArray<Hono<ApiEnv>>;
 }
 
 /**
- * API Server。Cookie は受け付けず Bearer のみ。ブラウザから直接呼ばれない前提のため CORS は設定しない。
+ * API Server の共通部分。Cookie は受け付けず Bearer のみ。ブラウザから直接呼ばれない前提のため CORS は設定しない。
+ * /v1/me と管理アカウントのルートはどのサービスにも付く。
  */
 export function createApiApp(options: ApiAppOptions): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
 
   app.use(secureHeaders());
-  app.use(bodyLimit({ maxSize: 16 * 1024 }));
+  app.use(bodyLimit({ maxSize: 64 * 1024 }));
   app.use(async (c, next) => {
     c.header("Cache-Control", "no-store");
     await next();
@@ -38,8 +40,9 @@ export function createApiApp(options: ApiAppOptions): Hono<ApiEnv> {
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
   app.use("/v1/*", authenticate(options));
-  app.route("/", meRoutes());
-  app.route("/", projectRoutes(options.projects));
+  app.route("/", meRoutes(options.definition));
+  app.route("/", memberRoutes(options));
+  for (const route of options.routes) app.route("/", route);
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((error, c) => {

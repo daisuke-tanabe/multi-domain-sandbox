@@ -34,7 +34,7 @@ Client 1 件は次の行で構成する。
 | oidc_clients | 1 | `id` はサロゲート主キー。`client_id` は UNIQUE の公開識別子。`redirect_uri_template` `audience` `backchannel_logout_uri` |
 | oidc_client_secrets | 1 以上 | active な client_secret のハッシュ。ローテーション中は 2 行 |
 | tenant_services | 契約テナント数 | `(tenant_id, oidc_client_id)`。外部キーは `oidc_clients.id` |
-| tenant_service_members | 契約テナントの利用者数 | `(tenant_id, oidc_client_id, user_id, role)`。このサービスを使う人とサービスごとの役割。契約への複合外部キーを持つ |
+| tenant_service_members | 契約テナントの利用者数 | `(tenant_id, oidc_client_id, user_id)`。このサービスに入れる人。役割は持たず、サービスの DB の members が持つ。契約への複合外部キーを持つ |
 
 ### テナントとサービスの解決
 
@@ -55,11 +55,17 @@ Tenant Web Application がクエリやヘッダでテナントを申告するこ
 ```text
 1. tenants に slug を挿入
 2. 契約するサービスごとに tenant_services に (tenant_id, oidc_client_id) を挿入
-3. そのサービスを使う人ごとに tenant_service_members に (tenant_id, oidc_client_id, user_id, role) を挿入
+3. そのサービスの最初の管理者を tenant_service_members に (tenant_id, oidc_client_id, user_id) で挿入し、サービスの DB の members に役割付きで挿入
+4. 以降の人はサービスの画面から招待する
 ```
 
 redirect_uri はサービスのテンプレートから導くため、テナントごとの登録はない。Client と client_secret もサービスのものをそのまま使う。Tenant Web Application の設定変更は不要。
-CRM だけ契約する会社なら tenants 1 行、tenant_services 1 行、利用者数分の tenant_service_members で完了する。後から CMS を足すときは tenant_services 1 行と、CMS を使う人の割り当てを足す。招待はサービス単位で、役割もサービスごとに決める。判断事項D16。
+CRM だけ契約する会社なら tenants 1 行、tenant_services 1 行、最初の管理者の割り当てで完了する。後から CMS を足すときは tenant_services 1 行と、CMS の最初の管理者の割り当てを足す。招待はサービス単位で、役割はサービスの DB が持つ。判断事項D16、D17。
+
+### サービスからの招待
+
+管理者はサービスの画面から人を招待する。画面は BFF 経由で自サービスの API `POST /v1/members` に `{email, name?, role}` を送り、API が Auth Server の `/admin/service-members` を client_secret_basic で呼んで tenant_service_members に「入れる」を登録し、返った user_id で自分の DB に役割付きの member 行を作る。Identity DB にいない人は users にメールで事前作成され、初回ログイン時に Cognito の sub が紐付く。シーケンスは [02-auth-sequences.md](./02-auth-sequences.md) の 4.1。
+`*-web` は `CLIENT_ID` と `CLIENT_SECRET` を `/token` の Client 認証に、`*-api` は同じ値を管理 API の Client 認証に使う。Auth Server から見るとどちらも同じ Client で、そのサービスへの割り当てだけを操作できる。
 
 ### サービス作成時の登録
 
@@ -68,13 +74,13 @@ CRM だけ契約する会社なら tenants 1 行、tenant_services 1 行、利�
 2. oidc_clients に id、client_id、name、audience、redirect_uri_template、backchannel_logout_uri を挿入
 3. oidc_client_secrets に (oidc_client_id, sha256$<hash>, active) を挿入
 4. 契約テナントごとに tenant_services を挿入
-5. 契約テナントの利用者ごとに tenant_service_members を挿入
+5. 契約テナントの最初の管理者を tenant_service_members に挿入
 6. client_secret を Secret Store に `oidc/clients/<client_id>` として保存
-7. そのサービスの web と api のプロセスを追加し、web に CLIENT_ID / CLIENT_SECRET / BASE_HOST / API_BASE_URL、api に API_BASE_URL を与える
-8. 役割の既定より細かい許可 / 拒否が要るなら、そのサービスの DB に member_permissions を置く。Auth Server には登録しない
+7. そのサービスの DB を用意する。members と permission_overrides と業務テーブルを持ち、RLS を掛ける。最初の管理者の member 行を役割付きで入れる
+8. そのサービスの web と api のプロセスを追加し、web に CLIENT_ID / CLIENT_SECRET / BASE_HOST / API_BASE_URL、api に API_BASE_URL / DATABASE_URL / CLIENT_ID / CLIENT_SECRET を与える。api は definition.ts で役割と権限の語彙を宣言する
 ```
 
-サンドボックスでは provision が `SERVICES` の JSON から 1〜4 を投入し、`SEED_SERVICE_MEMBERSHIPS` と `SEED_PERMISSION_OVERRIDES` で 5 と 8 のシードを投入する。`redirect_uri_template` は `SERVICES[].baseHost` から `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` として組み立て、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret は revoked にする。
+サンドボックスでは provision が `SERVICES` の JSON から 1〜4 を投入し、`SEED_SERVICE_MEMBERSHIPS` で 5 のシードを投入する。`redirect_uri_template` は `SERVICES[].baseHost` から `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` として組み立て、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret は revoked にする。7 のサービスの DB は provision の対象外で、ローカルでは `db/<service>/init` を docker compose が適用する。
 
 ### client_secret のローテーション
 
@@ -104,7 +110,7 @@ Host の解決
   2. baseHost の前のラベルを tenantSlug とする。tanaka.crm.sandbox.com → service=crm, tenantSlug=tanaka
   3. redirect_uri = <scheme>://<host>/auth/callback
 
-GET /auth/login?return_to=/projects
+GET /auth/login?return_to=/dashboard
   1. Host から tenantSlug を解決する
   2. return_to を検証。自ドメイン内の絶対パスのみ許可
   3. state, nonce, code_verifier を生成
@@ -157,6 +163,8 @@ Refresh Token は一回限りで、同じ値を二重に送ると Auth Server �
 - `PreAuthState` は state / nonce / codeVerifier / returnTo の 4 項目。id と作成時刻は持たず、寿命はストアの TTL で管理する
 - `TenantSession.tenantId` は常に文字列。null にならない
 
+画面は `packages/web-core/src/app.ts` にあり、当面はプレースホルダ。`/` はログイン状態と Tenant Logout 後の案内、`/dashboard` は `requireSession` の後に `apiFetch` で `/v1/me` を呼び、role と Permission / Granted の表を出す。エンドユーザーの一覧、投稿、招待、権限の編集の画面は次の段階で React Router v7 の SPA として追加する。API は先に揃っている。判断事項D17。
+
 設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。スキーマは `packages/web-core/src/config.ts` の `loadWebCoreConfig`。`CLIENT_SECRET` は 43 文字以上でなければ起動に失敗する。`PUBLIC_SCHEME` が `https` のときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` も必須になる。
 
 ```typescript
@@ -192,7 +200,7 @@ type OidcClientConfig = ServiceConfig & {
 
 ## Third-Party Initiated Login
 
-auth.sandbox.com のポータルは、テナントごとに、ユーザーが割り当てられていて契約と Client が active なサービスの `https://<tenant>.<service>.sandbox.com/auth/login` へのリンクを並べ、サービスごとの役割を `<client_id> / <role>` の形で添える。テナント単位の役割は表示しない。どのサービスにも割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」を表示する。リンク先は通常の `/auth/login` なので、Tenant Web Application 側に専用の入口は不要。
+auth.sandbox.com のポータルは、テナントごとに、ユーザーが割り当てられていて契約と Client が active なサービスの `https://<tenant>.<service>.sandbox.com/auth/login` へのリンクを並べる。役割はサービスの DB にあるため表示しない。どのサービスにも割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」を表示する。リンク先は通常の `/auth/login` なので、Tenant Web Application 側に専用の入口は不要。
 
 ## 将来拡張との対応
 

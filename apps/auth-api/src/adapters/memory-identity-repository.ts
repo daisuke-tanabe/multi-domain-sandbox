@@ -5,10 +5,13 @@ import type {
   NewUser,
   OidcClient,
   PortalEntry,
+  ServiceMember,
   ServiceMembership,
   Tenant,
   User,
 } from "../ports/identity-repository.ts";
+
+type MembershipRow = { tenantId: string; oidcClientId: string; userId: string } & ServiceMembership;
 
 /**
  * テスト用のインメモリ Identity Repository。
@@ -18,19 +21,17 @@ export interface MemoryIdentityData {
   readonly tenants: ReadonlyArray<Tenant>;
   readonly users: ReadonlyArray<User>;
   readonly contracts: ReadonlyArray<{ tenantId: string; oidcClientId: string } & Contract>;
-  readonly serviceMemberships: ReadonlyArray<
-    { tenantId: string; oidcClientId: string; userId: string } & ServiceMembership
-  >;
+  readonly serviceMemberships: ReadonlyArray<MembershipRow>;
 }
 
 export class MemoryIdentityRepository implements IdentityRepository {
   private readonly users: Map<string, User>;
-  private memberships: MemoryIdentityData["serviceMemberships"];
+  private memberships: MembershipRow[];
   private contracts: MemoryIdentityData["contracts"];
 
   constructor(private readonly data: MemoryIdentityData) {
     this.users = new Map(data.users.map((user) => [user.id, user]));
-    this.memberships = data.serviceMemberships;
+    this.memberships = [...data.serviceMemberships];
     this.contracts = data.contracts;
   }
 
@@ -42,6 +43,11 @@ export class MemoryIdentityRepository implements IdentityRepository {
     return [...this.users.values()].find((user) => user.cognitoSub === cognitoSub);
   }
 
+  public async findUserByEmail(email: string): Promise<User | undefined> {
+    const lower = email.toLowerCase();
+    return [...this.users.values()].find((user) => user.email.toLowerCase() === lower);
+  }
+
   public async findUserById(id: string): Promise<User | undefined> {
     return this.users.get(id);
   }
@@ -50,6 +56,14 @@ export class MemoryIdentityRepository implements IdentityRepository {
     const created: User = { ...user, status: "active" };
     this.users.set(created.id, created);
     return created;
+  }
+
+  public async linkCognitoSub(userId: string, cognitoSub: string): Promise<User> {
+    const user = this.users.get(userId);
+    if (user === undefined) throw new Error(`user ${userId} not found`);
+    const linked: User = { ...user, cognitoSub };
+    this.users.set(userId, linked);
+    return linked;
   }
 
   public async findTenantById(id: string): Promise<Tenant | undefined> {
@@ -73,12 +87,42 @@ export class MemoryIdentityRepository implements IdentityRepository {
     userId: string,
   ): Promise<ServiceMembership | undefined> {
     const found = this.memberships.find(
-      (member) =>
-        member.tenantId === tenantId &&
-        member.oidcClientId === oidcClientId &&
-        member.userId === userId,
+      (m) => m.tenantId === tenantId && m.oidcClientId === oidcClientId && m.userId === userId,
     );
-    return found === undefined ? undefined : { role: found.role, status: found.status };
+    return found === undefined ? undefined : { status: found.status };
+  }
+
+  public async upsertServiceMembership(
+    tenantId: string,
+    oidcClientId: string,
+    userId: string,
+  ): Promise<void> {
+    this.memberships = this.memberships.filter(
+      (m) => !(m.tenantId === tenantId && m.oidcClientId === oidcClientId && m.userId === userId),
+    );
+    this.memberships.push({ tenantId, oidcClientId, userId, status: "active" });
+  }
+
+  public async removeServiceMembership(
+    tenantId: string,
+    oidcClientId: string,
+    userId: string,
+  ): Promise<void> {
+    this.memberships = this.memberships.filter(
+      (m) => !(m.tenantId === tenantId && m.oidcClientId === oidcClientId && m.userId === userId),
+    );
+  }
+
+  public async listServiceMembers(
+    tenantId: string,
+    oidcClientId: string,
+  ): Promise<ReadonlyArray<ServiceMember>> {
+    return this.memberships
+      .filter((m) => m.tenantId === tenantId && m.oidcClientId === oidcClientId)
+      .flatMap((m) => {
+        const user = this.users.get(m.userId);
+        return user === undefined ? [] : [{ user, status: m.status }];
+      });
   }
 
   public async listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>> {
@@ -95,19 +139,11 @@ export class MemoryIdentityRepository implements IdentityRepository {
           if (contract?.status !== "active" || client?.status !== "active") return [];
           const origin = new URL(expandRedirectUriTemplate(client.redirectUriTemplate, tenant.slug))
             .origin;
-          return [{ clientId: client.clientId, name: client.name, role: membership.role, origin }];
+          return [{ clientId: client.clientId, name: client.name, origin }];
         });
       if (services.length > 0) entries.push({ tenant, services });
     }
     return entries;
-  }
-
-  /** テストで割り当てを外すための操作。clientId は OAuth の client_id */
-  public removeServiceMembership(tenantId: string, clientId: string, userId: string): void {
-    const client = this.data.clients.find((c) => c.clientId === clientId);
-    this.memberships = this.memberships.filter(
-      (m) => !(m.tenantId === tenantId && m.oidcClientId === client?.id && m.userId === userId),
-    );
   }
 
   /** テストで契約を解除するための操作。clientId は OAuth の client_id */
@@ -116,5 +152,11 @@ export class MemoryIdentityRepository implements IdentityRepository {
     this.contracts = this.contracts.filter(
       (contract) => !(contract.tenantId === tenantId && contract.oidcClientId === client?.id),
     );
+  }
+
+  /** テストで割り当てを外す。clientId は OAuth の client_id */
+  public dropServiceMembership(tenantId: string, clientId: string, userId: string): void {
+    const client = this.data.clients.find((c) => c.clientId === clientId);
+    if (client !== undefined) void this.removeServiceMembership(tenantId, client.id, userId);
   }
 }

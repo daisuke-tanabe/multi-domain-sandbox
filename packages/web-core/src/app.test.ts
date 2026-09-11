@@ -32,7 +32,7 @@ describe("E1 first login through tanaka.crm", () => {
 
   test("redirects an anonymous user to the auth login page", async () => {
     // Act
-    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
     // Assert
     expect(result.response.status).toBe(200);
@@ -40,7 +40,7 @@ describe("E1 first login through tanaka.crm", () => {
     expect(result.finalUrl.pathname).toBe("/login");
     expect(result.body).toContain("Sandbox にログイン");
     expect(visitedPaths(result)).toEqual([
-      `${TANAKA_CRM_HOST}/projects`,
+      `${TANAKA_CRM_HOST}/dashboard`,
       `${TANAKA_CRM_HOST}/auth/login`,
       `${AUTH_HOST}/authorize`,
       `${AUTH_HOST}/login`,
@@ -49,13 +49,12 @@ describe("E1 first login through tanaka.crm", () => {
 
   test("completes login, lands on the requested page and sets host-scoped cookies only", async () => {
     // Act
-    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, ALICE);
+    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, ALICE);
 
     // Assert
     expect(result.response.status).toBe(200);
     expect(result.finalUrl.host).toBe(TANAKA_CRM_HOST);
-    expect(result.finalUrl.pathname).toBe("/projects");
-    expect(result.body).toContain("Tanaka Project 1");
+    expect(result.finalUrl.pathname).toBe("/dashboard");
     expect(result.body).toContain("role: owner");
 
     expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(true);
@@ -65,7 +64,7 @@ describe("E1 first login through tanaka.crm", () => {
   });
 
   test("never exposes a JWT in URLs, cookies or HTML", async () => {
-    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, ALICE);
+    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, ALICE);
 
     const urls = result.history.map((url) => url.toString()).join("\n");
     const cookies = [
@@ -78,7 +77,7 @@ describe("E1 first login through tanaka.crm", () => {
   });
 
   test("E8 shows the login form again with a generic message on wrong password", async () => {
-    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, {
+    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, {
       username: "alice",
       password: "wrong",
     });
@@ -90,7 +89,7 @@ describe("E1 first login through tanaka.crm", () => {
   });
 
   test("E5 shows access denied for a user without membership and keeps the SSO session", async () => {
-    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, {
+    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, {
       username: "carol",
       password: "carol-password",
     });
@@ -110,25 +109,23 @@ describe("E2 SSO into suzuki.crm after logging in through tanaka.crm", () => {
   beforeEach(async () => {
     sandbox = await createSandbox();
     browser = new Browser(sandbox.dispatch);
-    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, ALICE);
+    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, ALICE);
   });
 
   test("logs into suzuki.crm without showing the login page and with tenant-specific role", async () => {
     // Act
-    const result = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+    const result = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
 
     // Assert
     expect(result.response.status).toBe(200);
     expect(result.finalUrl.host).toBe(SUZUKI_CRM_HOST);
-    expect(result.body).toContain("Suzuki Project 1");
-    expect(result.body).not.toContain("Tanaka Project 1");
     expect(result.body).toContain("role: viewer");
     expect(visitedPaths(result)).toEqual([
-      `${SUZUKI_CRM_HOST}/projects`,
+      `${SUZUKI_CRM_HOST}/dashboard`,
       `${SUZUKI_CRM_HOST}/auth/login`,
       `${AUTH_HOST}/authorize`,
       `${SUZUKI_CRM_HOST}/auth/callback`,
-      `${SUZUKI_CRM_HOST}/projects`,
+      `${SUZUKI_CRM_HOST}/dashboard`,
     ]);
     expect(browser.cookies(SUZUKI_CRM_HOST).has("tenant_session")).toBe(true);
     expect(browser.cookies(TANAKA_CRM_HOST).get("tenant_session")).not.toBe(
@@ -137,27 +134,23 @@ describe("E2 SSO into suzuki.crm after logging in through tanaka.crm", () => {
   });
 
   test("E9 revisiting tanaka.crm does not contact the auth server", async () => {
-    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
     expect(result.response.status).toBe(200);
-    expect(visitedPaths(result)).toEqual([`${TANAKA_CRM_HOST}/projects`]);
+    expect(visitedPaths(result)).toEqual([`${TANAKA_CRM_HOST}/dashboard`]);
   });
 
-  test("E10 viewer on suzuki cannot create a project while owner on tanaka can", async () => {
-    const pageB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
-    const deniedB = await browser.submitForm(`${SUZUKI_CRM_ORIGIN}/projects`, {
-      csrf: readPageCsrf(pageB.body),
-      name: "viewer attempt",
-    });
-    const pageA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
-    const createdA = await browser.submitForm(`${TANAKA_CRM_ORIGIN}/projects`, {
-      csrf: readPageCsrf(pageA.body),
-      name: "owner project",
-    });
+  test("E10 the same user has different permissions per tenant because each service DB decides", async () => {
+    const pageB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
+    const pageA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
-    expect(deniedB.body).toContain("この操作を行う権限がありません");
-    expect(deniedB.body).not.toContain("viewer attempt");
-    expect(createdA.body).toContain("owner project");
+    // suzuki では viewer。作成はできないが unmask は上書きで許可されている
+    expect(pageB.body).toContain("role: viewer");
+    expect(pageB.body).toMatch(/end_users:create<\/td>\s*<td>no/);
+    expect(pageB.body).toMatch(/end_users:unmask<\/td>\s*<td>yes/);
+    // tanaka では owner
+    expect(pageA.body).toContain("role: owner");
+    expect(pageA.body).toMatch(/end_users:create<\/td>\s*<td>yes/);
   });
 });
 
@@ -168,19 +161,19 @@ describe("E3 tenant logout keeps other tenants and the SSO session", () => {
   beforeEach(async () => {
     sandbox = await createSandbox();
     browser = new Browser(sandbox.dispatch);
-    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, ALICE);
-    await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, ALICE);
+    await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
   });
 
   test("logs out of tanaka.crm only", async () => {
     // Arrange
-    const page = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const page = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
     // Act
     const loggedOut = await browser.submitForm(`${TANAKA_CRM_ORIGIN}/auth/logout`, {
       csrf: readPageCsrf(page.body),
     });
-    const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+    const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
 
     // Assert
     expect(loggedOut.finalUrl.pathname).toBe("/");
@@ -189,14 +182,14 @@ describe("E3 tenant logout keeps other tenants and the SSO session", () => {
     expect(browser.cookies(SUZUKI_CRM_HOST).has("tenant_session")).toBe(true);
     expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(true);
     expect(tenantB.response.status).toBe(200);
-    expect(visitedPaths(tenantB)).toEqual([`${SUZUKI_CRM_HOST}/projects`]);
+    expect(visitedPaths(tenantB)).toEqual([`${SUZUKI_CRM_HOST}/dashboard`]);
   });
 
   test("re-login after tenant logout succeeds without a password because the SSO session remains", async () => {
-    const page = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const page = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
     await browser.submitForm(`${TANAKA_CRM_ORIGIN}/auth/logout`, { csrf: readPageCsrf(page.body) });
 
-    const again = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const again = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
     expect(again.response.status).toBe(200);
     expect(visitedPaths(again)).not.toContain(`${AUTH_HOST}/login`);
@@ -217,39 +210,35 @@ describe("E12 services share the SSO session but contracts gate access", () => {
   beforeEach(async () => {
     sandbox = await createSandbox();
     browser = new Browser(sandbox.dispatch);
-    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, ALICE);
+    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, ALICE);
   });
 
   test("enters tanaka.cms via SSO with a cms audience token and a separate session", async () => {
     // Act
-    const result = await browser.navigate(`${TANAKA_CMS_ORIGIN}/projects`);
+    const result = await browser.navigate(`${TANAKA_CMS_ORIGIN}/dashboard`);
 
     // Assert
     expect(result.response.status).toBe(200);
     expect(result.finalUrl.host).toBe(TANAKA_CMS_HOST);
-    expect(result.body).toContain("Tanaka Project 1");
     expect(result.body).toContain("role: owner");
     expect(result.body).toContain("CMS");
+    expect(result.body).toContain("posts:read");
     expect(visitedPaths(result)).not.toContain(`${AUTH_HOST}/login`);
     expect(browser.cookies(TANAKA_CMS_HOST).get("tenant_session")).not.toBe(
       browser.cookies(TANAKA_CRM_HOST).get("tenant_session"),
     );
   });
 
-  test("a service-side deny override blocks an owner on tanaka.cms from creating a project", async () => {
-    const page = await browser.navigate(`${TANAKA_CMS_ORIGIN}/projects`);
-    const denied = await browser.submitForm(`${TANAKA_CMS_ORIGIN}/projects`, {
-      csrf: readPageCsrf(page.body),
-      name: "cms attempt",
-    });
+  test("a service-side deny override removes posts:create from an owner on tanaka.cms", async () => {
+    const page = await browser.navigate(`${TANAKA_CMS_ORIGIN}/dashboard`);
 
     expect(page.body).toContain("role: owner");
-    expect(denied.body).toContain("この操作を行う権限がありません");
-    expect(denied.body).not.toContain("cms attempt");
+    expect(page.body).toMatch(/posts:create<\/td>\s*<td>no/);
+    expect(page.body).toMatch(/posts:update<\/td>\s*<td>yes/);
   });
 
   test("suzuki.cms is refused because suzuki has no cms contract", async () => {
-    const result = await browser.navigate(`${SUZUKI_CMS_ORIGIN}/projects`);
+    const result = await browser.navigate(`${SUZUKI_CMS_ORIGIN}/dashboard`);
 
     expect(result.response.status).toBe(403);
     expect(result.finalUrl.host).toBe(new URL(SUZUKI_CMS_ORIGIN).host);
@@ -260,7 +249,7 @@ describe("E12 services share the SSO session but contracts gate access", () => {
   });
 
   test("global logout from crm also ends the cms session through back-channel logout", async () => {
-    await browser.navigate(`${TANAKA_CMS_ORIGIN}/projects`);
+    await browser.navigate(`${TANAKA_CMS_ORIGIN}/dashboard`);
     const confirm = await browser.navigate(
       `http://${AUTH_HOST}/logout?client_id=crm&tenant=tanaka`,
     );
@@ -270,7 +259,7 @@ describe("E12 services share the SSO session but contracts gate access", () => {
       tenant: "tanaka",
     });
 
-    const cms = await browser.navigate(`${TANAKA_CMS_ORIGIN}/projects`);
+    const cms = await browser.navigate(`${TANAKA_CMS_ORIGIN}/dashboard`);
 
     expect(cms.finalUrl.host).toBe(AUTH_HOST);
     expect(cms.finalUrl.pathname).toBe("/login");
@@ -284,7 +273,7 @@ describe("session lifetimes", () => {
   beforeEach(async () => {
     sandbox = await createSandbox();
     browser = new Browser(sandbox.dispatch);
-    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, ALICE);
+    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, ALICE);
   });
 
   test("E6 recovers silently via SSO after the tenant session idles out", async () => {
@@ -293,7 +282,7 @@ describe("session lifetimes", () => {
     sandbox.auth.clock.advance(31 * 60);
 
     // Act
-    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
     // Assert
     expect(result.response.status).toBe(200);
@@ -305,7 +294,7 @@ describe("session lifetimes", () => {
   test("E7 requires a password again after the SSO session idles out", async () => {
     sandbox.auth.clock.advance(2 * 60 * 60 + 1);
 
-    const result = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+    const result = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
 
     expect(result.finalUrl.host).toBe(AUTH_HOST);
     expect(result.finalUrl.pathname).toBe("/login");
@@ -316,11 +305,11 @@ describe("session lifetimes", () => {
     sandbox.auth.clock.advance(14 * 60 + 30);
 
     // Act
-    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
     // Assert
     expect(result.response.status).toBe(200);
-    expect(visitedPaths(result)).toEqual([`${TANAKA_CRM_HOST}/projects`]);
+    expect(visitedPaths(result)).toEqual([`${TANAKA_CRM_HOST}/dashboard`]);
     // 初回交換で 1 件、ローテーションで rotated + 新規の 2 件になる
     const refreshTokens = sandbox.auth.deps.stores.refreshTokens;
     if (!(refreshTokens instanceof MemoryKeyValueStore)) throw new Error("unexpected store");
@@ -333,8 +322,8 @@ describe("session lifetimes", () => {
 
     // Act
     const [first, second] = await Promise.all([
-      browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`),
-      browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`),
+      browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`),
+      browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`),
     ]);
 
     // Assert
@@ -354,12 +343,12 @@ describe("E11 global logout via auth.localhost", () => {
   beforeEach(async () => {
     sandbox = await createSandbox();
     browser = new Browser(sandbox.dispatch);
-    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/projects`, ALICE);
-    await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+    await loginThrough(browser, `${TANAKA_CRM_ORIGIN}/dashboard`, ALICE);
+    await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
   });
 
   test("tenant logout page links to global logout for this client", async () => {
-    const page = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const page = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
     const loggedOut = await browser.submitForm(`${TANAKA_CRM_ORIGIN}/auth/logout`, {
       csrf: readPageCsrf(page.body),
     });
@@ -380,8 +369,8 @@ describe("E11 global logout via auth.localhost", () => {
       client_id: "crm",
       tenant: "tanaka",
     });
-    const tenantA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
-    const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/projects`);
+    const tenantA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
+    const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/dashboard`);
 
     // Assert
     expect(done.body).toContain("Sandbox からログアウトしました");
@@ -400,9 +389,9 @@ describe("E11 global logout via auth.localhost", () => {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ logout_token: "forged" }).toString(),
     });
-    const stillLoggedIn = await browser.navigate(`${TANAKA_CRM_ORIGIN}/projects`);
+    const stillLoggedIn = await browser.navigate(`${TANAKA_CRM_ORIGIN}/dashboard`);
 
     expect(res.status).toBe(400);
-    expect(visitedPaths(stillLoggedIn)).toEqual([`${new URL(TANAKA_CRM_ORIGIN).host}/projects`]);
+    expect(visitedPaths(stillLoggedIn)).toEqual([`${new URL(TANAKA_CRM_ORIGIN).host}/dashboard`]);
   });
 });

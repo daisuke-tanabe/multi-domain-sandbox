@@ -619,7 +619,7 @@ describe("portal", () => {
     expect(res.headers.get("Location")).toBe("/login");
   });
 
-  test("logs in without rid and lists the assigned services per tenant with their roles", async () => {
+  test("logs in without rid and lists the assigned services per tenant", async () => {
     // Arrange
     const harness = await createHarness();
     const loginPage = await harness.app.request(`${ISSUER}/login`);
@@ -648,11 +648,10 @@ describe("portal", () => {
     expect(body).toContain("alice@example.com");
     expect(body).toContain("http://tanaka.crm.localhost:3001/auth/login");
     expect(body).toContain("http://tanaka.cms.localhost:3003/auth/login");
-    expect(body).toContain("crm / owner");
-    expect(body).toContain("cms / owner");
+    expect(body).toContain("Tanaka Inc.");
     expect(body).toContain("http://suzuki.crm.localhost:3001/auth/login");
     expect(body).not.toContain("http://suzuki.cms.localhost:3003/auth/login");
-    expect(body).toContain("crm / viewer");
+    expect(body).toContain("Suzuki Ltd.");
   });
 
   test("tells a user without service assignments that nothing is available", async () => {
@@ -818,5 +817,74 @@ describe("concurrency and abuse hardening", () => {
       body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: "x" }).toString(),
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("service admin api and invitation", () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  const adminCall = (
+    method: "GET" | "POST" | "DELETE",
+    body?: Record<string, unknown>,
+    clientId = "crm",
+    query = "",
+  ) =>
+    harness.app.request(`${ISSUER}/admin/service-members${query}`, {
+      method,
+      headers: {
+        Authorization: basicAuth(clientId),
+        ...(body !== undefined && { "Content-Type": "application/json" }),
+      },
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+    });
+
+  test("requires client authentication", async () => {
+    const res = await harness.app.request(`${ISSUER}/admin/service-members?tenant_id=${TANAKA_ID}`);
+    expect(res.status).toBe(401);
+  });
+
+  test("invites a user by email into the client's own service and links the account on first login", async () => {
+    // Arrange: dave は Cognito にはいるが identity にはいない
+    const invited = await adminCall("POST", {
+      tenant_id: TANAKA_ID,
+      email: "dave@example.com",
+      name: "Dave",
+    });
+    const invitedBody = await readJson(invited);
+    const user = invitedBody.user as { id: string; linked: boolean };
+
+    // Act: dave が tanaka.crm にログインする
+    const flow = await runLoginFlow(harness, { username: "dave", password: "dave-password" });
+    const listed = await readJson(
+      await adminCall("GET", undefined, "crm", `?tenant_id=${TANAKA_ID}`),
+    );
+    const members = listed.members as Array<{ id: string; linked: boolean }>;
+
+    // Assert
+    expect(invited.status).toBe(201);
+    expect(user.linked).toBe(false);
+    expect(flow.redirect.searchParams.get("code")).not.toBeNull();
+    expect(members.find((m) => m.id === user.id)?.linked).toBe(true);
+    expect((await harness.identity.findUserByCognitoSub("cognito-dave"))?.id).toBe(user.id);
+  });
+
+  test("refuses to invite into a tenant that has not contracted the service", async () => {
+    const res = await adminCall("POST", { tenant_id: SUZUKI_ID, email: "dave@example.com" }, "cms");
+    expect(res.status).toBe(403);
+  });
+
+  test("revoking removes access on the next authorization", async () => {
+    await runLoginFlow(harness, ALICE);
+    const revoked = await adminCall("DELETE", { tenant_id: TANAKA_ID, user_id: ALICE_ID });
+
+    const flow = await runLoginFlow(harness, ALICE);
+
+    expect(revoked.status).toBe(204);
+    expect(flow.redirect.searchParams.get("error")).toBe("access_denied");
+    expect(flow.redirect.searchParams.get("error_description")).toBe("no_membership");
   });
 });

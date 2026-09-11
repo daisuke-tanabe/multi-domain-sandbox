@@ -20,6 +20,8 @@
   "devDependencies": {
     "@sandbox/api-core": "workspace:*",
     "@sandbox/auth-api": "workspace:*",
+    "@sandbox/cms-api": "workspace:*",
+    "@sandbox/crm-api": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

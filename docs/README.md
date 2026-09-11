@@ -8,7 +8,8 @@ Sandbox 認証・マルチサービス・マルチテナントSSO基盤の設計
 - サービスは Auth Server を利用するプロダクト。OIDC Client 1 件に対応する。サンドボックスでは `crm` と `cms`
 - テナントは顧客企業。サービスをまたいで共有される。サンドボックスでは `tanaka` と `suzuki`
 - 契約は `identity.tenant_services` で表し、テナントがどのサービスを使えるかを決める。会社単位で持つ
-- 招待と役割はサービス単位。`identity.tenant_service_members` がテナント × サービス × ユーザーごとに役割を持ち、ログイン可否はこの表で決める。`identity.tenant_members` は会社横断の役割にだけ使う。細かい権限は各サービスの DB の `business.member_permissions` に置き、Token には載せない。判断事項D16
+- 招待はサービス単位。`identity.tenant_service_members` がテナント × サービス × ユーザーごとに「入れるか」を持ち、ログイン可否はこの表で決める。役割は持たない。`identity.tenant_members` は会社横断の役割にだけ使う。判断事項D16、D17
+- 役割と権限はサービスごとに、そのサービスの DB の `members` と `permission_overrides` に置く。役割の語彙はサービスごとに違い、Token には載せない。DB はサービスごとに分かれ、API は identity DB を参照しない。招待はサービスの画面から auth-api の管理 API を経由して行う。判断事項D17
 - ホストは `<tenant>.<service>.<domain>`。認可リクエストのテナントは `client_id` と `redirect_uri` の組で決まる。サービスごとの `redirect_uri_template` に `redirect_uri` を当てて取り出した slug で `tenants` を引く
 
 ## 構成
@@ -33,8 +34,8 @@ Sandbox 認証・マルチサービス・マルチテナントSSO基盤の設計
 
 ## 実装状況
 
-設計に対応する検証実装を `apps/` と `packages/` に置いている。`apps/` は auth-api / crm-web / crm-api / cms-web / cms-api で、web と api の実装は `packages/web-core` と `packages/api-core` に共有する。crm-web / crm-api / cms-web / cms-api の `main.ts` は packages の起動関数を呼ぶだけで、設定スキーマも packages 側にある。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。
-サービスとテナントを分けたモデルは `apps/` と `db/init` に反映済み。AWS の Terraform 構成はテナントごとに Client を持つ旧構成のままで、[deploy.md](./deploy.md) に記載のとおり別作業で移行する。
+設計に対応する検証実装を `apps/` と `packages/` に置いている。`apps/` は auth-api / crm-web / crm-api / cms-web / cms-api で、web の実装は `packages/web-core` に共有し、crm-web / cms-web の `main.ts` は起動関数を呼ぶだけ。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api が `definition.ts` で役割と権限を宣言し、エンドユーザーと投稿の routes と repository を持つ。管理アカウントの招待と権限編集の API はどのサービスにも api-core が付ける。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。`*-web` の画面は `/dashboard` のプレースホルダで、次の段階で React Router v7 の SPA に置き換える。
+サービスとテナントを分けたモデルとサービスごとの DB は `apps/` と `db/identity` `db/crm` `db/cms` に反映済み。AWS の Terraform 構成はテナントごとに Client を持ち単一の RDS を使う旧構成のままで、[deploy.md](./deploy.md) に記載のとおり別作業で移行する。
 
 ## 前提
 

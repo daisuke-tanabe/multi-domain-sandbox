@@ -10,7 +10,8 @@ import {
 export interface AccessTokenClaims {
   readonly userId: string;
   readonly tenantId: string;
-  /** このサービスの client_id。サービス固有の権限を引くときの鍵 */
+  readonly tenantSlug: string;
+  /** このサービスの client_id */
   readonly clientId: string;
 }
 
@@ -42,7 +43,7 @@ export async function verifyAccessToken(
   if (!verified.ok) return verified;
 
   const payload = verified.value;
-  for (const claim of ["sub", "tenant_id", "sid", "client_id"] as const) {
+  for (const claim of ["sub", "tenant_id", "tenant_slug", "sid", "client_id"] as const) {
     if (typeof payload[claim] !== "string") {
       return err({ kind: "invalid_token", reason: `${claim} missing` });
     }
@@ -50,6 +51,7 @@ export async function verifyAccessToken(
   return ok({
     userId: String(payload.sub),
     tenantId: String(payload.tenant_id),
+    tenantSlug: String(payload.tenant_slug),
     clientId: String(payload.client_id),
   });
 }

@@ -4,20 +4,14 @@
  *
  * サービス (OidcClient) とテナント (Tenant) は別の軸。テナントは顧客企業であり複数のサービスを契約できる。
  * 認可リクエストのテナントは redirect_uri をサービスのテンプレートに当てて slug を取り出し、tenants から引く。
- * サービスにログインできるかは tenant_service_members で決める。tenant_members は会社横断の役割で、ログイン可否には使わない。
+ * identity が持つのは「誰がどのテナントのどのサービスに入れるか」まで。役割と権限はサービスの DB が持つ。
  */
-import type {
-  ClientStatus,
-  ContractStatus,
-  MembershipStatus,
-  Role,
-  TenantStatus,
-  UserStatus,
-} from "@sandbox/shared";
+import type { ClientStatus, ContractStatus, TenantStatus, UserStatus } from "@sandbox/shared";
 
 export interface User {
   readonly id: string;
-  readonly cognitoSub: string;
+  /** 招待直後は null。初回ログイン時にメールで照合して埋める */
+  readonly cognitoSub: string | null;
   readonly email: string;
   readonly name: string | null;
   readonly status: UserStatus;
@@ -48,10 +42,16 @@ export interface OidcClient {
   readonly backchannelLogoutUri: string | null;
 }
 
-/** テナント × サービスへの割り当て */
+export type ServiceMembershipStatus = "active" | "disabled";
+
+/** テナント × サービスへの割り当て。役割は持たない */
 export interface ServiceMembership {
-  readonly role: Role;
-  readonly status: MembershipStatus;
+  readonly status: ServiceMembershipStatus;
+}
+
+export interface ServiceMember {
+  readonly user: User;
+  readonly status: ServiceMembershipStatus;
 }
 
 export interface Contract {
@@ -60,7 +60,7 @@ export interface Contract {
 
 export interface NewUser {
   readonly id: string;
-  readonly cognitoSub: string;
+  readonly cognitoSub: string | null;
   readonly email: string;
   readonly name: string | null;
 }
@@ -69,7 +69,6 @@ export interface NewUser {
 export interface PortalService {
   readonly clientId: string;
   readonly name: string;
-  readonly role: Role;
   /** そのテナント向けの redirect_uri から導いた origin。ログイン導線に使う */
   readonly origin: string;
 }
@@ -82,8 +81,11 @@ export interface PortalEntry {
 export interface IdentityRepository {
   findClient(clientId: string): Promise<OidcClient | undefined>;
   findUserByCognitoSub(cognitoSub: string): Promise<User | undefined>;
+  findUserByEmail(email: string): Promise<User | undefined>;
   findUserById(id: string): Promise<User | undefined>;
   createUser(user: NewUser): Promise<User>;
+  /** 招待で事前作成したユーザーに、初回ログイン時の Cognito の sub を紐付ける */
+  linkCognitoSub(userId: string, cognitoSub: string): Promise<User>;
   findTenantById(id: string): Promise<Tenant | undefined>;
   findTenantBySlug(slug: string): Promise<Tenant | undefined>;
   /** oidcClientId は OidcClient.id */
@@ -93,6 +95,10 @@ export interface IdentityRepository {
     oidcClientId: string,
     userId: string,
   ): Promise<ServiceMembership | undefined>;
+  /** 割り当てを作る。既にあれば active に戻す */
+  upsertServiceMembership(tenantId: string, oidcClientId: string, userId: string): Promise<void>;
+  removeServiceMembership(tenantId: string, oidcClientId: string, userId: string): Promise<void>;
+  listServiceMembers(tenantId: string, oidcClientId: string): Promise<ReadonlyArray<ServiceMember>>;
   /** ユーザーが active で割り当てられている、active な契約のサービスをテナントごとにまとめる */
   listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>>;
 }

@@ -70,10 +70,10 @@ Cognito Access Token / ID Token / Refresh Token をURLパラメータ等で別�
                          ▼                                ▼
                  api.crm.sandbox.com              api.cms.sandbox.com
                          ▼                                ▼
-                                     Database
+                      CRM DB                           CMS DB
 ```
 
-サービス (crm / cms) はそれぞれOIDC Clientとして auth.sandbox.com に登録する。テナント (tanaka / suzuki) はサービスをまたいで同一であり、契約したサービスのみ利用できる。
+サービス (crm / cms) はそれぞれOIDC Clientとして auth.sandbox.com に登録する。テナント (tanaka / suzuki) はサービスをまたいで同一であり、契約したサービスのみ利用できる。auth.sandbox.com は Identity DB を持ち、各サービスの API は自サービスの DB だけを持つ。DB 間で外部キーや JOIN は持たない。
 
 ## 4. 各システムの責務
 
@@ -83,7 +83,7 @@ Cognito Access Token / ID Token / Refresh Token をURLパラメータ等で別�
 
 ### 4.2 Authentication / SSO Server。auth.sandbox.com
 
-ログイン、Cognitoとの認証連携、SSOセッション管理、OAuth 2.0 / OpenID Connectベースの認証連携、Authorization Code発行、Client管理、redirect_uri管理、ユーザー識別、テナントの契約とアクセス可否の確認、必要なユーザー情報 / Claimsの提供、ログアウト、Global Logout。各テナントWebアプリケーションおよびAPI Serverから独立させる。
+ログイン、Cognitoとの認証連携、SSOセッション管理、OAuth 2.0 / OpenID Connectベースの認証連携、Authorization Code発行、Client管理、redirect_uri管理、ユーザー識別、テナントの契約とアクセス可否の確認、サービスからの招待の受け付けとメールによる事前作成、必要なユーザー情報 / Claimsの提供、ログアウト、Global Logout。各テナントWebアプリケーションおよびAPI Serverから独立させる。役割と権限の語彙は持たない。
 
 ### 4.3 Tenant Web Application。`<tenant>.<service>.sandbox.com`
 
@@ -91,7 +91,7 @@ UI、現在のログイン状態の管理、自サービスセッションの管
 
 ### 4.4 API Server。`api.<service>.sandbox.com`
 
-業務API、データ取得、データ更新、テナントデータへのアクセス、APIレベルの認証、APIレベルの認可、Tenant Isolation。API ServerとAuthentication Serverは独立した責務として扱う。Access Tokenはサービスごとに異なるaudを持ち、別サービスのAPIでは受け付けない。
+業務API、データ取得、データ更新、テナントデータへのアクセス、APIレベルの認証、APIレベルの認可、Tenant Isolation、自サービスの役割と権限の管理、管理アカウントの招待。API ServerとAuthentication Serverは独立した責務として扱い、API Serverは自サービスのDBだけを持つ。Access Tokenはサービスごとに異なるaudを持ち、別サービスのAPIでは受け付けない。
 
 ## 5. 認証とSSOの責務分離
 
@@ -158,14 +158,19 @@ Cognito User Pool上のユーザー識別子をSandboxにおけるユーザー�
 ## 15. Tenantモデル
 
 ```text
-users                  id, cognito_sub, ...
+Identity DB (auth.sandbox.com)
+users                  id, cognito_sub (NULL 可), email UNIQUE, ...
 tenants                id, slug, ...
 tenant_services        tenant_id, client_id, status              # 契約。会社単位
-tenant_service_members tenant_id, client_id, user_id, role, ...  # サービスごとの割り当てと役割。招待はこの単位
+tenant_service_members tenant_id, client_id, user_id, status     # サービスごとの割り当て。招待はこの単位。役割は持たない
 tenant_members         tenant_id, user_id, role, ...             # 会社横断の役割。ログイン可否には使わない
+
+各サービスの DB (api.<service>.sandbox.com)
+members                tenant_id, user_id, role, status          # そのサービスでの役割。語彙はサービスごと
+permission_overrides   tenant_id, user_id, permission, effect    # 役割の既定に対する allow / deny
 ```
 
-Tenantは顧客企業であり、サービスをまたいで同一である。サービスの利用可否はtenant_servicesの契約で判定し、ユーザーがそのサービスにログインできるかとその役割はtenant_service_membersでテナント × サービスごとに判定する。会社の管理者は契約したサービスごとに人を割り当て、サービスごとに外せる。細かい権限は各サービスが自分のDBで役割の既定に対する許可 / 拒否として持ち、Tokenには載せない。サブドメインからTenantとサービスを特定する。URL上のTenant ID / slugをそのまま認可情報として信頼してはいけない。必ずサーバー側で Authenticated User → Tenant → 契約 → サービスへの割り当て → Role / Permission → Authorization を検証する。
+Tenantは顧客企業であり、サービスをまたいで同一である。サービスの利用可否はtenant_servicesの契約で判定し、ユーザーがそのサービスにログインできるかはtenant_service_membersでテナント × サービスごとに判定する。会社の管理者は契約したサービスごとに人を割り当て、サービスごとに外せる。役割と細かい権限は各サービスが自分のDBで持ち、Tokenには載せない。招待はサービスの画面から行い、サービスのAPIがAuth Serverの管理APIで割り当てを登録してから自分のDBに役割付きの行を作る。Identity DBにいない人はメールで事前作成し、初回ログイン時にCognitoのsubをメールで紐付ける。サブドメインからTenantとサービスを特定する。URL上のTenant ID / slugをそのまま認可情報として信頼してはいけない。必ずサーバー側で Authenticated User → Tenant → 契約 → サービスへの割り当て → Role / Permission → Authorization を検証する。
 
 ## 16. Tenant Isolation
 
@@ -173,7 +178,7 @@ Tenant間のデータ分離を保証する。API Serverではリクエストに�
 
 ## 17. API認証
 
-Request → Authentication → User Identity → サービスへの割り当て → Role / Permission → Authorization → Data Access の順序で処理する。Role はIdentity DBのtenant_service_membersから、Permission は役割の既定に自サービスDBの上書きを重ねて毎リクエスト確定する。
+Request → Authentication → User Identity → Role / Permission → Authorization → Data Access の順序で処理する。サービスへの割り当てはAuth ServerがToken発行時とRefresh時に判定済みで、API ServerはIdentity DBを参照しない。Role は自サービスDBのmembersから、Permission は役割の既定に自サービスDBの上書きを重ねて毎リクエスト確定する。
 
 ## 18. Token設計
 
@@ -265,4 +270,4 @@ OAuth 2.0 / OpenID Connect / Amazon Cognitoの仕様に準拠できる部分は�
 
 ## 28. 最終的な目標
 
-ユーザーは一度認証すれば、権限を持つ複数のTenantや契約済みの複数のサービスへ移動しても再ログインを要求されない。各Tenant Applicationはテナント × サービスごとに独立したセッションを持ち、Tenant間でもサービス間でもCookieを共有しない。認証基盤、Tenant Application、API Server、データベースの責務を明確に分離し、Tenantの追加にClient登録を要さず、サービス追加に耐えられる認証アーキテクチャとする。
+ユーザーは一度認証すれば、権限を持つ複数のTenantや契約済みの複数のサービスへ移動しても再ログインを要求されない。各Tenant Applicationはテナント × サービスごとに独立したセッションを持ち、Tenant間でもサービス間でもCookieを共有しない。認証基盤、Tenant Application、API Server、データベースの責務を明確に分離し、DBはサービスごとに持ち、Tenantの追加にClient登録を要さず、サービス追加に耐えられる認証アーキテクチャとする。

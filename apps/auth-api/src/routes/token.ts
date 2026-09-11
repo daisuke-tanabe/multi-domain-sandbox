@@ -1,15 +1,13 @@
-import { Hono, type MiddlewareHandler } from "hono";
+import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import type { OidcClient } from "../ports/identity-repository.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import {
-  authenticateClient,
   exchangeAuthorizationCode,
   refreshAccessToken,
   revokeRefreshToken,
 } from "../usecases/token.ts";
-import { noStore } from "./helpers.ts";
+import { clientAuth, type ClientEnv } from "./client-auth.ts";
 
 const tokenFormSchema = z.discriminatedUnion("grant_type", [
   z.object({
@@ -28,22 +26,6 @@ const revokeFormSchema = z.object({
   token: z.string().min(1),
   token_type_hint: z.string().optional(),
 });
-
-type ClientEnv = { Variables: { client: OidcClient } };
-
-/** client_secret_basic。失敗は 401 と WWW-Authenticate で返す */
-function clientAuth(deps: AuthDeps, realm: string): MiddlewareHandler<ClientEnv> {
-  return async (c, next) => {
-    noStore(c);
-    const client = await authenticateClient(deps.identity, c.req.header("Authorization"));
-    if (!client.ok) {
-      c.header("WWW-Authenticate", `Basic realm="${realm}"`);
-      return c.json({ error: "invalid_client" }, 401);
-    }
-    c.set("client", client.value);
-    await next();
-  };
-}
 
 /**
  * POST /token と POST /revoke。Back Channel 専用。

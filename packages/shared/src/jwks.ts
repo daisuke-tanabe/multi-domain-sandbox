@@ -36,6 +36,8 @@ type JwksUrl = string | (() => Promise<Result<string, JwksError>>);
 export class RemoteJwksSource implements JwksSource {
   private cached: JSONWebKeySet | undefined;
   private attemptedAt = 0;
+  /** 未知の kid による強制再取得を最後に行った時刻。通常の TTL 更新とは別に数える */
+  private forcedAt = 0;
   private inflight: Promise<Result<JSONWebKeySet, JwksError>> | undefined;
 
   constructor(
@@ -45,11 +47,20 @@ export class RemoteJwksSource implements JwksSource {
   ) {}
 
   public get(options: { forceRefresh: boolean }): Promise<Result<JSONWebKeySet, JwksError>> {
-    const age = this.clock.nowSeconds() - this.attemptedAt;
-    const fresh = this.cached !== undefined && age < CACHE_TTL_SECONDS;
-    const throttled = age < REFRESH_MIN_INTERVAL_SECONDS;
-    if (fresh && !(options.forceRefresh && !throttled)) return Promise.resolve(ok(this.cached!));
-    if (this.cached !== undefined && throttled) return Promise.resolve(ok(this.cached));
+    const now = this.clock.nowSeconds();
+    const fresh = this.cached !== undefined && now - this.attemptedAt < CACHE_TTL_SECONDS;
+    if (options.forceRefresh) {
+      // 鍵ローテーション直後に未知の kid が来る。強制再取得は 1 分に 1 回までにして、偽 kid による連打を防ぐ
+      if (now - this.forcedAt < REFRESH_MIN_INTERVAL_SECONDS && this.cached !== undefined) {
+        return Promise.resolve(ok(this.cached));
+      }
+      this.forcedAt = now;
+    } else if (fresh) {
+      return Promise.resolve(ok(this.cached!));
+    } else if (this.cached !== undefined && now - this.attemptedAt < REFRESH_MIN_INTERVAL_SECONDS) {
+      // 取得に失敗した直後の再試行を間引く
+      return Promise.resolve(ok(this.cached));
+    }
     this.inflight ??= this.refresh().finally(() => {
       this.inflight = undefined;
     });

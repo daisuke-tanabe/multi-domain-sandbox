@@ -14,17 +14,17 @@ import {
   type TenantSession,
 } from "@sandbox/oidc-client";
 import { timingSafeEqualString } from "@sandbox/shared";
-import { errorPage, homePage, projectsPage, type PageLabels, type Viewer } from "./views/pages.ts";
+import { dashboardPage, errorPage, homePage, type PageLabels, type Viewer } from "./views/pages.ts";
 
 export interface WebCoreAppOptions {
   readonly deps: OidcClientDeps;
   readonly provider: OidcProvider;
 }
 
-const meSchema = z.object({ role: z.string() });
-
-const projectsSchema = z.object({
-  projects: z.array(z.object({ id: z.string(), name: z.string() })),
+const meSchema = z.object({
+  role: z.string(),
+  permissions: z.array(z.string()),
+  service: z.object({ roles: z.array(z.string()), permissions: z.array(z.string()) }),
 });
 
 function toViewer(session: TenantSession): Viewer {
@@ -86,56 +86,10 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
     );
   });
 
-  app.get("/projects", requireSession(), async (c) => {
+  // このサービスでの役割と権限を API から取って出す。画面の本体は React 化で置き換える
+  app.get("/dashboard", requireSession(), async (c) => {
     const session = c.get("tenantSession");
     if (session === undefined) return c.redirect("/auth/login");
-    return renderProjects(c, session, c.req.query("notice"));
-  });
-
-  app.post("/projects", requireSession(), async (c) => {
-    const session = c.get("tenantSession");
-    if (session === undefined) return c.redirect("/auth/login");
-    const form = await c.req.parseBody();
-    if (typeof form.csrf !== "string" || !timingSafeEqualString(form.csrf, session.csrfToken)) {
-      return renderError(
-        c,
-        "ページを再読み込みしてください",
-        "フォームの有効期限が切れています。",
-        403,
-      );
-    }
-    const name = typeof form.name === "string" ? form.name.trim() : "";
-    if (name === "") return c.redirect("/projects?notice=name+is+required");
-
-    const client = c.get("tenantClient");
-    const result = await apiFetch(
-      deps,
-      provider,
-      client,
-      session,
-      `${client.apiBaseUrl}/v1/projects`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      },
-    );
-    if (!result.ok) return handleApiAccessError(c, result.error.kind);
-    if (result.value.response.status === 403) {
-      return c.redirect("/projects?notice=" + encodeURIComponent("この操作を行う権限がありません"));
-    }
-    if (!result.value.response.ok) {
-      deps.logger.error("project creation failed", { status: result.value.response.status });
-      return renderError(c, "一時的なエラーです", "しばらくしてから再試行してください。", 503);
-    }
-    return c.redirect("/projects");
-  });
-
-  async function renderProjects(
-    c: Context<OidcEnv>,
-    session: TenantSession,
-    notice: string | undefined,
-  ): Promise<Response> {
     const client = c.get("tenantClient");
     const me = await apiFetch(deps, provider, client, session, `${client.apiBaseUrl}/v1/me`);
     if (!me.ok) return handleApiAccessError(c, me.error.kind);
@@ -147,33 +101,20 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
         403,
       );
     }
-    const meBody = meSchema.safeParse(await me.value.response.json());
-    if (!meBody.success)
+    const body = meSchema.safeParse(await me.value.response.json());
+    if (!body.success)
       return renderError(c, "一時的なエラーです", "API 応答を解釈できません。", 503);
-
-    const projects = await apiFetch(
-      deps,
-      provider,
-      client,
-      me.value.session,
-      `${client.apiBaseUrl}/v1/projects`,
-    );
-    if (!projects.ok) return handleApiAccessError(c, projects.error.kind);
-    const projectsBody = projectsSchema.safeParse(await projects.value.response.json());
-    if (!projectsBody.success)
-      return renderError(c, "一時的なエラーです", "API 応答を解釈できません。", 503);
-
     return c.html(
-      projectsPage({
+      dashboardPage({
         serviceName: client.name,
         tenantSlug: client.tenantSlug,
         viewer: toViewer(session),
-        role: meBody.data.role,
-        projects: projectsBody.data.projects,
-        ...(notice !== undefined && { notice }),
+        role: body.data.role,
+        permissions: body.data.permissions,
+        availablePermissions: body.data.service.permissions,
       }),
     );
-  }
+  });
 
   function handleApiAccessError(
     c: Context<OidcEnv>,

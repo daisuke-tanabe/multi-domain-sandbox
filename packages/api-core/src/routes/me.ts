@@ -1,21 +1,25 @@
 import { Hono } from "hono";
-import { requirePermission, type ApiEnv } from "../auth/middleware.ts";
+import type { ApiEnv } from "../auth/middleware.ts";
+import { allPermissions, type ServiceDefinition } from "../service-definition.ts";
 
 /**
- * /v1/me。認証済みユーザー、現在のテナント、このサービスでの役割と権限を返す。
+ * /v1/me。このサービスでの役割と権限、サービスの語彙を返す。画面はこれで表示を出し分ける。
  */
-export function meRoutes(): Hono<ApiEnv> {
+export function meRoutes(definition: ServiceDefinition): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
 
-  app.get("/v1/me", requirePermission("tenant:read"), (c) => {
-    const user = c.get("user");
-    const tenant = c.get("tenant");
+  app.get("/v1/me", (c) => {
     const ctx = c.get("tenantContext");
     return c.json({
-      user: { id: user.id, email: user.email, name: user.name },
-      tenant: { id: tenant.id, slug: tenant.slug },
-      role: ctx.role,
+      user: { id: ctx.userId, email: ctx.member.email, name: ctx.member.name },
+      tenant: { id: ctx.tenantId, slug: ctx.tenantSlug },
+      role: ctx.member.role,
       permissions: [...ctx.permissions].sort(),
+      service: {
+        clientId: ctx.clientId,
+        roles: definition.roles,
+        permissions: allPermissions(definition),
+      },
     });
   });
 

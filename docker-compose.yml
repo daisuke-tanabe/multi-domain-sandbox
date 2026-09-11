@@ -1,18 +1,55 @@
+# サービスごとに DB を分ける。auth-api は identity、crm-api は crm、cms-api は cms にしか接続しない
 services:
-  db:
+  db-identity:
     image: postgres:16-alpine
-    container_name: sandbox-db
+    container_name: sandbox-db-identity
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: sandbox
+      POSTGRES_DB: identity
     ports:
       - "5432:5432"
     volumes:
-      - ./db/init:/docker-entrypoint-initdb.d:ro
-      - sandbox-db-data:/var/lib/postgresql/data
+      - ./db/identity/init:/docker-entrypoint-initdb.d:ro
+      - sandbox-db-identity:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d sandbox"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d identity"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db-crm:
+    image: postgres:16-alpine
+    container_name: sandbox-db-crm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: crm
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/crm/init:/docker-entrypoint-initdb.d:ro
+      - sandbox-db-crm:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d crm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db-cms:
+    image: postgres:16-alpine
+    container_name: sandbox-db-cms
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cms
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./db/cms/init:/docker-entrypoint-initdb.d:ro
+      - sandbox-db-cms:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cms"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -29,4 +66,6 @@ services:
       retries: 10
 
 volumes:
-  sandbox-db-data:
+  sandbox-db-identity:
+  sandbox-db-crm:
+  sandbox-db-cms:

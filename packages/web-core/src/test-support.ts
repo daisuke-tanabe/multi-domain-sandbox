@@ -1,5 +1,7 @@
 import type { Hono } from "hono";
-import { createApiHarness, type ApiHarness } from "@sandbox/api-core/test-support";
+import type { ApiHarness } from "@sandbox/api-core/test-support";
+import { createCmsHarness } from "@sandbox/cms-api/test-support";
+import { createCrmHarness } from "@sandbox/crm-api/test-support";
 import {
   createHarness as createAuthHarness,
   type TestHarness as AuthHarness,
@@ -78,12 +80,8 @@ export async function createSandbox(): Promise<SandboxHarness> {
   const createService = async (
     service: ServiceConfig,
     baseHost: string,
+    api: ApiHarness,
   ): Promise<ServiceHarness> => {
-    const api = await createApiHarness({
-      signingKey: auth.deps.signingKey,
-      clock: auth.clock,
-      audience: service.apiBaseUrl,
-    });
     const stores = createMemoryStoreFactory(auth.clock);
     const webDeps: OidcClientDeps = {
       provider: {
@@ -122,6 +120,7 @@ export async function createSandbox(): Promise<SandboxHarness> {
       apiBaseUrl: CRM_API_ORIGIN,
     },
     CRM_BASE_HOST,
+    await createCrmHarness({ signingKey: auth.deps.signingKey, clock: auth.clock }),
   );
   const cms = await createService(
     {
@@ -132,6 +131,7 @@ export async function createSandbox(): Promise<SandboxHarness> {
       apiBaseUrl: CMS_API_ORIGIN,
     },
     CMS_BASE_HOST,
+    await createCmsHarness({ signingKey: auth.deps.signingKey, clock: auth.clock }),
   );
 
   apps.set(AUTH_HOST, auth.app);

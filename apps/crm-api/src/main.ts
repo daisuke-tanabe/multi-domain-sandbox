@@ -1,3 +1,10 @@
 import { startApiCore } from "@sandbox/api-core";
+import { CRM, CRM_SCHEMA } from "./definition.ts";
+import { PgEndUserRepository } from "./end-users/repository.ts";
+import { endUserRoutes } from "./end-users/routes.ts";
 
-startApiCore("crm-api");
+startApiCore("crm-api", {
+  definition: CRM,
+  schema: CRM_SCHEMA,
+  routes: (pool) => [endUserRoutes(new PgEndUserRepository(pool))],
+});

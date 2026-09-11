@@ -1,13 +1,12 @@
-import type { Role } from "@sandbox/shared";
-
 /**
  * ローカルの db/init/004_seed.sql と同じ関係のテストデータ。
  *   サービス : crm, cms
  *   テナント : tanaka (crm と cms を契約), suzuki (crm のみ契約)
- *   alice: tanaka では crm / cms の owner、suzuki では crm の viewer。tanaka の cms では projects:write を拒否
- *   bob  : suzuki の crm の admin
+ *   alice: tanaka の crm / cms、suzuki の crm に入れる
+ *   bob  : suzuki の crm に入れる
  *   carol: 割り当てなし
  *   tenant_members は会社横断の役割。alice は tanaka の owner、bob は suzuki の owner
+ * サービス側の役割と権限、業務データは各サービスの DB (db/crm, db/cms) にあり、この tool では扱わない
  */
 export interface SeedUser {
   /** users.id。ローカルの 004_seed.sql と同じ固定 ID */
@@ -28,7 +27,7 @@ export interface SeedTenant {
 export interface SeedMembership {
   readonly tenantSlug: string;
   readonly username: string;
-  readonly role: Role;
+  readonly role: "owner" | "admin" | "member";
 }
 
 export interface SeedService {
@@ -42,28 +41,11 @@ export interface SeedContract {
   readonly clientId: string;
 }
 
-/** サービスごとの割り当て */
+/** サービスに入れる人。役割はサービス側の DB が持つ */
 export interface SeedServiceMembership {
   readonly tenantSlug: string;
   readonly clientId: string;
   readonly username: string;
-  readonly role: Role;
-}
-
-/** サービス固有の権限の上書き。business.member_permissions */
-export interface SeedPermissionOverride {
-  readonly tenantSlug: string;
-  readonly clientId: string;
-  readonly username: string;
-  readonly permission: string;
-  readonly effect: "allow" | "deny";
-}
-
-export interface SeedProject {
-  readonly id: string;
-  readonly tenantSlug: string;
-  readonly name: string;
-  readonly createdBy: string;
 }
 
 export const SEED_USERS: ReadonlyArray<SeedUser> = [
@@ -112,39 +94,8 @@ export const SEED_MEMBERSHIPS: ReadonlyArray<SeedMembership> = [
 ];
 
 export const SEED_SERVICE_MEMBERSHIPS: ReadonlyArray<SeedServiceMembership> = [
-  { tenantSlug: "tanaka", clientId: "crm", username: "alice", role: "owner" },
-  { tenantSlug: "tanaka", clientId: "cms", username: "alice", role: "owner" },
-  { tenantSlug: "suzuki", clientId: "crm", username: "alice", role: "viewer" },
-  { tenantSlug: "suzuki", clientId: "crm", username: "bob", role: "admin" },
-];
-
-export const SEED_PERMISSION_OVERRIDES: ReadonlyArray<SeedPermissionOverride> = [
-  {
-    tenantSlug: "tanaka",
-    clientId: "cms",
-    username: "alice",
-    permission: "projects:write",
-    effect: "deny",
-  },
-];
-
-export const SEED_PROJECTS: ReadonlyArray<SeedProject> = [
-  {
-    id: "01J0000000000000000PROJECTT1",
-    tenantSlug: "tanaka",
-    name: "Tanaka Project 1",
-    createdBy: "alice",
-  },
-  {
-    id: "01J0000000000000000PROJECTT2",
-    tenantSlug: "tanaka",
-    name: "Tanaka Project 2",
-    createdBy: "alice",
-  },
-  {
-    id: "01J0000000000000000PROJECTS1",
-    tenantSlug: "suzuki",
-    name: "Suzuki Project 1",
-    createdBy: "bob",
-  },
+  { tenantSlug: "tanaka", clientId: "crm", username: "alice" },
+  { tenantSlug: "tanaka", clientId: "cms", username: "alice" },
+  { tenantSlug: "suzuki", clientId: "crm", username: "alice" },
+  { tenantSlug: "suzuki", clientId: "crm", username: "bob" },
 ];

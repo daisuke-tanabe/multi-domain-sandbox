@@ -2,29 +2,35 @@
 
 ## 結論
 
-永続データは Identity DB と Business DB に分け、揮発データは Session Store に置く。
-Identity DB は Auth Server が所有し、API Server は読み取り専用で参照する。判断事項D3。
-ユーザーとテナントは別概念とし、サービスへのログイン可否と役割は tenant_service_members がテナント × サービス × ユーザーの単位で表す。認可は必ず tenant_service_members を根拠にする。tenant_members は会社横断の役割にだけ使い、ログイン可否には使わない。判断事項D16。
+永続データは Identity DB とサービスごとの DB に分け、揮発データは Session Store に置く。
+Identity DB は Auth Server が所有し、Auth Server だけが接続する。API Server は接続しない。判断事項D3、D17。
+ユーザーとテナントは別概念とし、サービスへのログイン可否は tenant_service_members がテナント × サービス × ユーザーの単位で表す。この表は役割を持たない。tenant_members は会社横断の役割にだけ使い、ログイン可否には使わない。判断事項D16。
 サービスとテナントも別概念とし、tenant_services が契約を表す。OIDC Client はサービスと1対1で、テナントには紐付かない。判断事項D13。
-細かい権限は Identity DB にも Token にも置かず、各サービスの Business DB の member_permissions が役割の既定に対する allow / deny を持つ。
+役割と権限は Identity DB にも Token にも置かず、各サービスの DB の members が役割を、permission_overrides が役割の既定に対する allow / deny を持つ。役割の語彙はサービスごとに違う。判断事項D17。
 主キーはすべてサロゲート ID とし、client_id や slug は UNIQUE 制約で守る公開識別子にする。redirect_uri はサービスごとの `redirect_uri_template` で登録し、client_secret は oidc_client_secrets に複数行持てる。判断事項D15。
 
 ## 全体像
 
 ```mermaid
 flowchart LR
-    subgraph IdentityDB ["Identity DB  所有: Auth Server"]
+    subgraph IdentityDB ["Identity DB  接続: Auth Server のみ"]
         users
         tenants
         tenant_members["tenant_members<br/>会社横断の役割"]
         oidc_clients
         oidc_client_secrets
         tenant_services["tenant_services<br/>契約"]
-        tenant_service_members["tenant_service_members<br/>サービスごとの割り当てと役割"]
+        tenant_service_members["tenant_service_members<br/>サービスごとの割り当て。役割なし"]
     end
-    subgraph BusinessDB ["Business DB  所有: API Server"]
-        projects["projects 等の業務テーブル<br/>すべて tenant_id を持つ"]
-        member_permissions["member_permissions<br/>役割の既定への allow / deny"]
+    subgraph CrmDB ["CRM DB  接続: crm-api のみ"]
+        crm_members["crm.members<br/>役割 owner / admin / member / viewer"]
+        crm_overrides["crm.permission_overrides<br/>allow / deny"]
+        crm_end_users["crm.end_users<br/>顧客データ"]
+    end
+    subgraph CmsDB ["CMS DB  接続: cms-api のみ"]
+        cms_members["cms.members<br/>役割 owner / editor / viewer"]
+        cms_overrides["cms.permission_overrides<br/>allow / deny"]
+        cms_posts["cms.posts<br/>投稿"]
     end
     subgraph SessionStore ["Session Store  Redis想定"]
         sso["sso:sess:*"]
@@ -50,13 +56,23 @@ flowchart LR
     tenant_service_members --> tenant_services
     tenant_service_members --> users
     oidc_client_secrets --> oidc_clients
-    projects -. "tenant_id参照。FKなし" .-> tenants
-    member_permissions -. "tenant_id / user_id / client_id 参照。FKなし" .-> tenant_service_members
+    crm_overrides --> crm_members
+    cms_overrides --> cms_members
+    crm_members -. "tenant_id / user_id の値だけ共有。FKなし" .-> tenant_service_members
+    cms_members -. "tenant_id / user_id の値だけ共有。FKなし" .-> tenant_service_members
 ```
 
-Identity DB と Business DB は物理的に同一インスタンスでもよいが、スキーマを分け、API Server の Identity スキーマへの権限は SELECT のみにする。サンドボックスでは `identity` スキーマと `business` スキーマに分けている。
+DB はサービスごとに分ける。ローカルは docker compose の `db-identity` 5432、`db-crm` 5433、`db-cms` 5434 の 3 コンテナで、初期化 SQL は `db/identity/init` `db/crm/init` `db/cms/init`。DB 間の外部キーや JOIN はなく、共有するのは user_id と tenant_id の値だけ。サービスの DB の整合はアプリが保つ。
 
-外部キーはすべてサロゲート ID を参照する。`oidc_clients.client_id` を参照する外部キーは持たない。`updated_at` を持つ表はトリガー `identity.touch_updated_at()` で更新時刻を自動更新する。
+| DB | データベース | スキーマ | アプリのロール | 表の所有者 | 接続するアプリ |
+| --- | --- | --- | --- | --- | --- |
+| identity | `identity` | `identity` | `sandbox_auth`。スキーマの所有者 | `sandbox_auth` | auth-api |
+| crm | `crm` | `crm` | `crm_app`。NOBYPASSRLS | `postgres` | crm-api |
+| cms | `cms` | `cms` | `cms_app`。NOBYPASSRLS | `postgres` | cms-api |
+
+サービスの DB では表の所有者とアプリのロールを分ける。FORCE ROW LEVEL SECURITY は所有者には効かないため、表は postgres が所有し、アプリのロールには SELECT / INSERT / UPDATE / DELETE だけを与える。
+
+外部キーはすべてサロゲート ID を参照する。`oidc_clients.client_id` を参照する外部キーは持たない。`updated_at` を持つ表はトリガー `touch_updated_at()` で更新時刻を自動更新する。
 
 ## Identity DB
 
@@ -65,8 +81,8 @@ Identity DB と Business DB は物理的に同一インスタンスでもよい�
 ```sql
 CREATE TABLE users (
   id            TEXT PRIMARY KEY,            -- ULID。ID Token の sub として外部へ出す
-  cognito_sub   TEXT NOT NULL UNIQUE,        -- 正規識別子。Cognito User Pool の sub
-  email         TEXT NOT NULL,
+  cognito_sub   TEXT UNIQUE,                 -- 正規識別子。Cognito User Pool の sub。招待直後は NULL
+  email         TEXT NOT NULL UNIQUE,        -- 招待の突合キー
   name          TEXT,
   status        TEXT NOT NULL DEFAULT 'active', -- active / disabled
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -74,10 +90,10 @@ CREATE TABLE users (
 );
 ```
 
-- 正規識別子は cognito_sub。仕様書14章
+- 正規識別子は cognito_sub。仕様書14章。招待で事前作成した行は初回ログインまで NULL
 - id は内部代理キー。Client へ露出するのはこちら。Cognito固有値を境界の外へ出さないため
-- email は表示用キャッシュ。突合キーにしない。Cognito 側で変更され得る
-- JIT作成。Cognito 認証成功時に cognito_sub で検索し、なければ作成。判断事項D9
+- email は UNIQUE。招待時の事前作成と初回ログイン時の紐付けの突合キーになる。判断事項D17
+- ログイン時の解決は cognito_sub → 同じメールで cognito_sub が NULL の行に sub を紐付け → JIT作成の順。同じメールが別の sub に既に紐付いていればログインを拒否し、既存行を書き換えない。判断事項D9、D17
 
 ### tenants
 
@@ -102,8 +118,8 @@ CREATE TABLE tenants (
 CREATE TABLE tenant_members (
   tenant_id     TEXT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
   user_id       TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  role          TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
-  status        TEXT NOT NULL DEFAULT 'active', -- active / invited / disabled
+  role          TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+  status        TEXT NOT NULL DEFAULT 'active', -- active / disabled
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, user_id)
@@ -113,8 +129,8 @@ CREATE INDEX tenant_members_user_id_idx ON tenant_members (user_id);
 
 - 会社横断の役割。管理者や請求担当のような、サービスに依らない立場を表す。判断事項D16
 - ログイン可否には使わない。`/authorize`、refresh_token grant、API Server はこの表を参照しない
-- サービスへの割り当てと役割は tenant_service_members に持つ。tanaka の owner であっても、tanaka の cms に割り当てがなければ tanaka.cms には入れない
-- role は固定enum。判断事項D8
+- サービスへの割り当ては tenant_service_members に持つ。tanaka の owner であっても、tanaka の cms に割り当てがなければ tanaka.cms には入れない
+- role は固定enum。サービスでの役割とは別の語彙で、サービスの役割はサービスの DB が持つ。判断事項D8、D17
 
 ### oidc_clients
 
@@ -187,8 +203,7 @@ CREATE TABLE tenant_service_members (
   tenant_id       TEXT NOT NULL,
   oidc_client_id  TEXT NOT NULL,
   user_id         TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  role            TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
-  status          TEXT NOT NULL DEFAULT 'active', -- active / invited / disabled
+  status          TEXT NOT NULL DEFAULT 'active', -- active / disabled
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, oidc_client_id, user_id),
@@ -198,12 +213,12 @@ CREATE TABLE tenant_service_members (
 CREATE INDEX tenant_service_members_user_id_idx ON tenant_service_members (user_id);
 ```
 
-- サービスごとの割り当て。招待はこの単位で行い、役割もサービスごとに持つ。判断事項D16
+- サービスごとの割り当て。「誰がどのテナントのどのサービスに入れるか」だけを表し、役割は持たない。招待はこの単位で行う。判断事項D16、D17
 - 複合外部キーで契約を参照するため、契約のないサービスに人を割り当てられない。契約を消せば割り当ても CASCADE で消える
 - `/authorize` と refresh_token grant は契約の後にこの表を `(tenant_id, oidc_client_id, user_id)` で引く。行がなければ no_membership、あるが active でなければ membership_inactive。no_membership は「このテナントのこのサービスに割り当てがない」で、別サービスの割り当てでは通らない
-- API Server は Token の tenant_id と client_id、sub でこの表を毎リクエスト再検証し、role を取る。role は Token に載せない
-- 1 ユーザーが同じテナントでもサービスごとに違う役割を持てる。alice は tanaka の crm と cms で owner、suzuki の crm で viewer
-- 細かい権限はこの表には持たない。役割の既定に対する個別の許可 / 拒否は各サービスの DB の member_permissions が持つ
+- 書き込むのは Auth Server だけ。サービスは `/admin/service-members` を client_secret_basic で呼び、自分のサービスの行だけを upsert と削除できる
+- API Server はこの表を参照しない。役割はサービスの DB の members から取る
+- ポータルはこの表と tenant_services、oidc_clients が active なサービスを並べる。役割は出さない
 
 ### 初期データ
 
@@ -238,17 +253,25 @@ client_secret oidc_client_secrets。
 
 suzuki.cms.localhost:3003 の redirect_uri は cms のテンプレートに一致し slug=suzuki も tenants にあるため `/authorize` は受理するが、契約がないため access_denied になる。
 
-サービスごとの割り当て tenant_service_members。
+ユーザー users。
 
-| user | tenant | oidc_client_id | サービス | role |
-| --- | --- | --- | --- | --- |
-| alice | tanaka | 01J00000000000000000000CRM | crm | owner |
-| alice | tanaka | 01J00000000000000000000CMS | cms | owner |
-| alice | suzuki | 01J00000000000000000000CRM | crm | viewer |
-| bob | suzuki | 01J00000000000000000000CRM | crm | admin |
+| id | cognito_sub | email | name |
+| --- | --- | --- | --- |
+| 01J0000000000000000000ALICE | cognito-sub-alice | alice@example.com | Alice |
+| 01J00000000000000000000BOB0 | cognito-sub-bob | bob@example.com | Bob |
+
+サービスごとの割り当て tenant_service_members。役割は持たない。
+
+| user | tenant | oidc_client_id | サービス |
+| --- | --- | --- | --- |
+| alice | tanaka | 01J00000000000000000000CRM | crm |
+| alice | tanaka | 01J00000000000000000000CMS | cms |
+| alice | suzuki | 01J00000000000000000000CRM | crm |
+| bob | suzuki | 01J00000000000000000000CRM | crm |
 
 suzuki の cms は契約がないため割り当ても存在しない。bob は tanaka のどのサービスにも割り当てがなく、tanaka.crm を開くと no_membership になる。
-carol は Cognito 側にのみ存在し、どのサービスにも割り当てがない。ログインは成功するが `/authorize` で no_membership になり、ポータルには「利用できるサービスがありません。管理者に招待を依頼してください。」と出る。
+carol は Cognito 側にのみ存在し、どのサービスにも割り当てがない。ログインは成功して users に JIT 作成されるが `/authorize` で no_membership になり、ポータルには「利用できるサービスがありません。管理者に招待を依頼してください。」と出る。
+dave は Cognito 側にのみ存在し、サービスの画面から招待して初回ログインでメールにより紐付ける確認に使う。
 
 会社横断の役割 tenant_members。ログイン可否には使わない。
 
@@ -257,62 +280,129 @@ carol は Cognito 側にのみ存在し、どのサービスにも割り当て�
 | alice | tanaka | owner |
 | bob | suzuki | owner |
 
-## Business DB
+## サービスの DB
 
-API Server が所有する。すべての業務テーブルに tenant_id を持たせる。
+各サービスの API Server が自分の DB を持つ。Identity DB とは別のデータベースで、識別子は user_id と tenant_id の値だけを共有し外部キーは張らない。どのサービスにも members と permission_overrides があり、`packages/api-core` の `PgMemberRepository(pool, schema)` がスキーマ名を受けて扱う。業務テーブルはサービスごとに違う。判断事項D17。
+
+### 所有者とロール
 
 ```sql
-CREATE TABLE projects (
-  id          TEXT PRIMARY KEY,
-  tenant_id   TEXT NOT NULL,   -- Identity DB の tenants.id。スキーマをまたぐため FK は張らない
-  name        TEXT NOT NULL,
-  created_by  TEXT NOT NULL,   -- users.id
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE ROLE crm_app LOGIN PASSWORD '...' NOBYPASSRLS;
+CREATE SCHEMA crm;
+GRANT USAGE ON SCHEMA crm TO crm_app;
+-- 表は postgres が所有する
+GRANT SELECT, INSERT, UPDATE, DELETE ON crm.members, crm.permission_overrides, crm.end_users TO crm_app;
+```
+
+- アプリのロールは表の所有者ではなく利用者。FORCE ROW LEVEL SECURITY は所有者には効かないため、表は postgres が所有し、アプリのロールには DML だけを与える。NOBYPASSRLS を明示する
+- CMS も同じ形で `cms_app` と `cms` スキーマを持つ
+
+### members
+
+```sql
+CREATE TABLE crm.members (
+  tenant_id   TEXT NOT NULL,   -- Identity DB の tenants.id。FK なし
+  user_id     TEXT NOT NULL,   -- Identity DB の users.id。FK なし
+  email       TEXT,            -- 招待時に控えた表示用の写し。identity が正
+  name        TEXT,
+  role        TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
+  status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, user_id)
 );
-CREATE INDEX projects_tenant_id_idx ON projects (tenant_id);
 ```
 
-初期データは tanaka に「Tanaka Project 1」「Tanaka Project 2」、suzuki に「Suzuki Project 1」。
+- このサービスでの役割。語彙は `ServiceDefinition` と CHECK 制約で揃える。CRM は owner / admin / member / viewer、CMS は owner / editor / viewer
+- 行は招待時に `POST /v1/members` が作る。auth を通れるのに行がない人は最初の API 呼び出しで `defaultRole` で作られ、email と name は NULL になる
+- `PATCH /v1/members/:userId` が role を変え、`DELETE /v1/members/:userId` が行を消す。status が active でなければ API は 403
+- email と name は表示用の写しで、突合には使わない。identity が正
 
-Row Level Security を併用する場合。判断事項D11。
+### permission_overrides
 
-```sql
-ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE projects FORCE ROW LEVEL SECURITY;
-CREATE POLICY projects_tenant_isolation ON projects
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
-```
-
-API Server はトランザクション開始時に `SET LOCAL app.tenant_id = :tenant_id` を Token 由来の値で実行する。詳細は [07-api-auth-design.md](./07-api-auth-design.md)。
-
-### member_permissions
-
-サービス固有の細かい権限。役割から導く既定の権限に対して、個別に許可 / 拒否を上書きする。判断事項D16。
+役割から導く既定の権限に対して、個別に許可 / 拒否を上書きする。判断事項D16、D17。
 
 ```sql
-CREATE TABLE member_permissions (
-  tenant_id   TEXT NOT NULL,   -- Identity DB の tenants.id
-  user_id     TEXT NOT NULL,   -- users.id
-  client_id   TEXT NOT NULL,   -- このサービスの client_id。サンドボックスは 1 DB を複数サービスで共有するため持つ
-  permission  TEXT NOT NULL,   -- projects:write など。API Server の permission 名
+CREATE TABLE crm.permission_overrides (
+  tenant_id   TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  permission  TEXT NOT NULL,   -- end_users:unmask など。ServiceDefinition の permission 名
   effect      TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, user_id, client_id, permission)
+  PRIMARY KEY (tenant_id, user_id, permission),
+  FOREIGN KEY (tenant_id, user_id) REFERENCES crm.members (tenant_id, user_id) ON DELETE CASCADE
 );
-ALTER TABLE member_permissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE member_permissions FORCE ROW LEVEL SECURITY;
-CREATE POLICY member_permissions_tenant_isolation ON member_permissions
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 ```
 
 - Token には載せない。API Server がリクエストごとに `app.tenant_id` を設定したトランザクションで読む。変更は次のリクエストから反映される
-- 権限の確定は 役割の既定 ∪ allow − deny。deny が優先し、API Server が知らない permission 名の行は無視する
-- サンドボックスでは crm-api と cms-api が同じ DB を使うため client_id 列で分ける。実運用では各サービスの DB がこの表を持ち、client_id 列は不要になる
-- Identity DB には置かない。Auth Server がサービスごとの権限語彙を知る必要をなくすため
+- 権限の確定は 役割の既定 ∪ allow − deny。deny が優先し、`ServiceDefinition` にない permission 名の行は無視する
+- `PUT /v1/members/:userId/permissions` が全行を置き換える。member 行を消せば CASCADE で消える
+- サービスごとに別 DB のため client_id 列は持たない
 
-初期データは alice が tanaka の cms で `projects:write` を deny。alice は tanaka.cms の owner だが Project を作れない。
+### 業務テーブル
+
+すべて tenant_id を持つ。CRM は end_users、CMS は posts。
+
+```sql
+CREATE TABLE crm.end_users (
+  id          TEXT PRIMARY KEY,
+  tenant_id   TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  email       TEXT NOT NULL,   -- end_users:unmask がなければマスクして返す
+  phone       TEXT NOT NULL,   -- 同上
+  note        TEXT NOT NULL DEFAULT '',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX end_users_tenant_id_idx ON crm.end_users (tenant_id, created_at);
+
+CREATE TABLE cms.posts (
+  id          TEXT PRIMARY KEY,
+  tenant_id   TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  author_id   TEXT NOT NULL,   -- Identity DB の users.id。FK なし
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX posts_tenant_id_idx ON cms.posts (tenant_id, created_at DESC);
+```
+
+end_users はログインする人ではなく CRM が管理する顧客データ。members とは別の概念。
+
+### Row Level Security
+
+サービスの DB の全表に掛ける。判断事項D11。
+
+```sql
+ALTER TABLE crm.end_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm.end_users FORCE ROW LEVEL SECURITY;
+CREATE POLICY end_users_tenant_isolation ON crm.end_users
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+```
+
+members と permission_overrides にも同じポリシーを掛ける。API Server は `withTenant(pool, tenantId, fn)` でトランザクションを開き、`set_config('app.tenant_id', $1, true)` を Token 由来の値で実行してから SQL を発行する。未設定なら `current_setting` が NULL を返し、どの行にも一致しない。詳細は [07-api-auth-design.md](./07-api-auth-design.md)。
+
+### 初期データ
+
+CRM。`db/crm/init/002_seed.sql`。
+
+| 表 | 内容 |
+| --- | --- |
+| members | alice が tanaka で owner、suzuki で viewer。bob が suzuki で admin |
+| permission_overrides | suzuki の alice に `end_users:unmask` を allow。viewer でもマスクなしで読める例 |
+| end_users | tanaka に 3 件、suzuki に 2 件。名前、メール、電話、メモ |
+
+CMS。`db/cms/init/002_seed.sql`。
+
+| 表 | 内容 |
+| --- | --- |
+| members | alice が tanaka で owner |
+| permission_overrides | tanaka の alice に `posts:create` を deny。owner でも投稿を作れない例 |
+| posts | tanaka に「はじめての投稿」「お知らせ」。author は alice |
+
+suzuki は cms を契約していないため cms の DB に suzuki の行はない。
 
 ## Session Store
 
@@ -513,5 +603,6 @@ interface CounterStore {
 | 障害 | 影響 | 対処 |
 | --- | --- | --- |
 | Session Store 停止 | 新規ログインと Refresh が失敗。既存 Tenant Session も参照できない | Redis の冗長化。Auth Code は揮発を許容 |
-| Identity DB 停止 | `/authorize` の契約・割り当て判定と API 認可が失敗 | API Server は割り当てを短時間キャッシュしてよいが、キャッシュ期間は Access Token 寿命以下 |
+| Identity DB 停止 | `/authorize` の契約・割り当て判定、Refresh、招待が失敗。API は自サービスの DB だけで動くため影響なし | Auth Server の DB を冗長化。有効な Access Token の寿命内は API を呼び続けられる |
+| サービスの DB 停止 | そのサービスの API が 500。他サービスと Auth Server には影響なし | サービスごとに冗長化 |
 | Cognito 停止 | 新規認証のみ失敗。SSO Session 有効中のユーザーは影響なし | Cognito Token の更新失敗は SSO Session 失効として扱う |
