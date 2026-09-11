@@ -10,7 +10,8 @@ import { projectRoutes } from "./routes/projects.ts";
 
 export interface ApiAppOptions {
   readonly issuer: string;
-  readonly audience: string;
+  /** Host → aud。1 プロセスで複数サービスの API ホストを受けられる。未知のホストは 404 */
+  readonly audiences: ReadonlyMap<string, string>;
   readonly jwks: JwksSource;
   readonly identity: IdentityReader;
   readonly projects: ProjectRepository;

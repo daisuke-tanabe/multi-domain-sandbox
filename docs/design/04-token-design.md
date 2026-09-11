@@ -21,7 +21,7 @@ Tokenは3系統に分離し、系統間で値を流用しない。
 | ID Token | Auth Server | Tenant Web App | Back Channel | 5分 | 検証後に必要claimsのみ Tenant Session へ |
 | Access Token | Auth Server | Tenant Web App → API Server | Back Channel / Bearer | 15分 | Tenant Session Store |
 | Refresh Token | Auth Server | Tenant Web App | Back Channel | 12時間。ローテーション | Refresh Token Store と Tenant Session Store |
-| logout_token | Auth Server | Tenant Web App | Back Channel | 2分 | 保存しない。フェーズ2 |
+| logout_token | Auth Server | Tenant Web App | Back Channel | 2分 | 保存しない。サービスごとに1通 |
 
 ## ID Token
 
@@ -31,13 +31,14 @@ Tenant Web App がユーザーを識別するための Token。API へは送ら�
 {
   "iss": "https://auth.sandbox.com",
   "sub": "8f1c…",
-  "aud": "tenant-a",
+  "aud": "crm",
   "exp": 1700000300,
   "iat": 1700000000,
   "auth_time": 1699999000,
   "nonce": "N1",
   "sid": "b2a7…",
-  "tenant_id": "01J…",
+  "tenant_id": "01J00000000000000000TANAKA0",
+  "tenant_slug": "tanaka",
   "email": "user@example.com",
   "email_verified": true,
   "name": "表示名"
@@ -47,14 +48,15 @@ Tenant Web App がユーザーを識別するための Token。API へは送ら�
 | claim | 内容 |
 | --- | --- |
 | `sub` | Sandbox内部の user_id。Cognito subそのものではなく users.id を返す。判断事項D3の設計に従い、Cognito固有値をClientへ露出しない |
-| `aud` | client_id。テナントごとのClient |
+| `aud` | client_id。サービスごとのClient。`crm` または `cms` |
 | `nonce` | pre-auth の nonce と一致を検証 |
 | `sid` | SSO Session を表す公開識別子。Back-Channel Logout用。SSO Session ID とは別値 |
-| `tenant_id` | Client に対応するテナントID。表示と整合性確認用。認可根拠には使わない |
+| `tenant_id` | redirect_uri から解決したテナントID。表示と整合性確認用。認可根拠には使わない |
+| `tenant_slug` | 同テナントの slug。Tenant Web App が Host から得たテナントと一致することを検証する |
 | `auth_time` | Cognito で実際に認証した時刻。SSO で code を発行した時刻ではない |
 | `email` `name` | scope に応じて提供。最小限 |
 
-`cognito:groups` や `cognito:username` などCognito固有claimは載せない。
+`cognito:groups` や `cognito:username` などCognito固有claimは載せない。テナントに紐付かない redirect_uri では `tenant_id` と `tenant_slug` を載せない。
 
 ### Tenant Web App 側の検証
 
@@ -64,6 +66,7 @@ Tenant Web App がユーザーを識別するための Token。API へは送ら�
 4. `exp` 未来
 5. `nonce` 一致
 6. `iat` が許容スキュー内
+7. `tenant_slug` が Host から解決したテナントと一致
 
 ## Access Token
 
@@ -73,9 +76,9 @@ API Server 向けの Token。JWT 形式で自己完結検証できるように�
 {
   "iss": "https://auth.sandbox.com",
   "sub": "8f1c…",
-  "aud": "https://api.sandbox.com",
-  "client_id": "tenant-a",
-  "tenant_id": "01J…",
+  "aud": ["https://api.crm.sandbox.com", "https://auth.sandbox.com"],
+  "client_id": "crm",
+  "tenant_id": "01J00000000000000000TANAKA0",
   "sid": "b2a7…",
   "scope": "openid profile email",
   "exp": 1700000900,
@@ -86,21 +89,25 @@ API Server 向けの Token。JWT 形式で自己完結検証できるように�
 
 | claim | 内容 |
 | --- | --- |
-| `aud` | API Server の識別子。Tenant Web App 宛ての ID Token と取り違えない |
+| `aud` | サービスの API origin と issuer の配列。API origin は oidc_clients.audience。issuer を含めるのは `/userinfo` で同じ Token を受け付けるため。Tenant Web App 宛ての ID Token と取り違えない |
+| `client_id` | 発行先のサービス |
 | `tenant_id` | この Token が有効なテナント。1 Token = 1 テナント |
 | `sid` | Global Logout 時の失効判定に使える識別子 |
 | `jti` | 失効リストを導入する場合のキー。初期は未使用 |
 
 role や permission は載せない。API Server が tenant_members を毎回参照して解決する。理由は、権限変更を即時反映するためと、Token 発行後の Membership 削除を確実に拒否するため。
 
+aud はサービスごとに異なる。CRM 向けに発行した Token を api.cms.sandbox.com に出しても aud 不一致で拒否される。
+
 ### API Server 側の検証
 
-1. 署名。Auth JWKS。RS256 のみ
-2. `iss` 一致
-3. `aud == https://api.sandbox.com`
-4. `exp` 未来
-5. `tenant_id` と `sub` の Membership を Identity DB で再検証
-6. 以降は [07-api-auth-design.md](./07-api-auth-design.md)
+1. リクエストの Host から `<scheme>://<host>` を導き、受け付ける aud とする。未知の Host は 404
+2. 署名。Auth JWKS。RS256 のみ
+3. `iss` 一致
+4. `aud` に 1 で導いた値が含まれる
+5. `exp` 未来
+6. `tenant_id` と `sub` の Membership を Identity DB で再検証
+7. 以降は [07-api-auth-design.md](./07-api-auth-design.md)
 
 ## Refresh Token
 
@@ -111,7 +118,9 @@ role や permission は載せない。API Server が tenant_members を毎回参
 | ローテーション | 使用ごとに新しい値を発行。旧値は失効 |
 | 再利用検知 | 失効済み値が使われたら同系列全体を失効 |
 | 紐付け | user_id / tenant_id / sid / client_id / family_id |
-| 失効条件 | SSO Session 失効、Membership 削除、Tenant Logout、Global Logout |
+| 失効条件 | SSO Session 失効、ユーザー無効化、テナント停止、契約解除、Membership 削除、Tenant Logout、Global Logout |
+
+refresh_token grant では `/authorize` と同じ順序でアクセス判定を再実行する。user → tenant → 契約 → Membership。
 
 Cognito Refresh Token とは無関係。Cognito Refresh Token は Auth Server が Cognito 側のセッション延長にのみ使う。
 
@@ -159,5 +168,6 @@ Confidential Client でも PKCE を必須にする。
 - JWT を URL クエリ / フラグメントに載せること
 - ID Token を API 認証に使うこと
 - Access Token をブラウザへ渡すこと
-- テナント間での Token 流用。aud と tenant_id で拒否する
+- テナント間での Token 流用。tenant_id と tenant_slug で拒否する
+- サービス間での Token 流用。aud で拒否する
 - 独自暗号化 Token 方式の導入

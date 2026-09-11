@@ -163,6 +163,7 @@ async function completeAuthorization(
   if (!outcome.ok) {
     return buildRedirect(request.redirectUri, deps.issuer, {
       error: "access_denied",
+      error_description: outcome.error.reason,
       state: request.state,
     });
   }

@@ -50,6 +50,7 @@ export function authorizeRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       return c.redirect(
         buildRedirect(request.redirectUri, deps.issuer, {
           error: "access_denied",
+          error_description: outcome.error.reason,
           state: request.state,
         }),
       );

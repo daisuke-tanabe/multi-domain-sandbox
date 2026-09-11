@@ -2,7 +2,8 @@
 
 ## 結論
 
-api.sandbox.com は Resource Server として Auth Server 発行の Access Token のみを受け付ける。
+API Server は Resource Server として Auth Server 発行の Access Token のみを受け付ける。
+API はサービスごとに `api.<service>.sandbox.com` のホストを持ち、受け付ける aud はリクエストの Host から導く。CRM の Token は api.cms では通らない。
 テナントコンテキストは Token の `tenant_id` だけから決め、リクエストのパス・クエリ・ボディに含まれるテナント指定は認可根拠にしない。
 認可は毎リクエスト Identity DB の tenant_members を再検証し、データアクセスは tenant_id でアプリ層とDB層の二重で分離する。
 
@@ -12,7 +13,9 @@ api.sandbox.com は Resource Server として Auth Server 発行の Access Token
 
 ```mermaid
 flowchart TD
-    A["Request"] --> B["1. Authentication<br/>Bearer Token 抽出と JWT 検証"]
+    A["Request"] --> A0["0. Host → aud<br/>API_HOSTS に含まれる Host か"]
+    A0 -- 未知の Host --> E0["404 not_found"]
+    A0 --> B["1. Authentication<br/>Bearer Token 抽出と JWT 検証<br/>aud が Host 由来の値と一致"]
     B -- 失敗 --> E1["401 unauthorized"]
     B --> C["2. User Identity<br/>sub → users.id、status=active"]
     C -- 無効 --> E1
@@ -25,6 +28,18 @@ flowchart TD
     H --> I["Response"]
 ```
 
+## 0. Host → aud
+
+1プロセスで複数サービスの API ホストを受ける。環境変数 `API_HOSTS` に列挙した Host ごとに `<PUBLIC_SCHEME>://<host>` を aud とする。
+
+| Host | aud |
+| --- | --- |
+| api.crm.localhost:3002 | http://api.crm.localhost:3002 |
+| api.cms.localhost:3002 | http://api.cms.localhost:3002 |
+| それ以外 | 404 not_found。Token 検証に進まない |
+
+aud は oidc_clients.audience と完全一致させる。サービスごとに API を別プロセスに分ける場合は `API_HOSTS` を1つにする。
+
 ## 1. Authentication
 
 | 検証項目 | 内容 |
@@ -32,7 +47,7 @@ flowchart TD
 | ヘッダ | `Authorization: Bearer <jwt>`。Cookie は受け付けない |
 | 署名 | Auth Server の JWKS。RS256 のみ。kid で鍵選択 |
 | iss | `https://auth.sandbox.com` |
-| aud | `https://api.sandbox.com`。ID Token を誤って送られても拒否 |
+| aud | Host から導いた値が aud に含まれること。CRM の Token を api.cms に送ると 401。ID Token を誤って送られても拒否 |
 | exp / iat | 許容スキュー 30秒 |
 | 必須 claims | sub, tenant_id, sid, scope |
 
@@ -55,7 +70,8 @@ WHERE tenant_id = :token_tenant_id
 ```
 
 - 見つからなければ 403
-- Token の tenant_id は Auth Server が発行時に検証済みだが、発行後の Membership 削除を反映するため毎回再検証する
+- Token の tenant_id は Auth Server が発行時に契約と Membership を検証済みだが、発行後の Membership 削除を反映するため毎回再検証する
+- 契約 tenant_services は API では再検証しない。契約解除は Refresh 時に Auth Server が拒否し、最大 15 分で Token が失効する
 - 短時間キャッシュを入れる場合は Access Token 寿命以下にする。推奨は 60 秒以内
 
 ## 4. Role / Permission
@@ -127,10 +143,11 @@ COMMIT;
 | `WHERE id = :id` のみでの単一取得 | IDOR / BOLA |
 | Token の role claim で認可 | Membership 変更が反映されない |
 | 管理ロールでの RLS バイパス | 二重防御が無効化される |
+| 全サービス共通の aud | CRM の Token で CMS の API が呼べてしまう |
 
 ## テナント切替
 
-1 Access Token は 1 テナントに限定する。ユーザーが tenant-b を操作するには tenant-b.sandbox.com で別の Tenant Session と Token を持つ。API Server 側にテナント切替 API は作らない。
+1 Access Token は 1 テナント、1 サービスに限定する。alice が suzuki を操作するには suzuki.crm.sandbox.com で別の Tenant Session と Token を持つ。同じ tanaka でも CMS を操作するには tanaka.cms.sandbox.com で cms 向けの Token を持つ。API Server 側にテナント切替 API は作らない。
 
 ## 管理 API。フェーズ2
 
@@ -143,6 +160,7 @@ COMMIT;
 | 変更 | 内容 |
 | --- | --- |
 | 認証 | Cognito JWT の直接検証を廃止し、Auth Server JWKS による検証へ置換 |
+| aud | サービスごとの API origin を aud とし、Host から導いた値と照合 |
 | パス | tenant slug / id を含むパスを廃止。Token の tenant_id に統一 |
 | ミドルウェア | Authentication → Membership → Permission の順に必ず通す共通チェーンを導入 |
 | Repository | tenant_id 必須引数化 |

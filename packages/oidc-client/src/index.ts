@@ -22,6 +22,7 @@ export {
   COOKIE_PRE_AUTH,
 } from "./types.ts";
 export type {
+  ServiceConfig,
   OidcClientConfig,
   OidcProviderConfig,
   OidcClientDeps,

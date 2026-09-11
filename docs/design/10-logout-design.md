@@ -3,18 +3,19 @@
 ## 結論
 
 Logout は Tenant Logout と Global Logout の2種類に分離する。
-Tenant Logout は自テナントの Session と Refresh Token のみを失効させ、SSO Session を維持する。
-Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout で実現する。Tenant Logout 後の画面から Global Logout へ誘導する。
+Tenant Logout は自ホストのテナント × サービスの Session と Refresh Token のみを失効させ、SSO Session を維持する。
+Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout で実現する。Back-Channel Logout はサービス単位で送り、サービスは sid で自サービスの全テナントの Session を削除する。Tenant Logout 後の画面から Global Logout へ誘導する。
 
 ## 失効対象の対応表
 
-| 操作 | Tenant Session | Tenant の Refresh Token | SSO Session | 他 Tenant の Session | Cognito Refresh Token |
+| 操作 | 自ホストの Tenant Session | その Refresh Token | SSO Session | 他ホストの Session。他テナント / 他サービス | Cognito Refresh Token |
 | --- | --- | --- | --- | --- | --- |
 | Tenant Logout | 削除 | 失効 | 維持 | 維持 | 維持 |
 | Global Logout | 削除。Back-Channel 経由 | 全系列失効 | 削除 | 削除。Back-Channel 経由 | RevokeToken |
 | SSO Session 期限切れ | 維持。Refresh で失効 | Refresh 時に失効 | 削除 | 同左 | 破棄 |
 | Membership 削除 | 維持。Refresh で失効 | Refresh 時に失効 | 維持 | 維持 | 維持 |
-| ユーザー無効化 | 維持。Refresh で失効 | Refresh 時に失効 | 次回 /authorize で削除 | 同左 | 管理操作で Revoke |
+| 契約解除 | 維持。Refresh で失効 | Refresh 時に失効 | 維持 | 維持。同テナントの他サービスは影響なし | 維持 |
+| ユーザー無効化 | 維持。Refresh で失効 | Refresh 時に失効 | 次回 /authorize で access_denied | 同左 | 管理操作で Revoke |
 
 ## Tenant Logout
 
@@ -27,10 +28,11 @@ Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout �
 | 処理 | Refresh Token を `/revoke` で失効 → Tenant Session 削除 → Cookie 削除 → `/` へ 302 |
 | 冪等性 | セッションがなくても 302 |
 | SSO Session | 維持する。仕様書19.1 |
+| 範囲 | Host のテナント × サービスのみ。tanaka.crm でログアウトしても suzuki.crm と tanaka.cms は残る |
 
 ### 再ログイン時の挙動
 
-SSO Session が残っているため、Logout 直後に `/auth/login` を踏むとパスワード入力なしで再ログインされる。仕様どおりの挙動だが、ユーザーには「Sandbox 全体からログアウトする」導線として Global Logout へのリンクをログアウト完了画面に置く。
+SSO Session が残っているため、Logout 直後に `/auth/login` を踏むとパスワード入力なしで再ログインされる。仕様どおりの挙動だが、ユーザーには「Sandbox 全体からログアウトする」導線として Global Logout へのリンクをログアウト完了画面に置く。リンクは `https://auth.sandbox.com/logout?client_id=crm&tenant=tanaka` のように、戻り先を復元するためのサービスとテナントを付ける。
 
 ### /revoke エンドポイント
 
@@ -52,12 +54,14 @@ token=<refresh_token>&token_type_hint=refresh_token
 
 | 項目 | 内容 |
 | --- | --- |
-| エンドポイント | `POST /logout` on auth.sandbox.com。確認画面付き |
+| エンドポイント | `GET /logout?client_id=crm&tenant=tanaka` で確認画面。`POST /logout` に csrf、client_id、tenant を送る |
 | CSRF | 同期トークン必須 |
 | 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → Cookie 削除 |
-| 通知先 | SSO Session の authorized_clients に含まれる Client のうち backchannel_logout_uri を持つもの |
-| 通知失敗 | 完了扱い。対象 Tenant は Refresh 失敗で最大15分以内に失効 |
-| 完了画面 | `client_id` があれば登録 redirect_uri の origin へのリンク。加えて `/` ポータルへのリンク |
+| 通知先 | SSO Session の authorized_clients に含まれるサービスのうち backchannel_logout_uri を持つもの。サービスごとに1通 |
+| 通知失敗 | 完了扱い。対象サービスの Session は Refresh 失敗で最大15分以内に失効 |
+| 完了画面 | `client_id` と `tenant` に対応する登録 redirect_uri の origin へ「CRM (tanaka) に戻る」のリンク。加えて `/` ポータルへのリンク |
+
+サービスへの通知はテナントを区別しない。alice が tanaka.crm と suzuki.crm にログインしていても crm には1通だけ送り、crm 側が sid で両方のセッションを削除する。
 
 ### logout_token
 
@@ -66,7 +70,7 @@ OIDC Back-Channel Logout 1.0 に従う。
 ```json
 {
   "iss": "https://auth.sandbox.com",
-  "aud": "tenant-a",
+  "aud": "crm",
   "iat": 1700000000,
   "exp": 1700000120,
   "jti": "…",
@@ -75,22 +79,23 @@ OIDC Back-Channel Logout 1.0 に従う。
 }
 ```
 
-Tenant 側の検証。
+送信先は `oidc_clients.backchannel_logout_uri`。CRM は `https://crm.sandbox.com/auth/backchannel-logout`、CMS は `https://cms.sandbox.com/auth/backchannel-logout`。テナントのホストではなくサービスのベースホストで受ける。
 
-1. 署名 / iss / aud / iat / exp
-2. `events` に backchannel-logout が含まれる
-3. `nonce` が含まれていないこと
-4. jti の重複を短時間記憶してリプレイを拒否
-5. sid に紐付く Tenant Session を逆引きインデックスからすべて削除
+Tenant Web Application 側の検証。
 
-### 初期実装で用意しておくもの
+1. 署名 / iss / iat / exp
+2. `aud` で SERVICES からサービスを解決。未知なら 400
+3. `events` に backchannel-logout が含まれる
+4. `nonce` が含まれていないこと
+5. jti の重複を短時間記憶してリプレイを拒否
+6. `<clientId>:sid:<sid>` の逆引きから、テナントを問わずそのサービスの Tenant Session をすべて削除
+
+### 前提となる構造
 
 - ID Token と Access Token に `sid` を含める
-- Tenant Session に `sid` を保存し、`sid → session_id[]` の逆引きを持つ
-- SSO Session に `authorized_clients` を保存する
+- Tenant Session に `sid` を保存し、`<clientId>:sid:<sid> → sessionKey[]` の逆引きを持つ
+- SSO Session に `authorized_clients` としてサービスの client_id を保存する
 - oidc_clients に `backchannel_logout_uri` 列を持つ
-
-これにより Global Logout は Auth Server の `/logout` と Tenant の `/auth/backchannel-logout` を追加するだけで有効化できる。
 
 ## RP-Initiated Logout を採用しない理由
 

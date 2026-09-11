@@ -2,12 +2,12 @@
 
 ## 1. 目的
 
-SandboxはマルチテナントSaaSとして提供する。各テナントは専用サブドメインからサービスを利用する。
+Sandboxは複数のサービスをマルチテナントSaaSとして提供する。サービスはCRMとCMSのように独立したプロダクトであり、テナントは顧客企業としてサービス横断で共有する。各テナントはサービスごとの専用サブドメインからサービスを利用する。
 
 ```text
-tenant-a.sandbox.com
-tenant-b.sandbox.com
-tenant-c.sandbox.com
+tanaka.crm.sandbox.com
+suzuki.crm.sandbox.com
+tanaka.cms.sandbox.com
 ```
 
 認証基盤はテナントWebアプリケーションおよび業務APIから分離する。
@@ -17,16 +17,17 @@ Cognito
     ↓
 auth.sandbox.com
     ↓
-tenant-a.sandbox.com
-tenant-b.sandbox.com
-tenant-c.sandbox.com
+tanaka.crm.sandbox.com
+suzuki.crm.sandbox.com
+tanaka.cms.sandbox.com
 
 tenant Web Application
     ↓
-api.sandbox.com
+api.crm.sandbox.com
+api.cms.sandbox.com
 ```
 
-ユーザーが一度Sandboxにログインすると、別テナントへ移動した際にも再ログインを要求しないSSOを実現する。将来的にSandbox配下のサービスだけでなく、異なるドメインのサービスを追加した場合にもSSOを利用できる拡張可能なアーキテクチャを目指す。
+ユーザーが一度Sandboxにログインすると、別テナントや別サービスへ移動した際にも再ログインを要求しないSSOを実現する。テナントがサービスを利用できるかは契約で判定する。将来的にSandbox配下のサービスだけでなく、異なるドメインのサービスを追加した場合にもSSOを利用できる拡張可能なアーキテクチャを目指す。
 
 ## 2. 絶対条件
 
@@ -61,16 +62,18 @@ Cognito Access Token / ID Token / Refresh Token をURLパラメータ等で別�
                          │ Tenant Context      │
                          └──────────┬──────────┘
                                     │
-                  ┌─────────────────┼─────────────────┐
-                  ▼                 ▼                 ▼
-          tenant-a.sandbox.com tenant-b.sandbox.com tenant-c.sandbox.com
-                  │                 │                 │
-                  └─────────────────┼─────────────────┘
-                                    ▼
-                            api.sandbox.com
-                                    ▼
-                                Database
+              ┌─────────────────────┼─────────────────────┐
+              ▼                     ▼                     ▼
+   tanaka.crm.sandbox.com  suzuki.crm.sandbox.com  tanaka.cms.sandbox.com
+              │                     │                     │
+              └──────────┬──────────┘                     │
+                         ▼                                ▼
+                 api.crm.sandbox.com              api.cms.sandbox.com
+                         ▼                                ▼
+                                     Database
 ```
+
+サービス (crm / cms) はそれぞれOIDC Clientとして auth.sandbox.com に登録する。テナント (tanaka / suzuki) はサービスをまたいで同一であり、契約したサービスのみ利用できる。
 
 ## 4. 各システムの責務
 
@@ -80,35 +83,39 @@ Cognito Access Token / ID Token / Refresh Token をURLパラメータ等で別�
 
 ### 4.2 Authentication / SSO Server。auth.sandbox.com
 
-ログイン、Cognitoとの認証連携、SSOセッション管理、OAuth 2.0 / OpenID Connectベースの認証連携、Authorization Code発行、Client管理、redirect_uri管理、ユーザー識別、テナントへのアクセス可否確認、必要なユーザー情報 / Claimsの提供、ログアウト、将来的なGlobal Logoutへの対応。各テナントWebアプリケーションおよびAPI Serverから独立させる。
+ログイン、Cognitoとの認証連携、SSOセッション管理、OAuth 2.0 / OpenID Connectベースの認証連携、Authorization Code発行、Client管理、redirect_uri管理、ユーザー識別、テナントの契約とアクセス可否の確認、必要なユーザー情報 / Claimsの提供、ログアウト、Global Logout。各テナントWebアプリケーションおよびAPI Serverから独立させる。
 
-### 4.3 Tenant Web Application。tenant-*.sandbox.com
+### 4.3 Tenant Web Application。`<tenant>.<service>.sandbox.com`
 
-UI、現在のログイン状態の管理、自サービスセッションの管理、auth.sandbox.comとの認証連携、api.sandbox.comへのAPIアクセス。Tenant Web Application自身がCognitoに直接ログインする構成にはしない。
+UI、現在のログイン状態の管理、自サービスセッションの管理、auth.sandbox.comとの認証連携、自サービスのAPIへのAPIアクセス。Tenant Web Application自身がCognitoに直接ログインする構成にはしない。
 
-### 4.4 API Server。api.sandbox.com
+### 4.4 API Server。`api.<service>.sandbox.com`
 
-業務API、データ取得、データ更新、テナントデータへのアクセス、APIレベルの認証、APIレベルの認可、Tenant Isolation。API ServerとAuthentication Serverは独立した責務として扱う。
+業務API、データ取得、データ更新、テナントデータへのアクセス、APIレベルの認証、APIレベルの認可、Tenant Isolation。API ServerとAuthentication Serverは独立した責務として扱う。Access Tokenはサービスごとに異なるaudを持ち、別サービスのAPIでは受け付けない。
 
 ## 5. 認証とSSOの責務分離
 
 ```text
-Cognito              → ユーザー本人であることの認証
-auth.sandbox.com     → Sandbox全体のSSO
-tenant-a.sandbox.com → Tenant Aにおけるアプリケーションセッション
-tenant-b.sandbox.com → Tenant Bにおけるアプリケーションセッション
-api.sandbox.com      → API認証・認可およびデータアクセス
+Cognito                → ユーザー本人であることの認証
+auth.sandbox.com       → Sandbox全体のSSO。契約とMembershipによるアクセス可否
+tanaka.crm.sandbox.com → CRMにおけるTanakaのアプリケーションセッション
+suzuki.crm.sandbox.com → CRMにおけるSuzukiのアプリケーションセッション
+tanaka.cms.sandbox.com → CMSにおけるTanakaのアプリケーションセッション
+api.crm.sandbox.com    → CRMのAPI認証・認可およびデータアクセス
+api.cms.sandbox.com    → CMSのAPI認証・認可およびデータアクセス
 ```
 
 これらを一つのCookieやTokenにまとめない。
 
 ## 6. 初回ログインフロー
 
-未ログインで tenant-a.sandbox.com へアクセスすると、Authorization Request で auth.sandbox.com へ遷移し、SSO Sessionがなければ自前ログイン画面でCognito APIによる認証を行う。認証成功後にSSO Sessionを作成し、Authorization Codeを発行してTenant Aへ戻す。Tenant AはCodeを検証しTenant A用Sessionを作成する。
+未ログインで tanaka.crm.sandbox.com へアクセスすると、Authorization Request で auth.sandbox.com へ遷移し、SSO Sessionがなければ自前ログイン画面でCognito APIによる認証を行う。認証成功後にSSO Sessionを作成し、テナントの契約とMembershipを確認してからAuthorization Codeを発行してTanakaのCRMへ戻す。CRMはCodeを検証しTanaka用Sessionを作成する。
 
-## 7. 別テナントへのSSO
+## 7. 別テナント・別サービスへのSSO
 
-Tenant Aにログイン済みのユーザーが tenant-b.sandbox.com へアクセスすると、Tenant B側にセッションがないためauth.sandbox.comへ遷移する。SSO Sessionがあるため Cognito再認証は不要でAuthorization Codeを発行し、Tenant B Sessionが作成される。ユーザーにはTenant Bでログイン画面を表示しない。
+TanakaのCRMにログイン済みのユーザーが suzuki.crm.sandbox.com へアクセスすると、Suzuki側にセッションがないためauth.sandbox.comへ遷移する。SSO Sessionがあるため Cognito再認証は不要でAuthorization Codeを発行し、Suzuki用Sessionが作成される。ユーザーにはSuzukiでログイン画面を表示しない。
+
+同じユーザーが tanaka.cms.sandbox.com へアクセスした場合も同様にログイン画面なしでCMS用Sessionが作成される。Suzukiのように CMS を契約していないテナントでは、auth.sandbox.com が access_denied を返し、Session を作成しない。
 
 ## 8. 独立ドメインへの拡張
 
@@ -130,11 +137,11 @@ SameSite=Lax
 
 ## 10. Tenant Application Session
 
-各Tenant Web Applicationは独自のセッションを持つ。Tenant AとTenant BのCookieを共有しない。SSO完了後にそれぞれのアプリケーションが自身のセッションを作成する。
+各Tenant Web Applicationはテナント × サービスのホストごとに独自のセッションを持つ。TanakaとSuzukiのCookieを共有しない。同じTanakaでもCRMとCMSのCookieを共有しない。SSO完了後にそれぞれのホストが自身のセッションを作成する。
 
 ## 11. OAuth 2.0 / OpenID Connect
 
-Auth Serverは可能な限り標準的なOAuth 2.0 / OpenID Connectに準拠する。各Tenant Web ApplicationはOAuth/OIDC Clientとして扱う。redirect_uriは厳格に管理し、ワイルドカードは原則として許可しない。
+Auth Serverは可能な限り標準的なOAuth 2.0 / OpenID Connectに準拠する。各サービスをOAuth/OIDC Clientとして扱い、テナントはClientに紐付けない。redirect_uriはテナント × サービスごとに厳格に管理し、ワイルドカードは原則として許可しない。認可リクエストのテナントはclient_idとredirect_uriの組から決める。
 
 ## 12. Authorization Code
 
@@ -151,12 +158,13 @@ Cognito User Pool上のユーザー識別子をSandboxにおけるユーザー�
 ## 15. Tenantモデル
 
 ```text
-users          id, cognito_sub, ...
-tenants        id, slug, ...
-tenant_members tenant_id, user_id, role, ...
+users           id, cognito_sub, ...
+tenants         id, slug, ...
+tenant_members  tenant_id, user_id, role, ...
+tenant_services tenant_id, client_id, status   # 契約
 ```
 
-サブドメインからTenantを特定する。URL上のTenant ID / slugをそのまま認可情報として信頼してはいけない。必ずサーバー側で Authenticated User → Tenant Membership → Role / Permission → Authorization を検証する。
+Tenantは顧客企業であり、サービスをまたいで同一である。サービスの利用可否はtenant_servicesの契約で判定する。サブドメインからTenantとサービスを特定する。URL上のTenant ID / slugをそのまま認可情報として信頼してはいけない。必ずサーバー側で Authenticated User → Tenant → 契約 → Tenant Membership → Role / Permission → Authorization を検証する。
 
 ## 16. Tenant Isolation
 
@@ -174,11 +182,11 @@ Cognito TokenとSandbox内部の認証情報を明確に分離する。Cognito T
 
 ### 19.1 Tenant Logout
 
-Tenant Aからログアウトした場合 tenant-a_session のみを削除する。SSO Sessionは原則として維持する。
+TanakaのCRMからログアウトした場合 tanaka.crm のSessionのみを削除する。SuzukiのCRMやTanakaのCMSのSessionは残す。SSO Sessionは原則として維持する。
 
 ### 19.2 Global Logout
 
-将来的に auth.sandbox.com/logout によるGlobal Logoutを実装可能な構造にする。SSO Session、各Tenant Session、Refresh Token等を無効化できる設計を検討する。
+auth.sandbox.com/logout によるGlobal Logoutで、SSO Session、各サービス・各TenantのSession、Refresh Token等を無効化する。Back-Channel Logoutはサービス単位で通知し、サービス側が同一SSO Sessionに由来する全TenantのSessionを削除する。
 
 ## 20. セキュリティ要件
 
@@ -186,7 +194,7 @@ HTTPS、Secure Cookie、HttpOnly Cookie、適切なSameSite設定、Authorizatio
 
 ## 21. システム境界
 
-Cognito → auth.sandbox.com → tenant-*.sandbox.com → api.sandbox.com の責務境界を維持する。認証サーバーを通常の業務APIやTenant Applicationに組み込まない。
+Cognito → auth.sandbox.com → `<tenant>.<service>.sandbox.com` → `api.<service>.sandbox.com` の責務境界を維持する。認証サーバーを通常の業務APIやTenant Applicationに組み込まない。
 
 ## 22. 実装前の調査
 
@@ -256,4 +264,4 @@ OAuth 2.0 / OpenID Connect / Amazon Cognitoの仕様に準拠できる部分は�
 
 ## 28. 最終的な目標
 
-ユーザーは一度認証すれば、権限を持つ複数のTenantへ移動しても再ログインを要求されない。各Tenant Applicationは独立したセッションを持ち、Tenant間でCookieを共有しない。認証基盤、Tenant Application、API Server、データベースの責務を明確に分離し、将来的なサービス追加に耐えられる認証アーキテクチャとする。
+ユーザーは一度認証すれば、権限を持つ複数のTenantや契約済みの複数のサービスへ移動しても再ログインを要求されない。各Tenant Applicationはテナント × サービスごとに独立したセッションを持ち、Tenant間でもサービス間でもCookieを共有しない。認証基盤、Tenant Application、API Server、データベースの責務を明確に分離し、Tenantの追加にClient登録を要さず、サービス追加に耐えられる認証アーキテクチャとする。

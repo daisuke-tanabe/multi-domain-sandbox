@@ -21,12 +21,17 @@ export function tenantContext(
   onUnknownHost: (c: Context) => Response | Promise<Response>,
 ): MiddlewareHandler<OidcEnv> {
   return async (c, next) => {
+    // Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、ここでは解決しない
+    if (c.req.path === "/auth/backchannel-logout") {
+      await next();
+      return;
+    }
     const client = deps.resolveClient(c.req.header("host"));
     if (client === undefined) return onUnknownHost(c);
     c.set("tenantClient", client);
 
     const cookieValue = readSessionCookie(c, deps);
-    const session = await loadSession(deps, client.tenantSlug, cookieValue);
+    const session = await loadSession(deps, client, cookieValue);
     if (session === undefined && cookieValue !== undefined) clearSessionCookie(c, deps);
     c.set("tenantSession", session === undefined ? undefined : await saveSession(deps, session));
     await next();

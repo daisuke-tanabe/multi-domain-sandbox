@@ -19,11 +19,20 @@ export const PUBLIC_SCHEME = remoteDomain === undefined ? "http" : "https";
 export const AUTH_HOST =
   remoteDomain === undefined ? "auth.localhost:3000" : `auth.${remoteDomain}`;
 export const AUTH_BACKCHANNEL_HOST = "127.0.0.1:3000";
-export const API_BACKCHANNEL_HOST = "127.0.0.1:3002";
-export const TENANT_BASE_HOST = remoteDomain ?? "localhost:3001";
-export const TENANT_A_ORIGIN = `${PUBLIC_SCHEME}://tenant-a.${TENANT_BASE_HOST}`;
-export const TENANT_B_ORIGIN = `${PUBLIC_SCHEME}://tenant-b.${TENANT_BASE_HOST}`;
 export const AUTH_ORIGIN = `${PUBLIC_SCHEME}://${AUTH_HOST}`;
+/** サービスごとのベースホスト。テナントはその先頭ラベルになる */
+export const CRM_BASE_HOST =
+  remoteDomain === undefined ? "crm.localhost:3001" : `crm.${remoteDomain}`;
+export const CMS_BASE_HOST =
+  remoteDomain === undefined ? "cms.localhost:3001" : `cms.${remoteDomain}`;
+export const CRM_API_ORIGIN =
+  remoteDomain === undefined ? "http://api.crm.localhost:3002" : `https://api.crm.${remoteDomain}`;
+export const CMS_API_ORIGIN =
+  remoteDomain === undefined ? "http://api.cms.localhost:3002" : `https://api.cms.${remoteDomain}`;
+export const TANAKA_CRM_ORIGIN = `${PUBLIC_SCHEME}://tanaka.${CRM_BASE_HOST}`;
+export const SUZUKI_CRM_ORIGIN = `${PUBLIC_SCHEME}://suzuki.${CRM_BASE_HOST}`;
+export const TANAKA_CMS_ORIGIN = `${PUBLIC_SCHEME}://tanaka.${CMS_BASE_HOST}`;
+export const SUZUKI_CMS_ORIGIN = `${PUBLIC_SCHEME}://suzuki.${CMS_BASE_HOST}`;
 /** smoke / chrome-check が使うテストユーザーのパスワード。AWS では Secrets Manager の値を渡す */
 export const SEED_USER_PASSWORD = process.env.SEED_USER_PASSWORD ?? "alice-password";
 
@@ -33,7 +42,7 @@ interface Requestable {
 
 /**
  * auth-server / tenant-web / api-server を 1 プロセスで接続した環境。
- * ホスト名でディスパッチし、サーバー間通信は 127.0.0.1 の Back Channel URL を使う。
+ * ホスト名でディスパッチする。API はサービスごとのホスト (api.crm / api.cms) で aud を切り替える。
  */
 export interface SandboxHarness {
   readonly auth: AuthHarness;
@@ -64,10 +73,21 @@ export async function createSandbox(): Promise<SandboxHarness> {
     },
     ...createClientResolvers({
       PUBLIC_SCHEME: "http",
-      PUBLIC_BASE_HOST: TENANT_BASE_HOST,
-      TENANT_CLIENTS: [
-        { slug: "tenant-a", clientSecret: "tenant-secret" },
-        { slug: "tenant-b", clientSecret: "tenant-secret" },
+      SERVICES: [
+        {
+          clientId: "crm",
+          clientSecret: "service-secret",
+          name: "CRM",
+          baseHost: CRM_BASE_HOST,
+          apiBaseUrl: CRM_API_ORIGIN,
+        },
+        {
+          clientId: "cms",
+          clientSecret: "service-secret",
+          name: "CMS",
+          baseHost: CMS_BASE_HOST,
+          apiBaseUrl: CMS_API_ORIGIN,
+        },
       ],
     }),
     sessions: new MemoryKeyValueStore(auth.clock),
@@ -79,17 +99,23 @@ export async function createSandbox(): Promise<SandboxHarness> {
     fetch: (input, init) => dispatch(new URL(input), init),
   };
   const provider = new OidcProvider(tenantDeps.provider, tenantDeps.fetch, auth.clock);
-  const tenant = createTenantApp({
-    deps: tenantDeps,
-    provider,
-    apiBaseUrl: `http://${API_BACKCHANNEL_HOST}`,
-  });
+  const tenant = createTenantApp({ deps: tenantDeps, provider });
 
   apps.set(AUTH_HOST, auth.app);
   apps.set(AUTH_BACKCHANNEL_HOST, auth.app);
-  apps.set(API_BACKCHANNEL_HOST, api.app);
-  apps.set(`tenant-a.${TENANT_BASE_HOST}`, tenant);
-  apps.set(`tenant-b.${TENANT_BASE_HOST}`, tenant);
+  apps.set(new URL(CRM_API_ORIGIN).host, api.app);
+  apps.set(new URL(CMS_API_ORIGIN).host, api.app);
+  // Back-Channel Logout はサービス単位の URI (crm.localhost:3001) に届く
+  apps.set(CRM_BASE_HOST, tenant);
+  apps.set(CMS_BASE_HOST, tenant);
+  for (const origin of [
+    TANAKA_CRM_ORIGIN,
+    SUZUKI_CRM_ORIGIN,
+    TANAKA_CMS_ORIGIN,
+    SUZUKI_CMS_ORIGIN,
+  ]) {
+    apps.set(new URL(origin).host, tenant);
+  }
 
   return { auth, api, tenant, tenantDeps, dispatch };
 }

@@ -13,9 +13,10 @@ import { createApiApp } from "./app.ts";
 import type { ApiEnv } from "./auth/middleware.ts";
 
 export const ISSUER = "http://auth.localhost:3000";
-export const API_AUDIENCE = "http://api.localhost:3002";
-export const TENANT_A_ID = "tenant-a-id";
-export const TENANT_B_ID = "tenant-b-id";
+export const API_AUDIENCE = "http://api.crm.localhost:3002";
+export const CMS_AUDIENCE = "http://api.cms.localhost:3002";
+export const TANAKA_ID = "tenant-tanaka";
+export const SUZUKI_ID = "tenant-suzuki";
 export const ALICE_ID = "user-alice";
 export const BOB_ID = "user-bob";
 
@@ -29,8 +30,8 @@ export interface ApiHarness {
 
 /**
  * auth-server の test-support と同じ関係のデータ。
- *   alice: tenant-a owner / tenant-b viewer
- *   bob  : tenant-b admin
+ *   alice: tanaka owner / suzuki viewer
+ *   bob  : suzuki admin
  */
 export interface ApiHarnessOptions {
   readonly signingKey?: SigningKey;
@@ -46,22 +47,25 @@ export async function createApiHarness(options: ApiHarnessOptions = {}): Promise
       { id: BOB_ID, email: "bob@example.com", name: "Bob", status: "active" },
     ],
     tenants: [
-      { id: TENANT_A_ID, slug: "tenant-a", status: "active" },
-      { id: TENANT_B_ID, slug: "tenant-b", status: "active" },
+      { id: TANAKA_ID, slug: "tanaka", status: "active" },
+      { id: SUZUKI_ID, slug: "suzuki", status: "active" },
     ],
     memberships: [
-      { tenantId: TENANT_A_ID, userId: ALICE_ID, role: "owner", status: "active" },
-      { tenantId: TENANT_B_ID, userId: ALICE_ID, role: "viewer", status: "active" },
-      { tenantId: TENANT_B_ID, userId: BOB_ID, role: "admin", status: "active" },
+      { tenantId: TANAKA_ID, userId: ALICE_ID, role: "owner", status: "active" },
+      { tenantId: SUZUKI_ID, userId: ALICE_ID, role: "viewer", status: "active" },
+      { tenantId: SUZUKI_ID, userId: BOB_ID, role: "admin", status: "active" },
     ],
   });
   const projects = new MemoryProjectRepository([
-    { id: "project-a1", tenantId: TENANT_A_ID, name: "Tenant A Project 1", createdBy: ALICE_ID },
-    { id: "project-b1", tenantId: TENANT_B_ID, name: "Tenant B Project 1", createdBy: BOB_ID },
+    { id: "project-t1", tenantId: TANAKA_ID, name: "Tanaka Project 1", createdBy: ALICE_ID },
+    { id: "project-s1", tenantId: SUZUKI_ID, name: "Suzuki Project 1", createdBy: BOB_ID },
   ]);
   const app = createApiApp({
     issuer: ISSUER,
-    audience: API_AUDIENCE,
+    audiences: new Map([
+      [new URL(API_AUDIENCE).host, API_AUDIENCE],
+      [new URL(CMS_AUDIENCE).host, CMS_AUDIENCE],
+    ]),
     jwks: new StaticJwksSource(toJwks([key])),
     identity,
     projects,
@@ -92,7 +96,7 @@ export function issueTestAccessToken(harness: ApiHarness, input: TokenInput): Pr
     claims: {
       tenant_id: input.tenantId,
       sid: "sid-1",
-      client_id: "tenant-a",
+      client_id: "crm",
       scope: "openid profile email",
       ...input.extraClaims,
     },

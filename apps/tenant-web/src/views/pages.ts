@@ -23,20 +23,26 @@ export interface Viewer {
   readonly csrfToken: string;
 }
 
-function layout(tenantSlug: string, title: string, viewer: Viewer | undefined, body: Html): Html {
+function layout(
+  serviceName: string,
+  tenantSlug: string,
+  title: string,
+  viewer: Viewer | undefined,
+  body: Html,
+): Html {
   return html`<!doctype html>
     <html lang="ja">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>${title} | ${tenantSlug}</title>
+        <title>${title} | ${tenantSlug} / ${serviceName}</title>
         <style>
           ${raw(STYLE)}
         </style>
       </head>
       <body>
         <header>
-          <h1>${tenantSlug}.sandbox</h1>
+          <h1>${serviceName} <span class="muted">${tenantSlug}</span></h1>
           <nav>
             <a href="/">Home</a>
             <a href="/projects">Projects</a>
@@ -57,6 +63,7 @@ function layout(tenantSlug: string, title: string, viewer: Viewer | undefined, b
 }
 
 export interface HomePageProps {
+  readonly serviceName: string;
   readonly tenantSlug: string;
   readonly viewer: Viewer | undefined;
   /** Tenant Logout 直後に true。Global Logout への導線を出す */
@@ -65,13 +72,14 @@ export interface HomePageProps {
 }
 
 export function homePage(props: HomePageProps): Html {
-  const { tenantSlug, viewer } = props;
+  const { serviceName, tenantSlug, viewer } = props;
   return layout(
+    serviceName,
     tenantSlug,
     "Home",
     viewer,
     html`
-      <h2>Tenant ${tenantSlug}</h2>
+      <h2>${serviceName} / ${tenantSlug}</h2>
       ${
         props.justLoggedOut
           ? html`<p>
@@ -109,6 +117,7 @@ export interface ProjectRow {
 }
 
 export interface ProjectsPageProps {
+  readonly serviceName: string;
   readonly tenantSlug: string;
   readonly viewer: Viewer;
   readonly role: string;
@@ -118,6 +127,7 @@ export interface ProjectsPageProps {
 
 export function projectsPage(props: ProjectsPageProps): Html {
   return layout(
+    props.serviceName,
     props.tenantSlug,
     "Projects",
     props.viewer,
@@ -151,8 +161,14 @@ export function projectsPage(props: ProjectsPageProps): Html {
   );
 }
 
-export function errorPage(tenantSlug: string, title: string, message: string): Html {
+export function errorPage(
+  serviceName: string,
+  tenantSlug: string,
+  title: string,
+  message: string,
+): Html {
   return layout(
+    serviceName,
     tenantSlug,
     title,
     undefined,

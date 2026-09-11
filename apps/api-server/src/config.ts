@@ -2,7 +2,12 @@ import { z } from "zod";
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3002),
-  API_AUDIENCE: z.string().url(),
+  /** 受け付ける API のホスト。カンマ区切り。aud は <scheme>://<host> になる */
+  API_HOSTS: z
+    .string()
+    .min(1)
+    .transform((value) => value.split(",").map((host) => host.trim().toLowerCase())),
+  PUBLIC_SCHEME: z.enum(["http", "https"]).default("http"),
   ISSUER: z.string().url(),
   AUTH_BACKCHANNEL_URL: z.string().url().optional(),
   DATABASE_URL: z.string().min(1),

@@ -7,7 +7,7 @@ import {
   type Result,
 } from "@sandbox/shared";
 import { CONSUMED_CODE_RETENTION_SECONDS } from "../policy.ts";
-import type { IdentityRepository, OidcClient } from "../ports/identity-repository.ts";
+import type { IdentityRepository, OidcClient, Tenant } from "../ports/identity-repository.ts";
 import type { AuthorizationCode, RefreshToken } from "../ports/stores.ts";
 import { checkTenantAccess } from "./authorize.ts";
 import type { AuthDeps } from "./deps.ts";
@@ -89,6 +89,8 @@ export async function exchangeAuthorizationCode(
 
   const user = await deps.identity.findUserById(stored.userId);
   if (user === undefined) return err({ kind: "invalid_grant", reason: "user_missing" });
+  const tenant = await resolveTenant(deps, stored.tenantId);
+  if (!tenant.ok) return tenant;
 
   const refreshToken = await createRefreshTokenFamily(deps, {
     clientId: client.clientId,
@@ -106,12 +108,12 @@ export async function exchangeAuthorizationCode(
   });
 
   const tokens = await issueTokens(deps, {
-    clientId: client.clientId,
+    client,
     user,
     scope: stored.scope,
     nonce: stored.nonce,
     sid: stored.sid,
-    tenantId: stored.tenantId,
+    tenant: tenant.value,
     authTime: stored.authTime,
   });
   deps.logger.info("tokens issued via authorization_code", {
@@ -181,7 +183,12 @@ export async function refreshAccessToken(
     return err({ kind: "invalid_grant", reason: "sso_session_expired" });
   }
 
-  const access = await checkTenantAccess(deps.identity, client, stored.userId);
+  const tenant = await resolveTenant(deps, stored.tenantId);
+  if (!tenant.ok) {
+    await revokeRefreshTokenFamily(deps, stored.familyId);
+    return tenant;
+  }
+  const access = await checkTenantAccess(deps.identity, client, tenant.value, stored.userId);
   if (!access.ok) {
     await revokeRefreshTokenFamily(deps, stored.familyId);
     return err({ kind: "invalid_grant", reason: access.error.reason });
@@ -191,12 +198,12 @@ export async function refreshAccessToken(
 
   const next = await rotateRefreshToken(deps, stored);
   const tokens = await issueTokens(deps, {
-    clientId: client.clientId,
+    client,
     user,
     scope: stored.scope,
     nonce: undefined,
     sid: stored.sid,
-    tenantId: stored.tenantId,
+    tenant: tenant.value,
     authTime: stored.authTime,
   });
   deps.logger.info("tokens issued via refresh_token", {
@@ -218,6 +225,17 @@ export async function revokeRefreshToken(
   const stored: RefreshToken | undefined = await deps.stores.refreshTokens.get(tokenValue);
   if (stored === undefined || stored.clientId !== client.clientId) return;
   await revokeRefreshTokenFamily(deps, stored.familyId);
+}
+
+/** code や Refresh Token に紐付いたテナントを引く。テナントなしの Client は null */
+async function resolveTenant(
+  deps: AuthDeps,
+  tenantId: string | null,
+): Promise<Result<Tenant | null, TokenError>> {
+  if (tenantId === null) return ok(null);
+  const tenant = await deps.identity.findTenantById(tenantId);
+  if (tenant === undefined) return err({ kind: "invalid_grant", reason: "tenant_missing" });
+  return ok(tenant);
 }
 
 function toResponse(

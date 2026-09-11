@@ -5,18 +5,22 @@ import { join } from "node:path";
 import {
   AUTH_ORIGIN,
   SEED_USER_PASSWORD,
-  TENANT_A_ORIGIN,
-  TENANT_B_ORIGIN,
+  SUZUKI_CMS_ORIGIN,
+  SUZUKI_CRM_ORIGIN,
+  TANAKA_CMS_ORIGIN,
+  TANAKA_CRM_ORIGIN,
 } from "../apps/tenant-web/src/test-support.ts";
 
 /**
- * 実際の Chrome を headless で起動し、CDP 経由でログインから tenant-b の SSO までを操作する。
+ * 実際の Chrome を headless で起動し、CDP 経由でログインから別テナント・別サービスへの SSO までを操作する。
  * fetch ベースの smoke では検出できない CSP 等のブラウザ側の挙動を確認するために使う。
  */
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 9223;
-const TENANT_A = `${TENANT_A_ORIGIN}/projects`;
-const TENANT_B = `${TENANT_B_ORIGIN}/projects`;
+const TANAKA_CRM = `${TANAKA_CRM_ORIGIN}/projects`;
+const SUZUKI_CRM = `${SUZUKI_CRM_ORIGIN}/projects`;
+const TANAKA_CMS = `${TANAKA_CMS_ORIGIN}/projects`;
+const SUZUKI_CMS = `${SUZUKI_CMS_ORIGIN}/projects`;
 const LOGIN_URL_PREFIX = `${AUTH_ORIGIN}/login`;
 
 type CdpMessage = {
@@ -139,7 +143,7 @@ try {
     }
   });
 
-  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TENANT_A }));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TANAKA_CRM }));
   const loginUrl = String(await cdp.evaluate("location.href"));
   check(
     "anonymous access reaches the auth login page",
@@ -155,21 +159,38 @@ try {
   const afterLogin = String(await cdp.evaluate("location.href"));
   const afterLoginBody = String(await cdp.evaluate("document.body.innerText"));
   check(
-    "submitting the login form navigates to tenant-a projects",
-    afterLogin === TENANT_A && afterLoginBody.includes("role: owner"),
+    "submitting the login form navigates to tanaka.crm projects",
+    afterLogin === TANAKA_CRM && afterLoginBody.includes("role: owner"),
     `${afterLogin}; csp errors: ${consoleErrors.length}`,
   );
 
-  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TENANT_B }));
-  const tenantBUrl = String(await cdp.evaluate("location.href"));
-  const tenantBBody = String(await cdp.evaluate("document.body.innerText"));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CRM }));
+  const suzukiUrl = String(await cdp.evaluate("location.href"));
+  const suzukiBody = String(await cdp.evaluate("document.body.innerText"));
   check(
-    "tenant-b is entered via SSO without a login page",
-    tenantBUrl === TENANT_B && tenantBBody.includes("role: viewer"),
-    tenantBUrl,
+    "suzuki.crm is entered via SSO without a login page",
+    suzukiUrl === SUZUKI_CRM && suzukiBody.includes("role: viewer"),
+    suzukiUrl,
   );
 
-  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TENANT_A }));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TANAKA_CMS }));
+  const cmsUrl = String(await cdp.evaluate("location.href"));
+  const cmsBody = String(await cdp.evaluate("document.body.innerText"));
+  check(
+    "tanaka.cms (another service) is entered via SSO",
+    cmsUrl === TANAKA_CMS && cmsBody.includes("role: owner") && cmsBody.includes("CMS"),
+    cmsUrl,
+  );
+
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CMS }));
+  const suzukiCmsBody = String(await cdp.evaluate("document.body.innerText"));
+  check(
+    "suzuki.cms is refused because suzuki has no cms contract",
+    suzukiCmsBody.includes("契約していません"),
+    String(await cdp.evaluate("location.href")),
+  );
+
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TANAKA_CRM }));
   await cdp.navigateWith(() =>
     cdp.evaluate("document.querySelector('form[action=\"/auth/logout\"]').submit()"),
   );
@@ -185,29 +206,29 @@ try {
   check(
     "portal lists the tenants the user belongs to",
     portalBody.includes("Sandbox ポータル") &&
-      portalBody.includes("tenant-a / owner") &&
-      portalBody.includes("tenant-b / viewer"),
+      portalBody.includes("tanaka / owner") &&
+      portalBody.includes("suzuki / viewer"),
     String(await cdp.evaluate("location.href")),
   );
   await cdp.navigateWith(() =>
-    cdp.evaluate(`document.querySelector('a[href="${TENANT_B_ORIGIN}/auth/login"]').click()`),
+    cdp.evaluate(`document.querySelector('a[href="${SUZUKI_CRM_ORIGIN}/auth/login"]').click()`),
   );
   const viaPortal = String(await cdp.evaluate("location.href"));
   check(
-    "portal link enters tenant-b via SSO",
-    viaPortal.startsWith(`${TENANT_B_ORIGIN}/`),
+    "portal link enters suzuki.crm via SSO",
+    viaPortal.startsWith(`${SUZUKI_CRM_ORIGIN}/`),
     viaPortal,
   );
 
   await cdp.navigateWith(() =>
-    cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/logout?client_id=tenant-b` }),
+    cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/logout?client_id=crm&tenant=suzuki` }),
   );
   await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
   const afterGlobal = String(await cdp.evaluate("document.body.innerText"));
-  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TENANT_B }));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CRM }));
   const tenantBAfterGlobal = String(await cdp.evaluate("location.href"));
   check(
-    "global logout ends the SSO session and tenant-b asks for a password again",
+    "global logout ends the SSO session and suzuki.crm asks for a password again",
     afterGlobal.includes("Sandbox からログアウトしました") &&
       tenantBAfterGlobal.startsWith(LOGIN_URL_PREFIX),
     tenantBAfterGlobal,

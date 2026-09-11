@@ -1,6 +1,6 @@
 import { computeCodeChallenge, generateCodeVerifier } from "@sandbox/shared";
 import { beforeEach, describe, expect, test } from "vitest";
-import { createHarness, TENANT_A_REDIRECT, type TestHarness } from "../test-support.ts";
+import { createHarness, TANAKA_CRM_REDIRECT, type TestHarness } from "../test-support.ts";
 import { validateAuthorizationRequest } from "./authorization-request.ts";
 
 function baseParams(
@@ -8,8 +8,8 @@ function baseParams(
 ): Record<string, string | undefined> {
   return {
     response_type: "code",
-    client_id: "tenant-a",
-    redirect_uri: TENANT_A_REDIRECT,
+    client_id: "crm",
+    redirect_uri: TANAKA_CRM_REDIRECT,
     scope: "openid profile email",
     state: "s",
     nonce: "n",
@@ -37,7 +37,7 @@ describe("validateAuthorizationRequest", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.scope).toBe("openid email");
-    expect(result.value.client.clientId).toBe("tenant-a");
+    expect(result.value.client.clientId).toBe("crm");
   });
 
   test("rejects unknown client without redirect", async () => {
@@ -50,9 +50,9 @@ describe("validateAuthorizationRequest", () => {
 
   test.each([
     ["different host", "http://evil.example/auth/callback"],
-    ["trailing slash", `${TENANT_A_REDIRECT}/`],
-    ["extra query", `${TENANT_A_REDIRECT}?x=1`],
-    ["upper case", TENANT_A_REDIRECT.toUpperCase()],
+    ["trailing slash", `${TANAKA_CRM_REDIRECT}/`],
+    ["extra query", `${TANAKA_CRM_REDIRECT}?x=1`],
+    ["upper case", TANAKA_CRM_REDIRECT.toUpperCase()],
   ])(
     "rejects redirect_uri that is not an exact match (%s) without redirect",
     async (_label, redirectUri) => {

@@ -2,8 +2,8 @@
 
 ## 結論
 
-Cookieは3種類のみ。SSO Cookie、各テナントのセッションCookie、認可フロー中の一時Cookie。
-すべて HttpOnly / Secure / SameSite=Lax とし、Domain属性は指定しない。ホスト単位に閉じ、サブドメイン間でも共有しない。
+Cookieは3種類のみ。SSO Cookie、テナント × サービスごとのセッションCookie、認可フロー中の一時Cookie。
+すべて HttpOnly / Secure / SameSite=Lax とし、Domain属性は指定しない。ホスト単位に閉じ、サブドメイン間でも共有しない。tanaka.crm と tanaka.cms は同じテナントでもホストが異なるため Cookie を共有しない。
 Cookie値はサーバー側ストアを指すランダムIDのみで、Tokenやユーザー情報を入れない。
 
 ## Cookie一覧
@@ -12,16 +12,16 @@ Cookie値はサーバー側ストアを指すランダムIDのみで、Tokenや�
 | --- | --- | --- | --- | --- |
 | `__Host-sso_session` | auth.sandbox.com | HttpOnly; Secure; SameSite=Lax; Path=/ | Session Cookie。サーバー側TTLで管理 | SSO Session ID |
 | `__Host-auth_csrf` | auth.sandbox.com | HttpOnly; Secure; SameSite=Lax; Path=/ | 30分 | ログインフォーム用CSRFトークンのID |
-| `__Host-tenant_session` | tenant-a.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/ | Session Cookie。サーバー側TTLで管理 | Tenant Session ID |
-| `__Secure-tenant_pre_auth` | tenant-a.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/auth | 30分 | pre-auth state参照ID |
+| `__Host-tenant_session` | tanaka.crm.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/ | Session Cookie。サーバー側TTLで管理 | Tenant Session ID |
+| `__Secure-tenant_pre_auth` | tanaka.crm.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/auth | 30分 | pre-auth state参照ID |
 
-Tenant側のCookie名はホストが異なるため同名でよい。仕様書10章の `tenant_a_session` 表記はホスト単位に分かれていることを示す概念名として扱い、実装上は共通名にする。
+Tenant側のCookie名はホストが異なるため同名でよい。仕様書10章の `tanaka_crm_session` 表記はホスト単位に分かれていることを示す概念名として扱い、実装上は共通名にする。サーバー側ストアのキーは `<clientId>:<tenantSlug>:<sessionId>` で、Cookie値だけでは別ホストのセッションを引けない。
 
 ## 設計原則
 
 ### Domain属性を指定しない
 
-Domain属性を省略した Cookie は発行ホストにのみ送信される。`tenant-a.sandbox.com` の Cookie は `tenant-b.sandbox.com` にも `auth.sandbox.com` にも届かない。仕様書2.2の禁止事項に対応する。
+Domain属性を省略した Cookie は発行ホストにのみ送信される。`tanaka.crm.sandbox.com` の Cookie は `suzuki.crm.sandbox.com` にも `tanaka.cms.sandbox.com` にも `auth.sandbox.com` にも届かない。仕様書2.2の禁止事項に対応する。
 
 `__Host-` プレフィックスは Domain 属性の付与自体をブラウザが拒否するため、誤設定を構造的に防げる。
 
@@ -42,7 +42,7 @@ Domain属性を省略した Cookie は発行ホストにのみ送信される。
 - `/authorize` 到達時に `sso_session` が必要
 - `/auth/callback` 到達時に `tenant_pre_auth` が必要
 
-Strict はこれらのクロスサイトナビゲーションで Cookie を送らないため採用しない。別ドメインのサービスを追加した場合も Lax なら動作する。POSTエンドポイントはCSRFトークンで別途防御する。
+Strict はこれらのクロスサイトナビゲーションで Cookie を送らないため採用しない。サービスを tanaka.crm.com のような別ドメインに置いた場合も Lax なら動作する。POSTエンドポイントはCSRFトークンで別途防御する。
 
 ### ローカル開発時の扱い
 

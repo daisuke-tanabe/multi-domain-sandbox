@@ -6,6 +6,7 @@ import {
   oidcRoutes,
   requireSession,
   tenantContext,
+  type OidcClientConfig,
   type OidcClientDeps,
   type OidcEnv,
   type OidcProvider,
@@ -16,8 +17,6 @@ import { errorPage, homePage, projectsPage, type Viewer } from "./views/pages.ts
 export interface TenantAppOptions {
   readonly deps: OidcClientDeps;
   readonly provider: OidcProvider;
-  /** サーバー間通信用の API ベース URL */
-  readonly apiBaseUrl: string;
 }
 
 const meSchema = z.object({
@@ -40,7 +39,7 @@ function toViewer(session: TenantSession): Viewer {
  * Tenant Web Application。BFF として API をサーバー間で呼び、ブラウザには HTML と Cookie だけを返す。
  */
 export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
-  const { deps, provider, apiBaseUrl } = options;
+  const { deps, provider } = options;
   const app = new Hono<OidcEnv>();
 
   const renderError = (
@@ -48,7 +47,7 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
     title: string,
     message: string,
     status: ErrorStatus,
-  ): Response | Promise<Response> => c.html(errorPage(hostSlug(c), title, message), status);
+  ): Response | Promise<Response> => c.html(errorPage(...hostLabels(c), title, message), status);
 
   app.use(
     secureHeaders({
@@ -76,8 +75,10 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
     const client = c.get("tenantClient");
     const globalLogoutUrl = new URL("/logout", provider.issuer);
     globalLogoutUrl.searchParams.set("client_id", client.clientId);
+    globalLogoutUrl.searchParams.set("tenant", client.tenantSlug);
     return c.html(
       homePage({
+        serviceName: client.name,
         tenantSlug: client.tenantSlug,
         viewer: session === undefined ? undefined : toViewer(session),
         justLoggedOut: c.req.query("logged_out") === "1",
@@ -107,12 +108,13 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
     const name = typeof form.name === "string" ? form.name.trim() : "";
     if (name === "") return c.redirect("/projects?notice=name+is+required");
 
+    const client = c.get("tenantClient");
     const result = await apiFetch(
       deps,
       provider,
-      c.get("tenantClient"),
+      client,
       session,
-      `${apiBaseUrl}/v1/projects`,
+      `${client.apiBaseUrl}/v1/projects`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -136,7 +138,7 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
     notice: string | undefined,
   ): Promise<Response> {
     const client = c.get("tenantClient");
-    const me = await apiFetch(deps, provider, client, session, `${apiBaseUrl}/v1/me`);
+    const me = await apiFetch(deps, provider, client, session, `${client.apiBaseUrl}/v1/me`);
     if (!me.ok) return handleApiAccessError(c, me.error.kind);
     if (me.value.response.status === 403) {
       return renderError(
@@ -155,7 +157,7 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
       provider,
       client,
       me.value.session,
-      `${apiBaseUrl}/v1/projects`,
+      `${client.apiBaseUrl}/v1/projects`,
     );
     if (!projects.ok) return handleApiAccessError(c, projects.error.kind);
     const projectsBody = projectsSchema.safeParse(await projects.value.response.json());
@@ -164,6 +166,7 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
 
     return c.html(
       projectsPage({
+        serviceName: client.name,
         tenantSlug: client.tenantSlug,
         viewer: toViewer(session),
         role: meBody.data.role,
@@ -186,14 +189,14 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
 
   app.notFound((c) =>
     c.html(
-      errorPage(hostSlug(c), "ページが見つかりません", "指定されたページは存在しません。"),
+      errorPage(...hostLabels(c), "ページが見つかりません", "指定されたページは存在しません。"),
       404,
     ),
   );
   app.onError((error, c) => {
     deps.logger.error("unhandled error", { path: c.req.path, message: error.message });
     return c.html(
-      errorPage(hostSlug(c), "一時的なエラーです", "しばらくしてから再試行してください。"),
+      errorPage(...hostLabels(c), "一時的なエラーです", "しばらくしてから再試行してください。"),
       500,
     );
   });
@@ -201,7 +204,10 @@ export function createTenantApp(options: TenantAppOptions): Hono<OidcEnv> {
   return app;
 }
 
-function hostSlug(c: Context): string {
+/** tenantContext を通っていないエラー画面向け。[serviceName, tenantSlug] を返す */
+function hostLabels(c: Context): [string, string] {
+  const client = c.get("tenantClient") as OidcClientConfig | undefined;
+  if (client !== undefined) return [client.name, client.tenantSlug];
   const host = c.req.header("host") ?? "";
-  return host.split(".")[0] ?? "unknown";
+  return ["Sandbox", host.split(".")[0] ?? "unknown"];
 }

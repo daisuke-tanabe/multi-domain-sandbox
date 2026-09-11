@@ -11,7 +11,6 @@ const mockUserSchema = z.object({
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   ISSUER: z.string().url(),
-  API_AUDIENCE: z.string().url(),
   COOKIE_SECURE: z
     .enum(["true", "false"])
     .default("false")

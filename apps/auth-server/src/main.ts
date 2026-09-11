@@ -59,7 +59,6 @@ if (config.REDIS_URL === undefined) {
 
 const deps: AuthDeps = {
   issuer: config.ISSUER,
-  apiAudience: config.API_AUDIENCE,
   clock: systemClock,
   stores:
     config.REDIS_URL === undefined

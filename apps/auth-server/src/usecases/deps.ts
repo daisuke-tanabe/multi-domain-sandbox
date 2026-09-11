@@ -8,7 +8,6 @@ import type { AuthStores } from "../ports/stores.ts";
  */
 export interface AuthDeps {
   readonly issuer: string;
-  readonly apiAudience: string;
   readonly clock: Clock;
   readonly stores: AuthStores;
   readonly identity: IdentityRepository;

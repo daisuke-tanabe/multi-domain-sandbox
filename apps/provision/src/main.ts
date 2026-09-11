@@ -6,7 +6,13 @@ import { Pool } from "pg";
 import { createLogger, hashSecret } from "@sandbox/shared";
 import { ensureCognitoUsers } from "./cognito-users.ts";
 import { loadConfig } from "./config.ts";
-import { SEED_MEMBERSHIPS, SEED_PROJECTS, SEED_TENANTS, SEED_USERS } from "./seed-data.ts";
+import {
+  SEED_CONTRACTS,
+  SEED_MEMBERSHIPS,
+  SEED_PROJECTS,
+  SEED_TENANTS,
+  SEED_USERS,
+} from "./seed-data.ts";
 
 /**
  * RDS 向けの初期化タスク。ローカルの docker-entrypoint-initdb.d の代わりに ECS の一回限りタスクとして実行する。
@@ -14,7 +20,7 @@ import { SEED_MEMBERSHIPS, SEED_PROJECTS, SEED_TENANTS, SEED_USERS } from "./see
  * 1. ロールとスキーマを作る。db/init の 001 から 003 を順に適用する。冪等になるよう存在確認を挟む
  * 2. ロールのパスワードを Secrets Manager 由来の値に合わせる
  * 3. Cognito にテストユーザーを作り、実際の sub で users を投入する
- * 4. tenants / tenant_members / oidc_clients / projects を投入する
+ * 4. tenants / tenant_members / oidc_clients / tenant_services / projects を投入する
  */
 const logger = createLogger("provision");
 const config = loadConfig();
@@ -134,29 +140,43 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
         [tenant.id, userId, membership.role],
       );
     }
-    for (const tenantClient of config.TENANT_CLIENTS) {
-      const tenant = SEED_TENANTS.find((t) => t.slug === tenantClient.slug);
-      if (tenant === undefined) throw new Error(`unknown tenant client ${tenantClient.slug}`);
-      const origin = `${config.PUBLIC_SCHEME}://${tenant.slug}.${config.PUBLIC_BASE_HOST}`;
+    for (const service of config.SERVICES) {
+      // Back-Channel Logout はテナントに依らずサービスのベースホストで受ける
+      const serviceOrigin = `${config.PUBLIC_SCHEME}://${service.baseHost}`;
       await client.query(
-        `INSERT INTO identity.oidc_clients (client_id, client_secret_hash, tenant_id, name, backchannel_logout_uri)
+        `INSERT INTO identity.oidc_clients (client_id, client_secret_hash, name, audience, backchannel_logout_uri)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (client_id) DO UPDATE
            SET client_secret_hash = EXCLUDED.client_secret_hash,
+               name = EXCLUDED.name,
+               audience = EXCLUDED.audience,
                backchannel_logout_uri = EXCLUDED.backchannel_logout_uri,
                status = 'active'`,
         [
-          tenant.slug,
-          hashSecret(tenantClient.clientSecret),
-          tenant.id,
-          `${tenant.name} Web`,
-          `${origin}/auth/backchannel-logout`,
+          service.clientId,
+          hashSecret(service.clientSecret),
+          service.name,
+          service.apiBaseUrl,
+          `${serviceOrigin}/auth/backchannel-logout`,
         ],
       );
+      for (const tenant of SEED_TENANTS) {
+        const origin = `${config.PUBLIC_SCHEME}://${tenant.slug}.${service.baseHost}`;
+        await client.query(
+          `INSERT INTO identity.oidc_client_redirect_uris (client_id, redirect_uri, tenant_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (client_id, redirect_uri) DO UPDATE SET tenant_id = EXCLUDED.tenant_id`,
+          [service.clientId, `${origin}/auth/callback`, tenant.id],
+        );
+      }
+    }
+    for (const contract of SEED_CONTRACTS) {
+      const tenant = SEED_TENANTS.find((t) => t.slug === contract.tenantSlug);
+      if (tenant === undefined) throw new Error(`unknown tenant ${contract.tenantSlug}`);
       await client.query(
-        `INSERT INTO identity.oidc_client_redirect_uris (client_id, redirect_uri) VALUES ($1, $2)
-         ON CONFLICT DO NOTHING`,
-        [tenant.slug, `${origin}/auth/callback`],
+        `INSERT INTO identity.tenant_services (tenant_id, client_id) VALUES ($1, $2)
+         ON CONFLICT (tenant_id, client_id) DO UPDATE SET status = 'active'`,
+        [tenant.id, contract.clientId],
       );
     }
     await client.query("COMMIT");

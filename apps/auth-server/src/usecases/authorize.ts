@@ -1,6 +1,6 @@
 import { err, ok, randomToken, type Result } from "@sandbox/shared";
 import { AUTHORIZATION_CODE_TTL_SECONDS } from "../policy.ts";
-import type { IdentityRepository, OidcClient } from "../ports/identity-repository.ts";
+import type { IdentityRepository, OidcClient, Tenant } from "../ports/identity-repository.ts";
 import type { AuthorizationCode, SsoSession } from "../ports/stores.ts";
 import type { ValidatedAuthorizationRequest } from "./authorization-request.ts";
 import type { AuthDeps } from "./deps.ts";
@@ -9,6 +9,7 @@ import { touchSsoSession } from "./sso-session.ts";
 export type AccessDeniedReason =
   | "user_disabled"
   | "tenant_suspended"
+  | "not_contracted"
   | "no_membership"
   | "membership_inactive";
 
@@ -18,26 +19,34 @@ export type AccessCheckError = {
 };
 
 /**
- * テナント用 Client に対して、ユーザーがそのテナントへアクセスできるか判定する。
- * tenant を持たない Client はテナント判定をスキップする。
+ * ユーザーがこのサービスのこのテナントへアクセスできるか判定する。
+ *   1. ユーザーが active
+ *   2. テナントに紐付かない戻り先ならここで許可
+ *   3. テナントが active
+ *   4. テナントがこのサービスを契約している (tenant_services)
+ *   5. ユーザーがテナントに active で所属している (tenant_members)
  */
 export async function checkTenantAccess(
   identity: IdentityRepository,
   client: OidcClient,
+  tenant: Tenant | null,
   userId: string,
-): Promise<Result<{ tenantId: string | null }, AccessCheckError>> {
+): Promise<Result<void, AccessCheckError>> {
   const user = await identity.findUserById(userId);
   if (user === undefined || user.status !== "active")
     return err({ kind: "access_denied", reason: "user_disabled" });
-  if (client.tenant === null) return ok({ tenantId: null });
-  if (client.tenant.status !== "active")
-    return err({ kind: "access_denied", reason: "tenant_suspended" });
+  if (tenant === null) return ok(undefined);
+  if (tenant.status !== "active") return err({ kind: "access_denied", reason: "tenant_suspended" });
 
-  const membership = await identity.findMembership(client.tenant.id, userId);
+  const contract = await identity.findContract(tenant.id, client.clientId);
+  if (contract === undefined || contract.status !== "active")
+    return err({ kind: "access_denied", reason: "not_contracted" });
+
+  const membership = await identity.findMembership(tenant.id, userId);
   if (membership === undefined) return err({ kind: "access_denied", reason: "no_membership" });
   if (membership.status !== "active")
     return err({ kind: "access_denied", reason: "membership_inactive" });
-  return ok({ tenantId: client.tenant.id });
+  return ok(undefined);
 }
 
 export interface IssuedCode {
@@ -48,17 +57,23 @@ export interface IssuedCode {
 
 /**
  * 有効な SSO Session に対して Authorization Code を発行する。
- * docs/design/02-auth-sequences.md の 3.1 の Membership 判定以降に対応する。
+ * docs/design/02-auth-sequences.md の 3.1 のアクセス判定以降に対応する。
  */
 export async function authorizeWithSession(
   deps: AuthDeps,
   request: ValidatedAuthorizationRequest,
   session: SsoSession,
 ): Promise<Result<IssuedCode, AccessCheckError>> {
-  const access = await checkTenantAccess(deps.identity, request.client, session.userId);
+  const access = await checkTenantAccess(
+    deps.identity,
+    request.client,
+    request.tenant,
+    session.userId,
+  );
   if (!access.ok) {
     deps.logger.info("authorize denied", {
       clientId: request.client.clientId,
+      tenant: request.tenant?.slug ?? null,
       userId: session.userId,
       reason: access.error.reason,
     });
@@ -75,7 +90,7 @@ export async function authorizeWithSession(
     nonce: request.nonce,
     codeChallenge: request.codeChallenge,
     userId: session.userId,
-    tenantId: access.value.tenantId,
+    tenantId: request.tenant?.id ?? null,
     sid: session.sid,
     ssoSessionId: session.id,
     authTime: session.authTime,
@@ -85,6 +100,7 @@ export async function authorizeWithSession(
   await touchSsoSession(deps, session, request.client.clientId);
   deps.logger.info("authorization code issued", {
     clientId: request.client.clientId,
+    tenant: request.tenant?.slug ?? null,
     userId: session.userId,
   });
   return ok({ code: code.code, redirectUri: request.redirectUri, state: request.state });

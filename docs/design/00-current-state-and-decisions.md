@@ -5,6 +5,7 @@
 本リポジトリは新規サンドボックスであり、既存の認証実装・DB・インフラは存在しない。
 したがって仕様書22章の調査対象はなく、24章の「現状分析 / 現在の認証フロー / 現在の問題点 / 移行計画」はグリーンフィールド前提で記述する。
 推奨アーキテクチャは OIDC Authorization Code Flow + PKCE を用いた独立OpenID Provider方式とし、Tenant Web ApplicationはBFF構成とする。
+OIDC Client はサービス単位で登録し、テナントは顧客としてサービス横断で共有する。テナントがサービスを使えるかは契約で判定する。判断事項D13。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -22,7 +23,7 @@
 | API Server構成 | 存在しない |
 | Auth Server配置方法 | 未定 |
 | DB構成 | 未定。PostgreSQLを想定して設計する |
-| CORS / CSRF | 存在しない。BFF構成ならブラウザからapi.sandbox.comへの直接呼び出しがなくCORSは不要 |
+| CORS / CSRF | 存在しない。BFF構成ならブラウザから API ホストへの直接呼び出しがなくCORSは不要 |
 | 現在の認可処理 | 存在しない |
 
 他プロジェクトへ本設計を適用する場合は、上記の表を適用先の調査結果で埋め直し、差分から移行計画を作る。
@@ -48,9 +49,9 @@
 | プロトコル | OpenID Connect Authorization Code Flow + PKCE。auth.sandbox.comを独立したOpenID Providerとする |
 | Cognitoの位置 | Auth Serverの内部認証バックエンド。Cognito Tokenはauth.sandbox.comの外に出さない |
 | Tenant Web Application | BFF構成。サーバー側セッション + Cookie。ブラウザはTokenを持たない |
-| Client登録 | テナントごとに1 Client。テナント作成時に自動登録 |
-| テナントアクセス可否 | `/authorize` 時にAuth ServerがTenant Membershipを検証 |
-| API認証 | Auth Server発行のAccess Token。JWT RS256。aud=api.sandbox.com。BFFがサーバー間で送信 |
+| Client登録 | サービスごとに1 Client。テナントは契約 tenant_services でサービスに紐付ける。テナント追加に Client 登録は不要 |
+| テナントアクセス可否 | `/authorize` 時にAuth Serverが user → tenant → 契約 → Membership の順に検証 |
+| API認証 | Auth Server発行のAccess Token。JWT RS256。aud=サービスごとのAPI origin。BFFがサーバー間で送信 |
 | API認可 | Token検証 → sub / tenant_id取得 → DBでMembership再検証 → Role → データアクセス。Tokenのroleは信用しない |
 | Tenant Isolation | Token内tenant_idとリソースのtenant_idの一致をアプリ層で強制。可能ならDB RLSで二重化 |
 | Identity DB | users / tenants / tenant_members はAuth Serverが所有。API Serverは読み取り参照 |
@@ -65,7 +66,7 @@
 | 項目 | 決定 |
 | --- | --- |
 | D1 | BFF構成 |
-| D2 | テナントごとに1 Client |
+| D2 | テナントごとに1 Client。2026-09-11 に D13 で見直し、サービスごとに1 Client へ変更 |
 | D3 | Auth Server が Identity DB を所有 |
 | D4 | Auth Server 発行の Refresh Token をローテーション |
 | D5-D12 | 推奨値どおり |
@@ -73,16 +74,17 @@
 | 追加 | 検証実装の Cognito はモックアダプタのみ。本番アダプタは雛形のみ |
 | 追加 | 検証実装の DB は PostgreSQL on Docker。RLS を検証する |
 | 追加 | MFA はフェーズ2。Global Logout は当初フェーズ2としたが、Tenant Logout 後に再ログインされる挙動が分かりにくいため 2026-09-09 に前倒しで実装 |
+| D13 | OIDC Client はサービス単位。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定。2026-09-11 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
-問題点。Tenant Web ApplicationがサーバーサイドセッションをもつBFFか、ブラウザ完結のSPAかで、API認証とCookie設計が根本的に変わる。仕様書4.3は「自サービスセッションの管理」と「api.sandbox.comへのAPIアクセス」をTenant Web Applicationの責務としているが、実行形態は明記していない。
+問題点。Tenant Web ApplicationがサーバーサイドセッションをもつBFFか、ブラウザ完結のSPAかで、API認証とCookie設計が根本的に変わる。仕様書4.3は「自サービスセッションの管理」と「自サービスのAPIへのAPIアクセス」をTenant Web Applicationの責務としているが、実行形態は明記していない。
 
 | 選択肢 | メリット | デメリット |
 | --- | --- | --- |
 | A. BFF構成。Next.js等のサーバーがセッションを持ち、APIをサーバー間で呼ぶ | ブラウザにTokenを置かない。Cookieだけで完結。CORS不要。仕様書の責務分離にそのまま合致 | Tenant Web Applicationにサーバーが必要 |
-| B. SPA + ブラウザ保持Token | サーバーレスで配信できる | Tokenがブラウザに露出しXSSで漏洩。Refresh Tokenの扱いが難しい。api.sandbox.comへCORSが必要 |
-| C. SPA + api.sandbox.com独自Cookie | ブラウザにTokenを置かない | api.sandbox.comが独自にセッションを持つことになり、もう1つのOIDC Clientとして扱う必要がある。責務境界が曖昧になる |
+| B. SPA + ブラウザ保持Token | サーバーレスで配信できる | Tokenがブラウザに露出しXSSで漏洩。Refresh Tokenの扱いが難しい。API ホストへCORSが必要 |
+| C. SPA + API Server独自Cookie | ブラウザにTokenを置かない | API Serverが独自にセッションを持つことになり、もう1つのOIDC Clientとして扱う必要がある。責務境界が曖昧になる |
 
 推奨はA。理由は、仕様書2.3と18章のToken非露出要件と、20章のCookie要件を最も自然に満たすため。本設計書はAを前提に記述している。
 
@@ -95,7 +97,7 @@
 | A. テナントごとに1 Client。テナント作成時に自動登録 | aud=テナントとなりTokenのテナント境界が明確。別ドメインサービス追加と同じ仕組みで扱える。仕様書11章の記述と一致 | Tenant Web Applicationがテナント数分のclient_secretを扱う。Secret Store等での管理が必要 |
 | B. Tenant Web Application全体で1 Client。redirect_uriをテナント作成時に列挙追加 | Secretが1つ | 1 Clientが全テナントを代表するためaudでテナントを区別できない。redirect_uriのホストからテナントを推定する独自ロジックが必要 |
 
-推奨はA。理由は、標準仕様の範囲でテナントコンテキストをTokenに載せられ、独立ドメインへの拡張と同じ運用で済むため。client_secretは共通のSecret Storeにslugをキーとして保存し、Tenant Web Applicationがリクエストのホストから引く。
+当初はAを採用した。その後、複数サービスを1つのAuth Serverで扱う構成に変更した際に、テナントとサービスが直交する軸であることが明確になり、D13でサービス単位のClientへ見直した。Bで懸念した「redirect_uriのホストからテナントを推定する独自ロジック」は、redirect_uriをテナント×サービスごとに登録しtenant_idを持たせることで、登録済みredirect_uriの完全一致検証と同じ処理に吸収できる。
 
 ### D3. Identity DBの所有者
 
@@ -142,7 +144,7 @@
 
 ### D10. アクセス権のないテナントへのアクセス時の挙動
 
-推奨。`/authorize` でMembershipがない場合、redirect_uriは正当なので `error=access_denied` を付けてTenant Web Applicationへ戻し、Tenant側で「このテナントへのアクセス権がありません」を表示する。所属テナント一覧は auth.sandbox.com の `/` ポータルとして実装した。auth を直接開いた場合と Global Logout 後の入口を兼ねる。
+推奨。`/authorize` でアクセス判定に失敗した場合、redirect_uriは正当なので `error=access_denied&error_description=<理由>` を付けてTenant Web Applicationへ戻し、Tenant側で理由に応じた403画面を表示する。理由は `user_disabled` `tenant_suspended` `not_contracted` `no_membership` `membership_inactive` の5種。契約がないサービスは「テナント suzuki は CMS を契約していません」のように表示する。認証自体は成功しているためSSO Sessionは維持する。所属テナントと契約サービスの一覧は auth.sandbox.com の `/` ポータルとして実装した。auth を直接開いた場合と Global Logout 後の入口を兼ねる。
 
 ### D11. Tenant Isolationの実装レベル
 
@@ -152,6 +154,26 @@
 
 推奨は初期実装で `sid` の発行と保存までとしていたが、Tenant Logout 後にリロードで再ログインされる挙動の分かりにくさから、Back-Channel Logout を含む Global Logout を前倒しで実装した。
 
+### D13. OIDC Clientの登録単位の見直し。サービス単位とテナント契約
+
+問題点。1つのAuth Serverで CRM と CMS のように複数のサービスを扱うと、同じ顧客企業が複数のサービスを契約する。D2のテナントごとに1 Clientでは、テナント×サービスの組ごとにClientが増え、テナント追加のたびに全サービス分のClient登録とSecret配布が必要になる。テナントとサービスは直交する軸であり、同じ単位で扱えない。
+
+| 選択肢 | メリット | デメリット |
+| --- | --- | --- |
+| A. サービスごとに1 Client。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定 | Auth Serverは複数サービスを同じ仕組みで扱える。テナント追加にClient登録が不要で、契約とredirect_uriの登録だけで済む。audがサービスごとに分かれるためTokenがサービスを越えない。Secretはサービス数分のみ | redirect_uriからテナントを解決する必要がある。契約テーブルが増える |
+| B. テナントごとに1 Client。従来のD2 | audがテナントと一致しTokenのテナント境界が明確 | テナント×サービス分のClientが必要。テナント追加のたびにサービス数分のClient登録とSecret配布が発生する。契約という概念を表す場所がない |
+
+決定はA。理由は、1つのAuth Serverで複数サービスを扱う前提では、テナント追加時にClient登録を不要にできること、サービスごとのaudでTokenのサービス越境を拒否できることが運用と安全性の両面で優るため。Bは以前の採用案であり、本決定で置き換える。
+
+具体化。
+
+- `oidc_clients.client_id` はサービスID。サンドボックスでは `crm` と `cms`。client_secretはサービスごとに1つ
+- `oidc_clients.audience` にそのサービスのAPI originを持ち、Access Tokenのaudにする
+- `oidc_client_redirect_uris` はテナント×サービスごとに登録し `tenant_id` を持つ。認可リクエストのテナントは client_id と redirect_uri の組から解決する
+- `identity.tenant_services(tenant_id, client_id, status)` が契約。`/authorize` と refresh_token grant で user → tenant → 契約 → Membership の順に検証する
+- ホストは `<tenant>.<service>.<domain>`。Tenant Web Applicationは Host からサービスとテナントを解決する
+- Back-Channel Logout URIはサービス単位。logout_tokenのsidでそのサービスの全テナントのセッションを削除する
+
 ## 5. 移行計画
 
 グリーンフィールドのため、構築順序として記述する。
@@ -159,9 +181,9 @@
 | フェーズ | 内容 | 完了条件 |
 | --- | --- | --- |
 | 0 | 判断事項D1からD4の決定 | 本ドキュメントの承認 |
-| 1 | Identity DBとClient Registryの構築。Cognito User Pool作成 | seedデータでusers / tenants / tenant_membersが投入できる |
+| 1 | Identity DBとClient Registryの構築。Cognito User Pool作成 | seedデータでusers / tenants / tenant_members / oidc_clients / tenant_servicesが投入できる |
 | 2 | Auth Server。`/authorize` `/login` `/token` `/jwks` `/userinfo` | 初回ログインシーケンスが通る |
-| 3 | Tenant Web Application。OIDC Client共通モジュール | 別テナントSSOシーケンスが通る |
+| 3 | Tenant Web Application。OIDC Client共通モジュール | 別テナントSSOと別サービスSSOのシーケンスが通る |
 | 4 | API Server。Token検証とMembership認可、Tenant Isolation | 他テナントデータへのアクセスが拒否される |
 | 5 | Tenant Logout。エラーケース対応 | エラーケース一覧のテストが通る |
 | 6 | MFA、Global Logout、Refresh Tokenローテーション | 拡張シーケンスが通る |

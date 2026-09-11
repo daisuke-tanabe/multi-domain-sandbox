@@ -43,11 +43,11 @@ const deps: OidcClientDeps = {
 };
 
 const provider = new OidcProvider(deps.provider, deps.fetch, systemClock);
-const app = createTenantApp({ deps, provider, apiBaseUrl: config.API_BACKCHANNEL_URL });
+const app = createTenantApp({ deps, provider });
 
 serve({ fetch: app.fetch, port: config.PORT }, (info) => {
   logger.info("tenant-web listening", {
     port: info.port,
-    hosts: config.TENANT_CLIENTS.map((tenant) => `${tenant.slug}.${config.PUBLIC_BASE_HOST}`),
+    services: config.SERVICES.map((service) => `<tenant>.${service.baseHost}`),
   });
 });

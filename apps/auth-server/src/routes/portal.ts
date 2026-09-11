@@ -21,18 +21,19 @@ export function portalRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
     const user = await deps.identity.findUserById(session.userId);
     if (user === undefined || user.status !== "active") return c.redirect("/login");
 
-    const memberships = await deps.identity.listTenantsForUser(session.userId);
+    const entries = await deps.identity.listPortalEntries(session.userId);
     return c.html(
       portalPage({
         email: user.email,
-        tenants: memberships.map((membership) => ({
-          slug: membership.tenant.slug,
-          name: membership.tenantName,
-          role: membership.role,
-          loginUrl:
-            membership.redirectUri === null
-              ? undefined
-              : `${new URL(membership.redirectUri).origin}/auth/login`,
+        tenants: entries.map((entry) => ({
+          slug: entry.tenant.slug,
+          name: entry.tenant.name,
+          role: entry.role,
+          services: entry.services.map((service) => ({
+            name: service.name,
+            clientId: service.clientId,
+            loginUrl: `${service.origin}/auth/login`,
+          })),
         })),
       }),
     );

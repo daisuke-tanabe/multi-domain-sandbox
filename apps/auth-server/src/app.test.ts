@@ -2,7 +2,11 @@ import { toJwks, verifyJwt } from "@sandbox/shared";
 import { beforeEach, describe, expect, test } from "vitest";
 import {
   ALICE_ID,
-  API_AUDIENCE,
+  CRM_AUDIENCE,
+  CMS_AUDIENCE,
+  SUZUKI_ID,
+  TANAKA_CMS_REDIRECT,
+  TANAKA_ID,
   authorizeUrl,
   basicAuth,
   cookieHeaderFrom,
@@ -13,8 +17,9 @@ import {
   readTokenBody,
   refresh,
   runLoginFlow,
-  TENANT_A_REDIRECT,
-  TENANT_B_REDIRECT,
+  TANAKA_CRM_REDIRECT,
+  SUZUKI_CRM_REDIRECT,
+  SUZUKI_CMS_REDIRECT,
   type TestHarness,
 } from "./test-support.ts";
 
@@ -45,7 +50,7 @@ describe("first login via tenant-a", () => {
     const flow = await runLoginFlow(harness, ALICE);
 
     // Assert: authorization response
-    expect(flow.redirect.origin + flow.redirect.pathname).toBe(TENANT_A_REDIRECT);
+    expect(flow.redirect.origin + flow.redirect.pathname).toBe(TANAKA_CRM_REDIRECT);
     expect(flow.redirect.searchParams.get("state")).toBe("state-1");
     expect(flow.redirect.searchParams.get("iss")).toBe(ISSUER);
     const code = flow.redirect.searchParams.get("code");
@@ -69,25 +74,26 @@ describe("first login via tenant-a", () => {
     const now = new Date(harness.clock.nowSeconds() * 1000);
     const idToken = await verifyJwt(body.id_token, jwks, {
       issuer: ISSUER,
-      audience: "tenant-a",
+      audience: "crm",
       currentDate: now,
     });
     expect(idToken.ok).toBe(true);
     if (!idToken.ok) return;
     expect(idToken.value.sub).toBe(ALICE_ID);
     expect(idToken.value.nonce).toBe("nonce-1");
-    expect(idToken.value.tenant_id).toBe("tenant-a-id");
+    expect(idToken.value.tenant_id).toBe(TANAKA_ID);
+    expect(idToken.value.tenant_slug).toBe("tanaka");
     expect(idToken.value.email).toBe("alice@example.com");
     expect(typeof idToken.value.sid).toBe("string");
 
     const accessToken = await verifyJwt(body.access_token, jwks, {
       issuer: ISSUER,
-      audience: API_AUDIENCE,
+      audience: CRM_AUDIENCE,
       currentDate: now,
     });
     expect(accessToken.ok).toBe(true);
     if (!accessToken.ok) return;
-    expect(accessToken.value.tenant_id).toBe("tenant-a-id");
+    expect(accessToken.value.tenant_id).toBe(TANAKA_ID);
     expect(accessToken.value.role).toBeUndefined();
   });
 
@@ -167,7 +173,7 @@ describe("first login via tenant-a", () => {
     // carol は Cognito に存在するがどのテナントにも所属しない
     const flow = await runLoginFlow(harness, { username: "carol", password: "carol-password" });
 
-    expect(flow.redirect.origin + flow.redirect.pathname).toBe(TENANT_A_REDIRECT);
+    expect(flow.redirect.origin + flow.redirect.pathname).toBe(TANAKA_CRM_REDIRECT);
     expect(flow.redirect.searchParams.get("error")).toBe("access_denied");
     expect(flow.redirect.searchParams.get("state")).toBe("state-1");
     expect(flow.redirect.searchParams.get("code")).toBeNull();
@@ -191,31 +197,31 @@ describe("SSO to tenant-b with an existing SSO session", () => {
     const second = await runLoginFlow(
       harness,
       ALICE,
-      { clientId: "tenant-b", redirectUri: TENANT_B_REDIRECT, state: "state-2", nonce: "nonce-2" },
+      { clientId: "crm", redirectUri: SUZUKI_CRM_REDIRECT, state: "state-2", nonce: "nonce-2" },
       first.cookie,
     );
 
     // Assert
-    expect(second.redirect.origin + second.redirect.pathname).toBe(TENANT_B_REDIRECT);
+    expect(second.redirect.origin + second.redirect.pathname).toBe(SUZUKI_CRM_REDIRECT);
     expect(second.redirect.searchParams.get("code")).not.toBeNull();
     expect(second.redirect.searchParams.get("state")).toBe("state-2");
 
     const tokenRes = await exchangeCode(harness, {
       code: second.redirect.searchParams.get("code") ?? "",
       codeVerifier: second.codeVerifier,
-      clientId: "tenant-b",
-      redirectUri: TENANT_B_REDIRECT,
+      clientId: "crm",
+      redirectUri: SUZUKI_CRM_REDIRECT,
     });
     expect(tokenRes.status).toBe(200);
     const body = await readTokenBody(tokenRes);
     const idToken = await verifyJwt(body.id_token, toJwks([harness.deps.signingKey]), {
       issuer: ISSUER,
-      audience: "tenant-b",
+      audience: "crm",
       currentDate: new Date(harness.clock.nowSeconds() * 1000),
     });
     expect(idToken.ok).toBe(true);
     if (!idToken.ok) return;
-    expect(idToken.value.tenant_id).toBe("tenant-b-id");
+    expect(idToken.value.tenant_id).toBe(SUZUKI_ID);
   });
 
   test("returns access_denied for tenant the user does not belong to, keeping SSO session", async () => {
@@ -224,8 +230,8 @@ describe("SSO to tenant-b with an existing SSO session", () => {
       harness,
       { username: "bob", password: "bob-password" },
       {
-        clientId: "tenant-b",
-        redirectUri: TENANT_B_REDIRECT,
+        clientId: "crm",
+        redirectUri: SUZUKI_CRM_REDIRECT,
       },
     );
     expect(first.redirect.searchParams.get("code")).not.toBeNull();
@@ -286,7 +292,7 @@ describe("token endpoint hardening", () => {
     const res = await exchangeCode(harness, {
       code,
       codeVerifier: flow.codeVerifier,
-      clientId: "tenant-b",
+      clientId: "cms",
     });
 
     expect(res.status).toBe(400);
@@ -308,7 +314,7 @@ describe("token endpoint hardening", () => {
     const res = await exchangeCode(harness, {
       code,
       codeVerifier: flow.codeVerifier,
-      redirectUri: TENANT_B_REDIRECT,
+      redirectUri: SUZUKI_CRM_REDIRECT,
     });
 
     expect(res.status).toBe(400);
@@ -383,7 +389,7 @@ describe("token endpoint hardening", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: basicAuth("tenant-a"),
+        Authorization: basicAuth("crm"),
       },
       body: new URLSearchParams({ token: initial.refresh_token }).toString(),
     });
@@ -391,7 +397,7 @@ describe("token endpoint hardening", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: basicAuth("tenant-a"),
+        Authorization: basicAuth("crm"),
       },
       body: new URLSearchParams({ token: initial.refresh_token }).toString(),
     });
@@ -407,7 +413,7 @@ describe("token endpoint hardening", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: basicAuth("tenant-a"),
+        Authorization: basicAuth("crm"),
       },
       body: new URLSearchParams({ grant_type: "password" }).toString(),
     });
@@ -436,7 +442,7 @@ describe("authorize error handling", () => {
     const res = await harness.app.request(modified);
     expect(res.status).toBe(302);
     const location = new URL(res.headers.get("Location") ?? "");
-    expect(location.origin + location.pathname).toBe(TENANT_A_REDIRECT);
+    expect(location.origin + location.pathname).toBe(TANAKA_CRM_REDIRECT);
     expect(location.searchParams.get("error")).toBe("unsupported_response_type");
     expect(location.searchParams.get("state")).toBe("state-1");
   });
@@ -480,7 +486,7 @@ describe("discovery and userinfo", () => {
       sub: ALICE_ID,
       email: "alice@example.com",
       name: "Alice",
-      tenant_id: "tenant-a-id",
+      tenant_id: TANAKA_ID,
     });
     expect(withIdToken.status).toBe(401);
   });
@@ -490,12 +496,12 @@ describe("global logout", () => {
   test("shows the completion page when no SSO session exists", async () => {
     const harness = await createHarness();
 
-    const res = await harness.app.request(`${ISSUER}/logout?client_id=tenant-a`);
+    const res = await harness.app.request(`${ISSUER}/logout?client_id=crm&tenant=tanaka`);
     const body = await res.text();
 
     expect(res.status).toBe(200);
     expect(body).toContain("Sandbox からログアウトしました");
-    expect(body).toContain("http://tenant-a.localhost:3001/");
+    expect(body).toContain("http://tanaka.crm.localhost:3001/");
   });
 
   test("destroys the SSO session, revokes refresh tokens and notifies every authorized client", async () => {
@@ -518,11 +524,11 @@ describe("global logout", () => {
     await runLoginFlow(
       harness,
       ALICE,
-      { clientId: "tenant-b", redirectUri: TENANT_B_REDIRECT, state: "s2", nonce: "n2" },
+      { clientId: "cms", redirectUri: TANAKA_CMS_REDIRECT, state: "s2", nonce: "n2" },
       first.cookie,
     );
 
-    const confirm = await harness.app.request(`${ISSUER}/logout?client_id=tenant-a`, {
+    const confirm = await harness.app.request(`${ISSUER}/logout?client_id=crm&tenant=tanaka`, {
       headers: { Cookie: first.cookie },
     });
     const csrf = /name="csrf" value="([^"]+)"/.exec(await confirm.text())?.[1] ?? "";
@@ -532,7 +538,7 @@ describe("global logout", () => {
     const done = await harness.app.request(`${ISSUER}/logout`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
-      body: new URLSearchParams({ csrf, client_id: "tenant-a" }).toString(),
+      body: new URLSearchParams({ csrf, client_id: "crm", tenant: "tanaka" }).toString(),
     });
     const afterLogout = await harness.app.request(authorizeUrl({ state: "s3" }).url, {
       headers: { Cookie: cookie },
@@ -547,13 +553,13 @@ describe("global logout", () => {
     expect(refreshAfterLogout.status).toBe(400);
 
     expect(received.map((r) => r.url).toSorted()).toEqual([
-      "http://tenant-a.localhost:3001/auth/backchannel-logout",
-      "http://tenant-b.localhost:3001/auth/backchannel-logout",
+      "http://cms.localhost:3001/auth/backchannel-logout",
+      "http://crm.localhost:3001/auth/backchannel-logout",
     ]);
-    const logoutToken = received.find((r) => r.url.includes("tenant-a"))?.logoutToken ?? "";
+    const logoutToken = received.find((r) => r.url.includes("crm."))?.logoutToken ?? "";
     const claims = await verifyJwt(logoutToken, toJwks([harness.deps.signingKey]), {
       issuer: ISSUER,
-      audience: "tenant-a",
+      audience: "crm",
       currentDate: new Date(harness.clock.nowSeconds() * 1000),
     });
     expect(claims.ok).toBe(true);
@@ -640,10 +646,12 @@ describe("portal", () => {
     expect(login.headers.get("Location")).toBe("/");
     expect(portal.status).toBe(200);
     expect(body).toContain("alice@example.com");
-    expect(body).toContain("http://tenant-a.localhost:3001/auth/login");
-    expect(body).toContain("tenant-a / owner");
-    expect(body).toContain("http://tenant-b.localhost:3001/auth/login");
-    expect(body).toContain("tenant-b / viewer");
+    expect(body).toContain("http://tanaka.crm.localhost:3001/auth/login");
+    expect(body).toContain("http://tanaka.cms.localhost:3001/auth/login");
+    expect(body).toContain("tanaka / owner");
+    expect(body).toContain("http://suzuki.crm.localhost:3001/auth/login");
+    expect(body).not.toContain("http://suzuki.cms.localhost:3001/auth/login");
+    expect(body).toContain("suzuki / viewer");
   });
 
   test("tells a user without memberships that no tenant is available", async () => {
@@ -663,5 +671,75 @@ describe("portal", () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("/");
+  });
+});
+
+describe("service and tenant separation", () => {
+  test("denies a tenant that has not contracted the service with error_description", async () => {
+    const harness = await createHarness();
+    // suzuki は cms を契約していない。alice は suzuki の viewer
+    const flow = await runLoginFlow(harness, ALICE, {
+      clientId: "cms",
+      redirectUri: SUZUKI_CMS_REDIRECT,
+    });
+
+    expect(flow.redirect.origin + flow.redirect.pathname).toBe(SUZUKI_CMS_REDIRECT);
+    expect(flow.redirect.searchParams.get("error")).toBe("access_denied");
+    expect(flow.redirect.searchParams.get("error_description")).toBe("not_contracted");
+  });
+
+  test("issues access tokens whose audience is the service API, unusable at another service", async () => {
+    const harness = await createHarness();
+    const flow = await runLoginFlow(harness, ALICE);
+    const tokens = await readTokenBody(
+      await exchangeCode(harness, {
+        code: flow.redirect.searchParams.get("code") ?? "",
+        codeVerifier: flow.codeVerifier,
+      }),
+    );
+    const jwks = toJwks([harness.deps.signingKey]);
+    const now = new Date(harness.clock.nowSeconds() * 1000);
+
+    const forCrm = await verifyJwt(tokens.access_token, jwks, {
+      issuer: ISSUER,
+      audience: CRM_AUDIENCE,
+      currentDate: now,
+    });
+    const forCms = await verifyJwt(tokens.access_token, jwks, {
+      issuer: ISSUER,
+      audience: CMS_AUDIENCE,
+      currentDate: now,
+    });
+
+    expect(forCrm.ok).toBe(true);
+    expect(forCms.ok).toBe(false);
+  });
+
+  test("same user gets tenant-specific tokens for the same service", async () => {
+    const harness = await createHarness();
+    const tanaka = await runLoginFlow(harness, ALICE);
+    const suzuki = await runLoginFlow(
+      harness,
+      ALICE,
+      { redirectUri: SUZUKI_CRM_REDIRECT, state: "s2", nonce: "n2" },
+      tanaka.cookie,
+    );
+    const suzukiTokens = await readTokenBody(
+      await exchangeCode(harness, {
+        code: suzuki.redirect.searchParams.get("code") ?? "",
+        codeVerifier: suzuki.codeVerifier,
+        redirectUri: SUZUKI_CRM_REDIRECT,
+      }),
+    );
+    const claims = await verifyJwt(suzukiTokens.access_token, toJwks([harness.deps.signingKey]), {
+      issuer: ISSUER,
+      audience: CRM_AUDIENCE,
+      currentDate: new Date(harness.clock.nowSeconds() * 1000),
+    });
+
+    expect(claims.ok).toBe(true);
+    if (!claims.ok) return;
+    expect(claims.value.tenant_id).toBe(SUZUKI_ID);
+    expect(claims.value.tenant_slug).toBe("suzuki");
   });
 });

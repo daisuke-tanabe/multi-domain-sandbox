@@ -1,5 +1,11 @@
 # AWS へのデプロイ
 
+## 未移行の注意
+
+AWS / Terraform 側はまだ旧構成のままである。旧構成ではテナントごとに OIDC Client を持ち、ホストは `tenant-a.<domain>` / `tenant-b.<domain>`、環境変数は `TENANT_CLIENTS` と `API_AUDIENCE` だった。
+アプリと `db/init` はサービス × テナントのモデルに移行済みで、ホストは `<tenant>.crm.<domain>` / `<tenant>.cms.<domain>`、環境変数は tenant-web / provision の `SERVICES` と api-server の `API_HOSTS` / `PUBLIC_SCHEME` に変わっている。
+Terraform の ALB ルーティング、ACM 証明書、タスク定義の環境変数、Secrets Manager の client_secret を `*.crm.<domain>` / `*.cms.<domain>` のホストと `SERVICES` シークレットへ移行する作業は別途行う。それまでこの手順で apply しても現在のアプリは起動しない。以下の Terraform に関する記述は旧構成のものをそのまま残している。
+
 ## 結論
 
 専用アカウント `multi-domain-sandbox` に、ECS Fargate + ALB、RDS PostgreSQL、ElastiCache Redis、Cognito User Pool を Terraform で作る。
@@ -12,8 +18,8 @@
 | --- | --- |
 | ネットワーク | VPC 10.20.0.0/16。public subnet 2 つに ALB と Fargate タスク、private subnet 2 つに RDS と Redis。NAT なし |
 | 実行基盤 | ECS Fargate ARM64。auth-server / tenant-web / api-server を各 1 タスク。provision は一回限りのタスク |
-| ルーティング | ALB のホストベース。`auth.<domain>` → auth-server、`api.<domain>` → api-server、`*.<domain>` → tenant-web |
-| 証明書 | ACM。`*.<domain>` と `<domain>` を DNS 検証 |
+| ルーティング | ALB のホストベース。`auth.<domain>` → auth-server、`api.<domain>` → api-server、`*.<domain>` → tenant-web。移行後は `api.<service>.<domain>` → api-server、`*.<service>.<domain>` → tenant-web |
+| 証明書 | ACM。`*.<domain>` と `<domain>` を DNS 検証。移行後は `*.crm.<domain>` / `*.cms.<domain>` も必要 |
 | DB | RDS PostgreSQL 16、db.t4g.micro、単一 AZ。`rds.force_ssl=1` のため接続 URL に `sslmode=no-verify` を付ける。ロールは provision タスクが作る |
 | Session Store | ElastiCache Redis 7、cache.t4g.micro、単一ノード、VPC 内のみ |
 | 認証 | Cognito User Pool。Hosted UI なし。App Client は secret 付きで USER_SRP_AUTH のみ許可 |
@@ -21,6 +27,14 @@
 | ログ | CloudWatch Logs。`/ecs/multi-domain-sandbox/<app>` |
 
 ローカルとの差分は環境変数だけで吸収する。`COOKIE_SECURE=true` で `__Host-` プレフィックス、`COGNITO_ADAPTER=sdk` で実 Cognito、`REDIS_URL` で Redis を使う。
+アプリ側で必要な環境変数は次のとおり。Terraform のタスク定義はまだこれらを渡していない。
+
+| アプリ | 変数 | 本番の値の例 |
+| --- | --- | --- |
+| tenant-web | `SERVICES` | `[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]` |
+| tenant-web / api-server / provision | `PUBLIC_SCHEME` | `https` |
+| api-server | `API_HOSTS` | `api.crm.<domain>,api.cms.<domain>` |
+| provision | `SERVICES` | tenant-web と同じ JSON。oidc_clients、redirect_uri、backchannel_logout_uri の投入に使う |
 
 ## 事前準備
 
@@ -73,8 +87,8 @@ git の短縮 SHA をイメージタグにして push し、タスク定義を�
 cd terraform && terraform output urls
 ```
 
-ブラウザで `https://tenant-a.sandbox.daisuke-tanabe.dev/projects` を開き、alice でログインする。
-`SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。
+移行後はブラウザで `https://tanaka.crm.sandbox.daisuke-tanabe.dev/projects` を開き、alice でログインする。
+`SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。両スクリプトは `<tenant>.<service>.<SANDBOX_DOMAIN>` のホストを前提にするため、Terraform の移行が終わるまで AWS に対しては通らない。
 
 ```bash
 export SANDBOX_DOMAIN=sandbox.daisuke-tanabe.dev

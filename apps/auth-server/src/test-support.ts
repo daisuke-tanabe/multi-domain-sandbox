@@ -17,18 +17,26 @@ import type { AuthDeps } from "./usecases/deps.ts";
 
 /**
  * テスト用の固定データ。db/init/004_seed.sql と同じ関係にする。
- *   alice: tenant-a owner / tenant-b viewer
- *   bob  : tenant-b admin
- *   carol: Cognito には存在するがどのテナントにも所属しない
+ *   サービス : crm, cms
+ *   テナント : tanaka (crm と cms を契約), suzuki (crm のみ契約)
+ *   alice    : tanaka の owner、suzuki の viewer
+ *   bob      : suzuki の admin
+ *   carol    : Cognito には存在するがどのテナントにも所属しない
  */
 export const ISSUER = "http://auth.localhost:3000";
-export const API_AUDIENCE = "http://api.localhost:3002";
-export const TENANT_A_ID = "tenant-a-id";
-export const TENANT_B_ID = "tenant-b-id";
-export const TENANT_A_REDIRECT = "http://tenant-a.localhost:3001/auth/callback";
-export const TENANT_B_REDIRECT = "http://tenant-b.localhost:3001/auth/callback";
-export const CLIENT_SECRET = "tenant-secret";
+export const CRM_AUDIENCE = "http://api.crm.localhost:3002";
+export const CMS_AUDIENCE = "http://api.cms.localhost:3002";
+export const TANAKA_ID = "tenant-tanaka";
+export const SUZUKI_ID = "tenant-suzuki";
+export const TANAKA_CRM_REDIRECT = "http://tanaka.crm.localhost:3001/auth/callback";
+export const SUZUKI_CRM_REDIRECT = "http://suzuki.crm.localhost:3001/auth/callback";
+export const TANAKA_CMS_REDIRECT = "http://tanaka.cms.localhost:3001/auth/callback";
+export const SUZUKI_CMS_REDIRECT = "http://suzuki.cms.localhost:3001/auth/callback";
+export const CLIENT_SECRET = "service-secret";
 export const ALICE_ID = "user-alice";
+
+const TANAKA = { id: TANAKA_ID, slug: "tanaka", name: "Tanaka Inc.", status: "active" } as const;
+const SUZUKI = { id: SUZUKI_ID, slug: "suzuki", name: "Suzuki Ltd.", status: "active" } as const;
 
 const mockUsers = [
   {
@@ -72,24 +80,33 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
   const identity = new MemoryIdentityRepository({
     clients: [
       {
-        clientId: "tenant-a",
+        clientId: "crm",
         clientSecretHash: secretHash,
-        redirectUris: [TENANT_A_REDIRECT],
+        name: "CRM",
+        audience: CRM_AUDIENCE,
+        redirectTargets: [
+          { uri: TANAKA_CRM_REDIRECT, tenant: TANAKA },
+          { uri: SUZUKI_CRM_REDIRECT, tenant: SUZUKI },
+        ],
         allowedScopes: ["openid", "profile", "email"],
         status: "active",
-        tenant: { id: TENANT_A_ID, slug: "tenant-a", status: "active" },
-        backchannelLogoutUri: "http://tenant-a.localhost:3001/auth/backchannel-logout",
+        backchannelLogoutUri: "http://crm.localhost:3001/auth/backchannel-logout",
       },
       {
-        clientId: "tenant-b",
+        clientId: "cms",
         clientSecretHash: secretHash,
-        redirectUris: [TENANT_B_REDIRECT],
+        name: "CMS",
+        audience: CMS_AUDIENCE,
+        redirectTargets: [
+          { uri: TANAKA_CMS_REDIRECT, tenant: TANAKA },
+          { uri: SUZUKI_CMS_REDIRECT, tenant: SUZUKI },
+        ],
         allowedScopes: ["openid", "profile", "email"],
         status: "active",
-        tenant: { id: TENANT_B_ID, slug: "tenant-b", status: "active" },
-        backchannelLogoutUri: "http://tenant-b.localhost:3001/auth/backchannel-logout",
+        backchannelLogoutUri: "http://cms.localhost:3001/auth/backchannel-logout",
       },
     ],
+    tenants: [TANAKA, SUZUKI],
     users: [
       {
         id: ALICE_ID,
@@ -107,9 +124,14 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
       },
     ],
     memberships: [
-      { tenantId: TENANT_A_ID, userId: ALICE_ID, role: "owner", status: "active" },
-      { tenantId: TENANT_B_ID, userId: ALICE_ID, role: "viewer", status: "active" },
-      { tenantId: TENANT_B_ID, userId: "user-bob", role: "admin", status: "active" },
+      { tenantId: TANAKA_ID, userId: ALICE_ID, role: "owner", status: "active" },
+      { tenantId: SUZUKI_ID, userId: ALICE_ID, role: "viewer", status: "active" },
+      { tenantId: SUZUKI_ID, userId: "user-bob", role: "admin", status: "active" },
+    ],
+    contracts: [
+      { tenantId: TANAKA_ID, clientId: "crm", status: "active" },
+      { tenantId: TANAKA_ID, clientId: "cms", status: "active" },
+      { tenantId: SUZUKI_ID, clientId: "crm", status: "active" },
     ],
   });
   const encryptionKey = parseEncryptionKey("test", randomBytes(32).toString("base64"));
@@ -117,7 +139,6 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
 
   const deps: AuthDeps = {
     issuer: ISSUER,
-    apiAudience: API_AUDIENCE,
     clock,
     stores: createMemoryStores(clock),
     identity,
@@ -156,12 +177,13 @@ export interface AuthorizeParams {
   readonly codeVerifier?: string;
 }
 
+/** 既定は crm の tanaka テナント */
 export function authorizeUrl(params: AuthorizeParams = {}): { url: string; codeVerifier: string } {
   const codeVerifier = params.codeVerifier ?? generateCodeVerifier();
   const url = new URL(`${ISSUER}/authorize`);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", params.clientId ?? "tenant-a");
-  url.searchParams.set("redirect_uri", params.redirectUri ?? TENANT_A_REDIRECT);
+  url.searchParams.set("client_id", params.clientId ?? "crm");
+  url.searchParams.set("redirect_uri", params.redirectUri ?? TANAKA_CRM_REDIRECT);
   url.searchParams.set("scope", params.scope ?? "openid profile email");
   url.searchParams.set("state", params.state ?? "state-1");
   url.searchParams.set("nonce", params.nonce ?? "nonce-1");
@@ -179,13 +201,6 @@ export function extractCsrf(htmlBody: string): string {
   const match = /name="csrf" value="([^"]+)"/.exec(htmlBody);
   if (match?.[1] === undefined) throw new Error("csrf token not found in login page");
   return match[1];
-}
-
-export interface LoginFlowResult {
-  readonly code: string;
-  readonly state: string;
-  readonly codeVerifier: string;
-  readonly ssoCookie: string;
 }
 
 /**
@@ -247,14 +262,14 @@ export async function exchangeCode(
   const form = new URLSearchParams({
     grant_type: "authorization_code",
     code: input.code,
-    redirect_uri: input.redirectUri ?? TENANT_A_REDIRECT,
+    redirect_uri: input.redirectUri ?? TANAKA_CRM_REDIRECT,
     code_verifier: input.codeVerifier,
   });
   return harness.app.request(`${ISSUER}/token`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: basicAuth(input.clientId ?? "tenant-a", input.secret),
+      Authorization: basicAuth(input.clientId ?? "crm", input.secret),
     },
     body: form.toString(),
   });
@@ -263,7 +278,7 @@ export async function exchangeCode(
 export async function refresh(
   harness: TestHarness,
   refreshToken: string,
-  clientId: string = "tenant-a",
+  clientId: string = "crm",
 ): Promise<Response> {
   const form = new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken });
   return harness.app.request(`${ISSUER}/token`, {

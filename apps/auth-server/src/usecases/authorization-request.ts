@@ -1,10 +1,12 @@
 import { err, ok, type Result } from "@sandbox/shared";
 import { SUPPORTED_SCOPES } from "../policy.ts";
-import type { IdentityRepository, OidcClient } from "../ports/identity-repository.ts";
+import type { IdentityRepository, OidcClient, Tenant } from "../ports/identity-repository.ts";
 
 export interface ValidatedAuthorizationRequest {
   readonly client: OidcClient;
   readonly redirectUri: string;
+  /** 登録済み redirect_uri から決まるテナント。テナントに紐付かない戻り先なら null */
+  readonly tenant: Tenant | null;
   readonly scope: string;
   readonly state: string;
   readonly nonce: string;
@@ -40,6 +42,7 @@ function redirectableError(
 
 /**
  * /authorize のパラメータを検証する。docs/design/02-auth-sequences.md の 3.1 に対応する。
+ * テナントは redirect_uri の登録行から決める。redirect_uri は完全一致なので改ざんできない。
  */
 export async function validateAuthorizationRequest(
   identity: IdentityRepository,
@@ -54,8 +57,8 @@ export async function validateAuthorizationRequest(
     return err({ redirectable: false, kind: "invalid_client" });
 
   const redirectUri = params.redirect_uri;
-  // 完全一致のみ。正規化はしない
-  if (redirectUri === undefined || !client.redirectUris.includes(redirectUri)) {
+  const target = client.redirectTargets.find((candidate) => candidate.uri === redirectUri);
+  if (redirectUri === undefined || target === undefined) {
     return err({ redirectable: false, kind: "invalid_redirect_uri" });
   }
 
@@ -108,5 +111,13 @@ export async function validateAuthorizationRequest(
     );
   }
 
-  return ok({ client, redirectUri, scope: requestedScopes.join(" "), state, nonce, codeChallenge });
+  return ok({
+    client,
+    redirectUri,
+    tenant: target.tenant,
+    scope: requestedScopes.join(" "),
+    state,
+    nonce,
+    codeChallenge,
+  });
 }

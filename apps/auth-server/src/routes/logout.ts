@@ -18,6 +18,7 @@ import {
 const logoutFormSchema = z.object({
   csrf: z.string().min(1),
   client_id: z.string().optional(),
+  tenant: z.string().optional(),
 });
 
 /**
@@ -31,14 +32,15 @@ export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   app.get("/logout", async (c) => {
     noStore(c);
     const clientId = c.req.query("client_id");
+    const tenantSlug = c.req.query("tenant");
     const session = await loadSsoSession(deps, readSsoCookie(c, policy));
     if (session === undefined) {
       clearSsoCookie(c, policy);
-      return c.html(logoutDonePage({ returnTo: await returnTarget(deps, clientId) }));
+      return c.html(logoutDonePage({ returnTo: await returnTarget(deps, clientId, tenantSlug) }));
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
-    return c.html(logoutConfirmPage({ csrfToken: csrf.formToken, clientId }));
+    return c.html(logoutConfirmPage({ csrfToken: csrf.formToken, clientId, tenantSlug }));
   });
 
   app.post(
@@ -63,7 +65,9 @@ export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       const session = await loadSsoSession(deps, readSsoCookie(c, policy));
       if (session !== undefined) await globalLogout(deps, session);
       clearSsoCookie(c, policy);
-      return c.html(logoutDonePage({ returnTo: await returnTarget(deps, form.client_id) }));
+      return c.html(
+        logoutDonePage({ returnTo: await returnTarget(deps, form.client_id, form.tenant) }),
+      );
     },
   );
 
@@ -73,10 +77,16 @@ export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
 async function returnTarget(
   deps: AuthDeps,
   clientId: string | undefined,
+  tenantSlug: string | undefined,
 ): Promise<{ label: string; href: string } | undefined> {
   if (clientId === undefined) return undefined;
   const client = await deps.identity.findClient(clientId);
-  const redirectUri = client?.redirectUris[0];
-  if (client === undefined || redirectUri === undefined) return undefined;
-  return { label: client.tenant?.slug ?? client.clientId, href: new URL(redirectUri).origin + "/" };
+  if (client === undefined) return undefined;
+  // 戻り先は登録済み redirect_uri の origin からのみ導出する。テナント指定があればそのテナントの行を使う
+  const target =
+    client.redirectTargets.find((t) => tenantSlug !== undefined && t.tenant?.slug === tenantSlug) ??
+    client.redirectTargets[0];
+  if (target === undefined) return undefined;
+  const label = target.tenant === null ? client.name : `${client.name} (${target.tenant.slug})`;
+  return { label, href: new URL(target.uri).origin + "/" };
 }

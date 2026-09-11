@@ -1,16 +1,25 @@
 import type { Clock, CookiePolicy, KeyValueStore, Logger } from "@sandbox/shared";
 
 /**
- * Tenant Web Application 向け OIDC Client の設定。docs/design/06-oidc-client-design.md に対応する。
- * 1 テナント = 1 Client。ホストごとに解決する。
+ * サービス単位の OIDC Client 設定。docs/design/06-oidc-client-design.md に対応する。
+ * 1 サービス = 1 Client。テナントはホスト名から決まり、認可リクエストごとに redirect_uri で伝える。
  */
-export interface OidcClientConfig {
+export interface ServiceConfig {
   readonly clientId: string;
   readonly clientSecret: string;
-  readonly redirectUri: string;
   readonly scopes: ReadonlyArray<string>;
-  /** テナント slug。セッションストアのキー空間を分けるために使う */
+  /** このサービスの API。Access Token の aud と一致する */
+  readonly apiBaseUrl: string;
+  /** 表示名 */
+  readonly name: string;
+}
+
+/**
+ * リクエストのホストから解決した、サービス × テナントの設定。
+ */
+export interface OidcClientConfig extends ServiceConfig {
   readonly tenantSlug: string;
+  readonly redirectUri: string;
 }
 
 export interface OidcProviderConfig {
@@ -22,9 +31,11 @@ export interface OidcProviderConfig {
 
 /**
  * Tenant Session。ブラウザには id を Cookie で渡すだけで、Token はサーバー側に閉じる。
+ * clientId と tenantSlug の組でキー空間を分ける。
  */
 export interface TenantSession {
   readonly id: string;
+  readonly clientId: string;
   readonly tenantSlug: string;
   readonly userId: string;
   readonly tenantId: string | null;
@@ -42,6 +53,7 @@ export interface TenantSession {
 
 export interface PreAuthState {
   readonly id: string;
+  readonly clientId: string;
   readonly tenantSlug: string;
   readonly state: string;
   readonly nonce: string;
@@ -54,13 +66,13 @@ export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Res
 
 export interface OidcClientDeps {
   readonly provider: OidcProviderConfig;
-  /** Host ヘッダから Client 設定を解決する。未知のホストは undefined */
+  /** Host ヘッダからサービス × テナントの設定を解決する。未知のホストは undefined */
   readonly resolveClient: (host: string | undefined) => OidcClientConfig | undefined;
-  /** logout_token の aud から Client を解決する。Back-Channel Logout は Host に依存しない */
-  readonly resolveClientById: (clientId: string) => OidcClientConfig | undefined;
+  /** logout_token の aud からサービスを解決する。Back-Channel Logout は Host に依存しない */
+  readonly resolveClientById: (clientId: string) => ServiceConfig | undefined;
+  readonly sessions: KeyValueStore<TenantSession>;
   /** sid → Tenant Session ID の一覧。Back-Channel Logout で一括削除する */
   readonly sessionsBySid: KeyValueStore<ReadonlyArray<string>>;
-  readonly sessions: KeyValueStore<TenantSession>;
   readonly preAuth: KeyValueStore<PreAuthState>;
   readonly clock: Clock;
   readonly cookiePolicy: CookiePolicy;

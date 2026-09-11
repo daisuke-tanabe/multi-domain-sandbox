@@ -1,8 +1,12 @@
 import { z } from "zod";
 
-const tenantClientSchema = z.object({
-  slug: z.string().min(1),
+const serviceSchema = z.object({
+  clientId: z.string().min(1),
   clientSecret: z.string().min(1),
+  name: z.string().min(1),
+  /** テナントのサブドメインを除いたホスト。例 crm.example.com */
+  baseHost: z.string().min(1),
+  apiBaseUrl: z.string().url(),
 });
 
 const envSchema = z.object({
@@ -10,11 +14,10 @@ const envSchema = z.object({
   AUTH_DB_PASSWORD: z.string().min(1),
   API_DB_PASSWORD: z.string().min(1),
   PUBLIC_SCHEME: z.enum(["http", "https"]).default("https"),
-  PUBLIC_BASE_HOST: z.string().min(1),
-  TENANT_CLIENTS: z.string().transform((value, ctx) => {
-    const parsed = z.array(tenantClientSchema).safeParse(JSON.parse(value));
+  SERVICES: z.string().transform((value, ctx) => {
+    const parsed = z.array(serviceSchema).safeParse(JSON.parse(value));
     if (!parsed.success) {
-      ctx.addIssue({ code: "custom", message: "TENANT_CLIENTS must be a JSON array" });
+      ctx.addIssue({ code: "custom", message: "SERVICES must be a JSON array" });
       return z.NEVER;
     }
     return parsed.data;

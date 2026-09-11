@@ -1,27 +1,29 @@
 import { z } from "zod";
-import type { OidcClientConfig } from "@sandbox/oidc-client";
+import type { OidcClientConfig, ServiceConfig } from "@sandbox/oidc-client";
 
-const tenantClientSchema = z.object({
-  slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/),
+const serviceSchema = z.object({
+  clientId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/),
   clientSecret: z.string().min(1),
+  name: z.string().min(1),
+  /** テナントのサブドメインを除いたホスト。例 crm.localhost:3001、crm.example.com */
+  baseHost: z.string().min(1),
+  apiBaseUrl: z.string().url(),
 });
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3001),
   PUBLIC_SCHEME: z.enum(["http", "https"]).default("http"),
-  PUBLIC_BASE_HOST: z.string().min(1),
   ISSUER: z.string().url(),
   AUTH_BACKCHANNEL_URL: z.string().url().optional(),
-  API_BACKCHANNEL_URL: z.string().url(),
   REDIS_URL: z.string().url().optional(),
   COOKIE_SECURE: z
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
-  TENANT_CLIENTS: z.string().transform((value, ctx) => {
-    const parsed = z.array(tenantClientSchema).safeParse(JSON.parse(value));
+  SERVICES: z.string().transform((value, ctx) => {
+    const parsed = z.array(serviceSchema).safeParse(JSON.parse(value));
     if (!parsed.success) {
-      ctx.addIssue({ code: "custom", message: "TENANT_CLIENTS must be a JSON array" });
+      ctx.addIssue({ code: "custom", message: "SERVICES must be a JSON array" });
       return z.NEVER;
     }
     return parsed.data;
@@ -29,6 +31,7 @@ const envSchema = z.object({
 });
 
 export type TenantWebConfig = z.infer<typeof envSchema>;
+export type ServiceEntry = z.infer<typeof serviceSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): TenantWebConfig {
   const parsed = envSchema.safeParse(env);
@@ -41,34 +44,50 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TenantWebConfi
 }
 
 const DEFAULT_SCOPES = ["openid", "profile", "email"] as const;
+const TENANT_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
-/**
- * Host ヘッダから Client 設定を解決する関数を作る。
- * <slug>.<PUBLIC_BASE_HOST> に完全一致するホストのみ受け付ける。
- */
 export interface ClientResolvers {
   readonly resolveClient: (host: string | undefined) => OidcClientConfig | undefined;
-  readonly resolveClientById: (clientId: string) => OidcClientConfig | undefined;
+  readonly resolveClientById: (clientId: string) => ServiceConfig | undefined;
 }
 
+/**
+ * Host ヘッダからサービスとテナントを解決する。
+ * <tenant>.<baseHost> に一致するホストのみ受け付け、先頭ラベルをテナント slug とする。
+ * 例 tanaka.crm.localhost:3001 → service crm, tenant tanaka
+ */
 export function createClientResolvers(
-  config: Pick<TenantWebConfig, "PUBLIC_SCHEME" | "PUBLIC_BASE_HOST" | "TENANT_CLIENTS">,
+  config: Pick<TenantWebConfig, "PUBLIC_SCHEME" | "SERVICES">,
 ): ClientResolvers {
-  const clients = config.TENANT_CLIENTS.map((tenant) => {
-    const host = `${tenant.slug}.${config.PUBLIC_BASE_HOST}`;
-    const client: OidcClientConfig = {
-      clientId: tenant.slug,
-      clientSecret: tenant.clientSecret,
-      redirectUri: `${config.PUBLIC_SCHEME}://${host}/auth/callback`,
+  const services = config.SERVICES.map((entry) => {
+    const service: ServiceConfig = {
+      clientId: entry.clientId,
+      clientSecret: entry.clientSecret,
       scopes: [...DEFAULT_SCOPES],
-      tenantSlug: tenant.slug,
+      apiBaseUrl: entry.apiBaseUrl,
+      name: entry.name,
     };
-    return { host, client };
+    return { baseHost: entry.baseHost.toLowerCase(), service };
   });
-  const byHost = new Map(clients.map(({ host, client }) => [host, client]));
-  const byId = new Map(clients.map(({ client }) => [client.clientId, client]));
+  const byId = new Map(services.map(({ service }) => [service.clientId, service]));
+
   return {
-    resolveClient: (host) => (host === undefined ? undefined : byHost.get(host.toLowerCase())),
+    resolveClient: (host) => {
+      if (host === undefined) return undefined;
+      const lower = host.toLowerCase();
+      for (const { baseHost, service } of services) {
+        const suffix = `.${baseHost}`;
+        if (!lower.endsWith(suffix)) continue;
+        const slug = lower.slice(0, -suffix.length);
+        if (!TENANT_SLUG_PATTERN.test(slug)) continue;
+        return {
+          ...service,
+          tenantSlug: slug,
+          redirectUri: `${config.PUBLIC_SCHEME}://${lower}/auth/callback`,
+        };
+      }
+      return undefined;
+    },
     resolveClientById: (clientId) => byId.get(clientId),
   };
 }

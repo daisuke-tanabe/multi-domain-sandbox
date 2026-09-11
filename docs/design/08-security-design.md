@@ -36,9 +36,11 @@
 | code 注入。攻撃者の code を被害者のセッションへ | state の一致検証。nonce の一致検証 |
 | 認可レスポンスの差し替え | state を pre-auth に紐付け、Cookie で参照 |
 | redirect_uri 操作 | 完全一致。パラメータ付きやパス違いも拒否 |
-| Client なりすまし | client_secret_basic。argon2id でハッシュ保存 |
+| Client なりすまし | client_secret_basic。ハッシュ保存 |
 | mix-up 攻撃。複数 IdP 想定 | iss パラメータをレスポンスに含める。RFC 9207。Client は iss を検証 |
-| テナント越境の code 交換 | code.client_id と認証 Client の一致検証 |
+| サービス越境の code 交換 | code.client_id と認証 Client の一致検証 |
+| テナント越境の code 受け取り | code.redirect_uri の完全一致検証。ID Token の tenant_slug と Host の一致検証 |
+| 契約外サービスへのアクセス | `/authorize` と Refresh で tenant_services を検証。redirect_uri が登録済みでも契約がなければ access_denied |
 
 ### セッション
 
@@ -59,7 +61,8 @@
 | Refresh Token 再利用 | ローテーションと系列失効 |
 | 鍵漏洩 | 秘密鍵は Auth Server のみ。Secret Store から起動時読み込み。ローテーション手順を定義 |
 | alg 混同 | 検証時に alg を RS256 に固定。none と HS256 を拒否 |
-| aud 取り違え | ID Token と Access Token で aud を分ける。API は aud を必ず検証 |
+| aud 取り違え | ID Token と Access Token で aud を分ける。API は Host から導いた aud を必ず検証 |
+| サービス越境の Access Token | Access Token の aud はサービスの API origin。CRM の Token は api.cms で 401 |
 | Cognito Token の露出 | 保存時暗号化。ログ禁止。応答に含めない |
 
 ### テナント分離
@@ -71,6 +74,8 @@
 | 権限昇格 | role は DB から毎回取得。Token の role は無視 |
 | 退会済みユーザーのアクセス | Membership 再検証。Refresh 時にも再検証 |
 | 停止テナントへのアクセス | tenants.status を `/authorize` と API 両方で確認 |
+| 契約解除後のアクセス | tenant_services を `/authorize` と Refresh で確認。Access Token 寿命の 15 分以内に失効 |
+| 同一テナントの別サービスへの Cookie 流用 | tanaka.crm と tanaka.cms は別ホスト。Cookie は届かず、Session Store のキーも clientId で分かれる |
 
 ### ログインエンドポイント
 
@@ -83,7 +88,7 @@
 
 ## HTTP セキュリティヘッダ
 
-auth.sandbox.com と tenant-*.sandbox.com に共通で付与する。
+auth.sandbox.com と `<tenant>.<service>.sandbox.com` に共通で付与する。
 
 ```text
 Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
@@ -94,9 +99,9 @@ Referrer-Policy: no-referrer
 Cache-Control: no-store   (認証関連レスポンス)
 ```
 
-tenant-*.sandbox.com は `form-action 'self'` を追加してよい。フォームの送信先も送信後のリダイレクト先も自ホストに閉じるため。
+`<tenant>.<service>.sandbox.com` は `form-action 'self'` を追加してよい。フォームの送信先も送信後のリダイレクト先も自ホストに閉じるため。
 
-auth.sandbox.com には `form-action` を付けない。Chrome はフォーム送信後のリダイレクト先にも `form-action` を適用するため、ログイン POST から各 Client の redirect_uri への 302 がブロックされる。redirect_uri は Client 登録で動的に増えるため列挙できない。ログインフォームの CSRF は同期トークンで防ぐ。
+auth.sandbox.com には `form-action` を付けない。Chrome はフォーム送信後のリダイレクト先にも `form-action` を適用するため、ログイン POST から各テナント × サービスの redirect_uri への 302 がブロックされる。redirect_uri はテナントと契約の追加で動的に増えるため列挙できない。ログインフォームの CSRF は同期トークンで防ぐ。
 
 `/token` `/userinfo` `/revoke` の応答には `Cache-Control: no-store` と `Pragma: no-cache` を付ける。
 
@@ -113,7 +118,7 @@ auth.sandbox.com には `form-action` を付けない。Chrome はフォーム�
 | --- | --- | --- |
 | Auth Server 署名鍵 | Secret Store | JWKS 併存方式。04参照 |
 | Cognito App Client Secret | Secret Store | Cognito 側で再生成後に差し替え |
-| client_secret | Secret Store。DB はハッシュ | Client ごと。新旧 2 世代を受け付ける猶予期間を設ける |
+| client_secret | Secret Store。DB はハッシュ。サービスごとに 1 つ | サービスごと。新旧 2 世代を受け付ける猶予期間を設ける |
 | Cognito Token 暗号化鍵 | Secret Store | 鍵 ID をレコードに保存し、旧鍵で復号できるようにする |
 | Session Store 接続情報 | Secret Store | |
 

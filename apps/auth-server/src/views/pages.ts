@@ -85,6 +85,7 @@ export function errorPage(
 export interface LogoutConfirmPageProps {
   readonly csrfToken: string;
   readonly clientId: string | undefined;
+  readonly tenantSlug: string | undefined;
 }
 
 export function logoutConfirmPage(
@@ -131,22 +132,27 @@ export function logoutDonePage(
   );
 }
 
-export interface PortalTenant {
+export interface PortalServiceView {
+  readonly name: string;
+  readonly clientId: string;
+  /** サービス側の /auth/login。SSO Session によりパスワードなしで入れる */
+  readonly loginUrl: string;
+}
+
+export interface PortalTenantView {
   readonly slug: string;
   readonly name: string;
   readonly role: string;
-  /** テナント側の /auth/login。Client 未登録なら undefined */
-  readonly loginUrl: string | undefined;
+  readonly services: ReadonlyArray<PortalServiceView>;
 }
 
 export interface PortalPageProps {
   readonly email: string;
-  readonly tenants: ReadonlyArray<PortalTenant>;
+  readonly tenants: ReadonlyArray<PortalTenantView>;
 }
 
 /**
- * ポータル。SSO Session を持つユーザーに所属テナントの入口を並べる。
- * リンク先はテナント側の /auth/login で、SSO Session によりパスワードなしで入れる。
+ * ポータル。所属テナントごとに、契約しているサービスの入口を並べる。
  */
 export function portalPage(props: PortalPageProps): HtmlEscapedString | Promise<HtmlEscapedString> {
   return layout(
@@ -157,18 +163,24 @@ export function portalPage(props: PortalPageProps): HtmlEscapedString | Promise<
       ${
         props.tenants.length === 0
           ? html`<p>所属しているテナントがありません。管理者に招待を依頼してください。</p>`
-          : html`<ul>
-              ${props.tenants.map(
-                (tenant) => html`<li>
-                  ${
-                    tenant.loginUrl === undefined
-                      ? html`${tenant.name}`
-                      : html`<a href="${tenant.loginUrl}">${tenant.name}</a>`
-                  }
-                  <span class="muted">(${tenant.slug} / ${tenant.role})</span>
-                </li>`,
-              )}
-            </ul>`
+          : props.tenants.map(
+              (tenant) => html`
+                <h2>${tenant.name} <span class="muted">(${tenant.slug} / ${tenant.role})</span></h2>
+                ${
+                  tenant.services.length === 0
+                    ? html`<p class="muted">契約中のサービスはありません。</p>`
+                    : html`<ul>
+                        ${tenant.services.map(
+                          (service) =>
+                            html`<li>
+                              <a href="${service.loginUrl}">${service.name}</a>
+                              <span class="muted">${service.clientId}</span>
+                            </li>`,
+                        )}
+                      </ul>`
+                }
+              `,
+            )
       }
       <p><a href="/logout">Sandbox 全体からログアウト</a></p>
     `,

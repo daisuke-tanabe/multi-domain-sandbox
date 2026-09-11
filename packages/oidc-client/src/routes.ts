@@ -48,7 +48,7 @@ export function clearSessionCookie(c: Context, deps: OidcClientDeps): void {
 }
 
 function preAuthKey(client: OidcClientConfig, id: string): string {
-  return `${client.tenantSlug}:${id}`;
+  return `${client.clientId}:${client.tenantSlug}:${id}`;
 }
 
 /**
@@ -80,6 +80,7 @@ export function oidcRoutes(
     const codeVerifier = generateCodeVerifier();
     const preAuth = {
       id: randomToken(),
+      clientId: client.clientId,
       tenantSlug: client.tenantSlug,
       state: randomToken(),
       nonce: randomToken(),
@@ -153,7 +154,15 @@ export function oidcRoutes(
     }
 
     const errorParam = c.req.query("error");
-    if (errorParam !== undefined) return renderAuthorizationError(c, hooks, errorParam);
+    if (errorParam !== undefined) {
+      return renderAuthorizationError(
+        c,
+        hooks,
+        client,
+        errorParam,
+        c.req.query("error_description"),
+      );
+    }
 
     const code = c.req.query("code");
     if (code === undefined || code === "") {
@@ -183,13 +192,21 @@ export function oidcRoutes(
     if (typeof payload.sub !== "string" || typeof payload.sid !== "string") {
       return hooks.renderError(c, "ログインをやり直してください", "認証結果が不完全です。", 401);
     }
+    // 発行されたテナントがこのホストのテナントと一致することを確かめる。code は redirect_uri に紐付くが二重に見る
+    if (payload.tenant_slug !== client.tenantSlug) {
+      deps.logger.warn("tenant mismatch on callback", {
+        clientId: client.clientId,
+        tenantSlug: client.tenantSlug,
+      });
+      return hooks.renderError(c, "ログインをやり直してください", "テナントが一致しません。", 401);
+    }
 
     // セッション固定攻撃対策。既存セッションは破棄して新しい ID を発行する
-    const existing = await loadSession(deps, client.tenantSlug, readSessionCookie(c, deps));
+    const existing = await loadSession(deps, client, readSessionCookie(c, deps));
     if (existing !== undefined) await destroySession(deps, existing);
 
     const session = await createSession(deps, {
-      tenantSlug: client.tenantSlug,
+      client,
       userId: payload.sub,
       tenantId: typeof payload.tenant_id === "string" ? payload.tenant_id : null,
       sid: payload.sid,
@@ -211,7 +228,7 @@ export function oidcRoutes(
     if (client === undefined)
       return hooks.renderError(c, "不明なテナントです", "このホストは登録されていません。", 400);
 
-    const session = await loadSession(deps, client.tenantSlug, readSessionCookie(c, deps));
+    const session = await loadSession(deps, client, readSessionCookie(c, deps));
     if (session === undefined) {
       clearSessionCookie(c, deps);
       return c.redirect("/");
@@ -260,8 +277,8 @@ export function oidcRoutes(
     const client = deps.resolveClientById(verified.value.audience);
     if (client === undefined) return c.json({ error: "invalid_request" }, 400);
 
-    const removed = await destroySessionsBySid(deps, client.tenantSlug, verified.value.sid);
-    deps.logger.info("backchannel logout applied", { tenantSlug: client.tenantSlug, removed });
+    const removed = await destroySessionsBySid(deps, client.clientId, verified.value.sid);
+    deps.logger.info("backchannel logout applied", { clientId: client.clientId, removed });
     return c.body(null, 200);
   });
 
@@ -271,17 +288,31 @@ export function oidcRoutes(
 function renderAuthorizationError(
   c: Context,
   hooks: OidcRouteHooks,
+  client: OidcClientConfig,
   errorParam: string,
+  description: string | undefined,
 ): Response | Promise<Response> {
-  if (errorParam === "access_denied") {
-    return hooks.renderError(
-      c,
-      "アクセス権がありません",
-      "このテナントへのアクセス権がありません。管理者に招待を依頼してください。",
-      403,
-    );
+  if (errorParam !== "access_denied") {
+    return hooks.renderError(c, "ログインに失敗しました", "サービスからやり直してください。", 400);
   }
-  return hooks.renderError(c, "ログインに失敗しました", "サービスからやり直してください。", 400);
+  switch (description) {
+    case "not_contracted":
+      return hooks.renderError(
+        c,
+        "このサービスは契約されていません",
+        `テナント ${client.tenantSlug} は ${client.name} を契約していません。契約状況を確認してください。`,
+        403,
+      );
+    case "tenant_suspended":
+      return hooks.renderError(c, "テナントは利用停止中です", "管理者に確認してください。", 403);
+    default:
+      return hooks.renderError(
+        c,
+        "アクセス権がありません",
+        `テナント ${client.tenantSlug} へのアクセス権がありません。管理者に招待を依頼してください。`,
+        403,
+      );
+  }
 }
 
 function renderTokenError(

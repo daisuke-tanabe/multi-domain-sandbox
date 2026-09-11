@@ -20,7 +20,7 @@ export type ApiEnv = { Variables: ApiVariables };
 
 export interface AuthMiddlewareOptions {
   readonly issuer: string;
-  readonly audience: string;
+  readonly audiences: ReadonlyMap<string, string>;
   readonly jwks: JwksSource;
   readonly identity: IdentityReader;
   readonly clock: Clock;
@@ -46,13 +46,18 @@ function forbidden(c: Context): Response {
  */
 export function authenticate(options: AuthMiddlewareOptions): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
+    // aud はリクエストが届いたホストから決める。crm の Token を cms の API に持ち込んでも通らない
+    const host = (c.req.header("host") ?? new URL(c.req.url).host).toLowerCase();
+    const audience = options.audiences.get(host);
+    if (audience === undefined) return c.json({ error: "not_found" }, 404);
+
     const header = c.req.header("Authorization");
     if (header === undefined || !header.startsWith("Bearer ")) {
       return unauthorized(c, "invalid_request");
     }
     const verified = await verifyAccessToken(header.slice("Bearer ".length), {
       issuer: options.issuer,
-      audience: options.audience,
+      audience,
       jwks: options.jwks,
       clock: options.clock,
     });

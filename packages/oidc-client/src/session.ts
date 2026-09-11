@@ -3,12 +3,17 @@ import type { TokenResponse } from "./provider.ts";
 import {
   SESSION_ABSOLUTE_SECONDS,
   SESSION_IDLE_SECONDS,
+  type OidcClientConfig,
   type OidcClientDeps,
   type TenantSession,
 } from "./types.ts";
 
-function sessionKey(tenantSlug: string, id: string): string {
-  return `${tenantSlug}:${id}`;
+function sessionKey(clientId: string, tenantSlug: string, id: string): string {
+  return `${clientId}:${tenantSlug}:${id}`;
+}
+
+function sidKey(clientId: string, sid: string): string {
+  return `${clientId}:sid:${sid}`;
 }
 
 function remainingAbsoluteTtl(session: TenantSession, now: number): number {
@@ -16,16 +21,24 @@ function remainingAbsoluteTtl(session: TenantSession, now: number): number {
 }
 
 /**
- * Cookie の値から Tenant Session を取得する。テナントをまたいだ参照はキー空間で防ぐ。
+ * Cookie の値から Tenant Session を取得する。サービスやテナントをまたいだ参照はキー空間で防ぐ。
  */
 export async function loadSession(
   deps: OidcClientDeps,
-  tenantSlug: string,
+  client: OidcClientConfig,
   sessionId: string | undefined,
 ): Promise<TenantSession | undefined> {
   if (sessionId === undefined || sessionId === "") return undefined;
-  const session = await deps.sessions.get(sessionKey(tenantSlug, sessionId));
-  if (session === undefined || session.tenantSlug !== tenantSlug) return undefined;
+  const session = await deps.sessions.get(
+    sessionKey(client.clientId, client.tenantSlug, sessionId),
+  );
+  if (
+    session === undefined ||
+    session.clientId !== client.clientId ||
+    session.tenantSlug !== client.tenantSlug
+  ) {
+    return undefined;
+  }
 
   const now = deps.clock.nowSeconds();
   const idleExpired = session.lastSeenAt + SESSION_IDLE_SECONDS <= now;
@@ -37,7 +50,7 @@ export async function loadSession(
 }
 
 export interface NewSessionInput {
-  readonly tenantSlug: string;
+  readonly client: OidcClientConfig;
   readonly userId: string;
   readonly tenantId: string | null;
   readonly sid: string;
@@ -56,7 +69,8 @@ export async function createSession(
   const now = deps.clock.nowSeconds();
   const session: TenantSession = {
     id: randomToken(),
-    tenantSlug: input.tenantSlug,
+    clientId: input.client.clientId,
+    tenantSlug: input.client.tenantSlug,
     userId: input.userId,
     tenantId: input.tenantId,
     sid: input.sid,
@@ -70,37 +84,17 @@ export async function createSession(
     lastSeenAt: now,
   };
   await deps.sessions.set(
-    sessionKey(session.tenantSlug, session.id),
+    sessionKey(session.clientId, session.tenantSlug, session.id),
     session,
     SESSION_ABSOLUTE_SECONDS,
   );
-  const existing = (await deps.sessionsBySid.get(sidKey(session.tenantSlug, session.sid))) ?? [];
+  const existing = (await deps.sessionsBySid.get(sidKey(session.clientId, session.sid))) ?? [];
   await deps.sessionsBySid.set(
-    sidKey(session.tenantSlug, session.sid),
-    [...existing, session.id],
+    sidKey(session.clientId, session.sid),
+    [...existing, sessionKey(session.clientId, session.tenantSlug, session.id)],
     SESSION_ABSOLUTE_SECONDS,
   );
   return session;
-}
-
-function sidKey(tenantSlug: string, sid: string): string {
-  return `${tenantSlug}:sid:${sid}`;
-}
-
-/**
- * Back-Channel Logout。同じ sid で作られたこのテナントのセッションをすべて削除する。
- */
-export async function destroySessionsBySid(
-  deps: OidcClientDeps,
-  tenantSlug: string,
-  sid: string,
-): Promise<number> {
-  const ids = (await deps.sessionsBySid.get(sidKey(tenantSlug, sid))) ?? [];
-  for (const id of ids) {
-    await deps.sessions.delete(sessionKey(tenantSlug, id));
-  }
-  await deps.sessionsBySid.delete(sidKey(tenantSlug, sid));
-  return ids.length;
 }
 
 export async function saveSession(
@@ -110,7 +104,7 @@ export async function saveSession(
   const now = deps.clock.nowSeconds();
   const updated: TenantSession = { ...session, lastSeenAt: now };
   await deps.sessions.set(
-    sessionKey(updated.tenantSlug, updated.id),
+    sessionKey(updated.clientId, updated.tenantSlug, updated.id),
     updated,
     remainingAbsoluteTtl(updated, now),
   );
@@ -118,5 +112,21 @@ export async function saveSession(
 }
 
 export function destroySession(deps: OidcClientDeps, session: TenantSession): Promise<void> {
-  return deps.sessions.delete(sessionKey(session.tenantSlug, session.id));
+  return deps.sessions.delete(sessionKey(session.clientId, session.tenantSlug, session.id));
+}
+
+/**
+ * Back-Channel Logout。同じ sid で作られたこのサービスのセッションを、テナントを問わずすべて削除する。
+ */
+export async function destroySessionsBySid(
+  deps: OidcClientDeps,
+  clientId: string,
+  sid: string,
+): Promise<number> {
+  const keys = (await deps.sessionsBySid.get(sidKey(clientId, sid))) ?? [];
+  for (const key of keys) {
+    await deps.sessions.delete(key);
+  }
+  await deps.sessionsBySid.delete(sidKey(clientId, sid));
+  return keys.length;
 }
