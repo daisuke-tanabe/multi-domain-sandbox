@@ -6,3 +6,4 @@ export {
   type WebCoreConfig,
 } from "./config.ts";
 export { startWebCore } from "./start.ts";
+export { inlineScriptHashes, type SpaOptions } from "./spa.ts";

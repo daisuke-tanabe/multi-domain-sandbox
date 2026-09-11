@@ -126,7 +126,7 @@ flowchart TB
 
 Front Channel を通る認証関連の値は Authorization Code と state のみ。JWT と Cognito Token は Front Channel に載せない。
 
-サンドボックスではサービスごとに web と api のプロセスを分けている。crm-web が `<tenant>.crm` の全テナント、crm-api が `api.crm`、cms-web が `<tenant>.cms` の全テナント、cms-api が `api.cms` を受ける。web の実装は `packages/web-core` で共有し、api は `packages/api-core` をフレームワークとして使い、各サービスが役割と権限の語彙と業務の routes を持つ。DB もサービスごとに分かれ、API は Identity DB に接続しない。本番でサービスごとにリポジトリを分けても、Auth Server から見た構成は変わらない。
+サンドボックスではサービスごとに web と api のプロセスを分けている。crm-web が `<tenant>.crm` の全テナント、crm-api が `api.crm`、cms-web が `<tenant>.cms` の全テナント、cms-api が `api.cms` を受ける。web は React Router の SPA と薄い BFF で、BFF の実装は `packages/web-core`、共通の React コードは `packages/web-ui` で共有する。BFF は `/auth/*` に加えて、SPA にログイン状態と CSRF トークンを渡す `/session` と、サーバー側の Access Token で API へ中継する `/api/*` を持つ。api は `packages/api-core` をフレームワークとして使い、各サービスが役割と権限の語彙と業務の routes を持つ。DB もサービスごとに分かれ、API は Identity DB に接続しない。本番でサービスごとにリポジトリを分けても、Auth Server から見た構成は変わらない。
 
 ## 4. 異なるドメインでも動く理由
 
@@ -208,9 +208,13 @@ Auth Server と既存サービスのコード変更は発生しない。
 | --- | --- | --- |
 | GET | `/auth/login` | Host からサービスとテナントを決め、認可リクエストを組み立てて `/authorize` へ 302 |
 | GET | `/auth/callback` | code を受け取り、サーバー間で Token に交換し、自セッションを作る |
-| POST | `/auth/logout` | Tenant Logout |
+| POST | `/auth/logout` | Tenant Logout。`/?logged_out=1` へ 302 |
 | POST | `/auth/backchannel-logout` | Auth Server からの Back-Channel Logout を受ける。サービスごとに 1 つ |
+| GET | `/session` | SPA に渡すログイン状態。`service` `tenant` `urls` `authenticated` と、ログイン済みなら `user` `csrfToken`。Token は返さない |
+| ALL | `/api/*` | サービスの API への中継。サーバー側の Access Token を Bearer で付ける。セッションがなければ 401、GET / HEAD / OPTIONS 以外は `X-CSRF-Token` 必須で不一致は 403、JSON 以外の body は 415 |
+| GET | `/*` | SPA の配信。ビルド成果物の `index.html` と `/assets/*` |
 
+画面はサーバーで描かず、React Router の SPA が `/session` と `/api/*` だけを使って描く。Token はブラウザに届かない。サーバー側で描く画面を持つ構成なら、`/session` と `/api/*` の代わりにサーバー側でセッションを読めばよく、`/auth/*` は変わらない。
 Host の先頭ラベルがテナント slug、残りがサービスの `baseHost` になる。`tanaka.crm.example.com` なら tenant = tanaka、service = crm。redirect_uri は `https://<host>/auth/callback` で組み立てる。
 
 #### API Server。`https://api.<service>.<domain>`
@@ -580,10 +584,14 @@ sequenceDiagram
     participant Store as Store (Redis)
     participant SessCrm as SessCrm (crm store)
 
-    Browser->>CrmA: GET /dashboard
+    Browser->>CrmA: GET / → 200 SPA の index.html
+    Browser->>CrmA: GET /session
     Note over CrmA: Host → service=crm, tenant=tanaka<br/>Cookie tenant_session なし → 未ログイン
+    CrmA-->>Browser: 200 {authenticated:false, urls:{login:"/auth/login", ...}}
+    Note over Browser: SPA が /auth/login?return_to=/ へ遷移
+    Browser->>CrmA: GET /auth/login?return_to=/
     CrmA->>CrmA: state=S1, nonce=N1, code_verifier=V1 を生成<br/>code_challenge=C1=BASE64URL(SHA256(V1))
-    CrmA->>SessCrm: pre-auth 保存 crm:tanaka:P1 {state:S1, nonce:N1, code_verifier:V1, return_to:"/dashboard"} TTL 30分
+    CrmA->>SessCrm: pre-auth 保存 crm:tanaka:P1 {state:S1, nonce:N1, code_verifier:V1, return_to:"/"} TTL 30分
     CrmA-->>Browser: 302 https://auth.example.com/authorize<br/>?response_type=code&client_id=crm<br/>&redirect_uri=https://tanaka.crm.example.com/auth/callback<br/>&scope=openid profile email&state=S1&nonce=N1<br/>&code_challenge=C1&code_challenge_method=S256<br/>Set-Cookie: __Secure-tenant_pre_auth=P1#59; Path=/auth#59; Secure#59; HttpOnly#59; SameSite=Lax
 
     Browser->>Auth: GET /authorize?... (Cookie sso_session なし)
@@ -633,9 +641,12 @@ sequenceDiagram
     Auth-->>CrmA: 200 {keys:[...]}
     CrmA->>CrmA: IT1 を検証。署名 / iss / aud=crm / exp / nonce==N1 / tenant_slug==tanaka
     CrmA->>SessCrm: Tenant Session 作成 crm:tanaka:TS1 {user_id:IT1.sub, tenant_id, sid:SID1,<br/>access_token:AT1, refresh_token:RT1, csrf_token} TTL 12時間<br/>sid 逆引き crm:sid:SID1 → [TS1]
-    CrmA-->>Browser: 302 /dashboard<br/>Set-Cookie: __Host-tenant_session=TS1#59; Path=/#59; Secure#59; HttpOnly#59; SameSite=Lax<br/>Set-Cookie: __Secure-tenant_pre_auth=#59; Max-Age=0
-    Browser->>CrmA: GET /dashboard (Cookie: __Host-tenant_session=TS1)
-    CrmA-->>Browser: 200
+    CrmA-->>Browser: 302 /<br/>Set-Cookie: __Host-tenant_session=TS1#59; Path=/#59; Secure#59; HttpOnly#59; SameSite=Lax<br/>Set-Cookie: __Secure-tenant_pre_auth=#59; Max-Age=0
+    Browser->>CrmA: GET / → 200 index.html
+    Browser->>CrmA: GET /session (Cookie: __Host-tenant_session=TS1)
+    CrmA-->>Browser: 200 {authenticated:true, user, csrfToken}。Token は含まない
+    Browser->>CrmA: GET /api/v1/me (Cookie: __Host-tenant_session=TS1)
+    CrmA-->>Browser: 200 {role, permissions, service.roles, service.permissions}
 ```
 
 ### 6.2 別テナントへの SSO。suzuki.crm を初めて開く
@@ -649,7 +660,7 @@ sequenceDiagram
     participant IdDB
     participant Store as Store (Redis)
 
-    Browser->>CrmB: GET /dashboard
+    Browser->>CrmB: GET / → GET /session → {authenticated:false} → GET /auth/login?return_to=/
     Note over CrmB: suzuki.crm の Cookie なし。tanaka.crm の Cookie はホストが違うので届かない
     CrmB->>CrmB: state=S2, nonce=N2, code_verifier=V2 を生成。pre-auth crm:suzuki:P2 を保存
     CrmB-->>Browser: 302 https://auth.example.com/authorize<br/>?response_type=code&client_id=crm<br/>&redirect_uri=https://suzuki.crm.example.com/auth/callback<br/>&scope=openid profile email&state=S2&nonce=N2<br/>&code_challenge=C2&code_challenge_method=S256<br/>Set-Cookie: __Secure-tenant_pre_auth=P2
@@ -672,8 +683,8 @@ sequenceDiagram
     Auth-->>CrmB: 200 {access_token:AT2(aud=api.crm, tenant_id=suzuki), id_token:IT2(aud=crm, tenant_slug=suzuki, nonce=N2, sid=SID1), refresh_token:RT2}
     CrmB->>CrmB: IT2 検証 (aud=crm, nonce==N2, tenant_slug==suzuki)
     CrmB->>CrmB: Tenant Session crm:suzuki:TS2 作成。sid 逆引き crm:sid:SID1 → [TS1, TS2]
-    CrmB-->>Browser: 302 /dashboard<br/>Set-Cookie: __Host-tenant_session=TS2
-    Browser->>CrmB: GET /dashboard
+    CrmB-->>Browser: 302 /<br/>Set-Cookie: __Host-tenant_session=TS2
+    Browser->>CrmB: GET / → GET /session → GET /api/v1/me
     CrmB-->>Browser: 200 (role: viewer)
 ```
 
@@ -690,7 +701,7 @@ sequenceDiagram
     participant Auth as Auth (auth.example.com)
     participant IdDB
 
-    Browser->>CmsA: GET /dashboard
+    Browser->>CmsA: GET / → GET /session → {authenticated:false} → GET /auth/login?return_to=/
     Note over CmsA: Host → service=cms, tenant=tanaka。cms の Cookie なし
     CmsA-->>Browser: 302 https://auth.example.com/authorize<br/>?client_id=cms&redirect_uri=https://tanaka.cms.example.com/auth/callback<br/>&state=S3&nonce=N3&code_challenge=C3&...
     Browser->>Auth: GET /authorize?... (Cookie sso_session=SS1)
@@ -701,10 +712,10 @@ sequenceDiagram
     CmsA->>Auth: POST /token  Basic cms:client_secret<br/>grant_type=authorization_code&code=AC3&code_verifier=V3
     Auth-->>CmsA: 200 {access_token:AT3(aud=https://api.cms.example.com, tenant_id=tanaka),<br/>id_token:IT3(aud=cms, tenant_slug=tanaka, sid=SID1), refresh_token:RT3}
     CmsA->>CmsA: IT3 検証 (aud=cms, tenant_slug==tanaka)。Tenant Session cms:tanaka:TS3 作成。cms:sid:SID1 → [TS3]
-    CmsA-->>Browser: 302 /dashboard  Set-Cookie: __Host-tenant_session=TS3
-    Note over Browser,CmsA: tanaka.crm と同じテナントのデータが、cms 向け Access Token で表示される
+    CmsA-->>Browser: 302 /  Set-Cookie: __Host-tenant_session=TS3
+    Note over Browser,CmsA: tanaka.crm と同じテナントのデータが、cms 向け Access Token で /api/* 経由で表示される
 
-    Browser->>CmsB: GET /dashboard
+    Browser->>CmsB: GET / → GET /session → {authenticated:false} → GET /auth/login?return_to=/
     Note over CmsB: Host → service=cms, tenant=suzuki
     CmsB-->>Browser: 302 https://auth.example.com/authorize<br/>?client_id=cms&redirect_uri=https://suzuki.cms.example.com/auth/callback&state=S4&...
     Browser->>Auth: GET /authorize?... (Cookie sso_session=SS1)
@@ -731,7 +742,8 @@ sequenceDiagram
     participant ApiCrm as ApiCrm (api.crm.example.com)
     participant CrmDB
 
-    Browser->>CrmA: GET /dashboard (Cookie: __Host-tenant_session=TS1)
+    Browser->>CrmA: GET /api/v1/end-users (Cookie: __Host-tenant_session=TS1)
+    Note over CrmA: セッションがなければ 401。書き込みなら X-CSRF-Token を照合し、不一致は 403
     CrmA->>SessCrm: crm:tanaka:TS1 を取得。lastSeenAt 更新
     CrmA->>CrmA: access_token の残り寿命を確認
     opt 残り 60 秒未満
@@ -758,10 +770,10 @@ sequenceDiagram
         CrmA->>Auth: POST /token grant_type=refresh_token (1回だけ再試行)
         CrmA->>ApiCrm: GET /v1/end-users Bearer 新 AT
     end
-    CrmA-->>Browser: 200 HTML
+    CrmA-->>Browser: 200 JSON をそのまま返す。SPA が一覧を描く
 ```
 
-ブラウザは api.crm.example.com と直接通信しない。CORS 設定は不要になる。AT1 を api.cms.example.com に送ると aud 不一致で 401 になる。API は Identity DB に接続せず、自分の DB だけで認可する。
+ブラウザは api.crm.example.com と直接通信しない。BFF の `/api/*` が同一オリジンで中継するため CORS 設定は不要になる。API がセッション切れを返したら BFF は 401 にし、SPA が `/auth/login?return_to=<現在のパス>` へ遷移する。AT1 を api.cms.example.com に送ると aud 不一致で 401 になる。API は Identity DB に接続せず、自分の DB だけで認可する。
 同じセッションで画面と API 中継が同時に Refresh に入ると Refresh Token を二重に送ることになり、Auth Server は 2 回目を再利用として扱う。サービス側はセッション単位のロックで Refresh を 1 回にまとめ、待った側は更新後のセッションを読み直して続行する。API Server は全ルートで body を 64 KB に制限し、応答に `Cache-Control: no-store` を付ける。
 
 ### 6.5 ログイン済みホストの再訪とセッション期限切れ
@@ -774,18 +786,21 @@ sequenceDiagram
     participant Auth as Auth (auth.example.com)
 
     Note over Browser,CrmA: Tenant Session 有効中は Auth と通信しない
-    Browser->>CrmA: GET /dashboard (Cookie TS1 有効)
-    CrmA-->>Browser: 200
+    Browser->>CrmA: GET /session (Cookie TS1 有効)
+    CrmA-->>Browser: 200 {authenticated:true, ...}
 
     Note over Browser,Auth: Tenant Session が 30 分アイドルで失効、SSO Session は有効
-    Browser->>CrmA: GET /dashboard (Cookie TS1 失効)
-    CrmA-->>Browser: 302 /auth/login?return_to=/dashboard → 302 /authorize?client_id=crm&redirect_uri=https://tanaka.crm.example.com/auth/callback&...
+    Browser->>CrmA: GET /session または GET /api/... (Cookie TS1 失効)
+    CrmA-->>Browser: /session は {authenticated:false}、/api/* は 401
+    Note over Browser: SPA が /auth/login?return_to=<現在のパス> へ遷移
+    Browser->>CrmA: GET /auth/login?return_to=/end-users
+    CrmA-->>Browser: 302 /authorize?client_id=crm&redirect_uri=https://tanaka.crm.example.com/auth/callback&...
     Browser->>Auth: GET /authorize (Cookie sso_session=SS1 有効)
     Auth-->>Browser: 302 /auth/callback?code&state (ログイン画面なし)
     Browser->>CrmA: GET /auth/callback
     CrmA->>Auth: POST /token
     Auth-->>CrmA: tokens
-    CrmA-->>Browser: 302 /dashboard  Set-Cookie: tenant_session=新 ID
+    CrmA-->>Browser: 302 /end-users  Set-Cookie: tenant_session=新 ID
 
     Note over Browser,Auth: SSO Session も 2 時間アイドルで失効
     Browser->>Auth: GET /authorize (Cookie sso_session=SS1 失効)
@@ -808,10 +823,10 @@ sequenceDiagram
     Auth-->>CrmA: 200 (系列 F1 を失効)
     CrmA->>SessCrm: TS1 を削除。crm:sid:SID1 から TS1 を外す
     CrmA-->>Browser: 302 /?logged_out=1<br/>Set-Cookie: __Host-tenant_session=#59; Max-Age=0
-    Note over Browser: sso_session、suzuki.crm、tanaka.cms の Cookie は残る<br/>tanaka.crm → ログアウト、suzuki.crm / tanaka.cms → ログイン済み<br/>tanaka.crm の保護ページを開き直すと 6.5 の流れで無画面再ログインされる
+    Note over Browser: sso_session、suzuki.crm、tanaka.cms の Cookie は残る<br/>tanaka.crm → ログアウト、suzuki.crm / tanaka.cms → ログイン済み<br/>SPA は ?logged_out=1 のときだけ再ログインへ送らず「ログアウトしました」を出す<br/>「もう一度ログインする」を押すと 6.5 の流れで無画面再ログインされる
 ```
 
-ログアウト後の画面には「Sandbox 全体からログアウト」のリンクがあり、`https://auth.example.com/logout?client_id=crm&tenant=tanaka` を指す。
+ログイン中の画面のヘッダには「全体からログアウト」のリンクがあり、`/session` の `urls.globalLogout` で渡す `https://auth.example.com/logout?client_id=crm&tenant=tanaka` を指す。
 
 ### 6.7 Global Logout と Back-Channel Logout
 
@@ -1155,12 +1170,14 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `packages/shared/src/oidc-protocol.ts` | Auth Server と OIDC Client の間のワイヤ契約。access_denied の理由一覧、期限切れを表す `error_description`、Bearer ヘッダの読み書き |
 | `packages/oidc-client` | サービス側に移植する OIDC Client 実装。Host からのサービス / テナント解決、tenant_slug 照合を含む |
 | `apps/auth-api/src/usecases` | Auth Server の判定ロジック。契約とサービスへの割り当ての確認順序はここ |
-| `packages/web-core` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、画面、API 呼び出し |
+| `packages/web-core` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、`/session`、`/api/*` の中継と CSRF 検証、SPA の配信と CSP、エラー画面。`src/spa.ts` に静的配信と開発時の中継 |
+| `packages/web-ui` | crm-web / cms-web が共有する React コード。`api.ts` の `/session` `/api/*` の呼び出しと 401 での再ログイン、`shell.tsx` のルート clientLoader と共通の枠、`members-page.tsx` の管理アカウント画面 |
+| `apps/crm-web/app` `apps/cms-web/app` | React Router v8 の SPA。`root.tsx` `routes.ts` と、CRM はエンドユーザー、CMS は投稿の画面。`react-router.config.ts` は `ssr: false` |
 | `packages/api-core/src/usecases/resolve-tenant-context.ts` `packages/api-core/src/service-definition.ts` | API 側の Host → aud 確認、Token 検証、自サービス DB の members の取得と既定の役割での作成、役割の既定に `permission_overrides` を重ねる権限の確定。`ServiceDefinition` で役割と権限の語彙を宣言する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
 | `packages/api-core/src/routes/members.ts` `packages/api-core/src/adapters/auth-admin-client.ts` | 管理アカウントの一覧、招待、役割変更、権限の上書き、削除。招待と削除は Auth Server の管理 API を client_secret_basic で呼ぶ |
 | `apps/crm-api/src/definition.ts` `apps/cms-api/src/definition.ts` | サービスごとの役割と権限の宣言。CRM は owner / admin / member / viewer と `end_users:*`、CMS は owner / editor / viewer と `posts:*` |
-| `scripts/smoke.ts` | 実 HTTP での受け入れ確認。別サービス SSO と未契約サービスの拒否まで通す |
-| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。CSP のような fetch では見えない問題を検出する |
+| `scripts/smoke.ts` | 実 HTTP での受け入れ確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービス SSO と未契約サービスの拒否まで通す |
+| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する。CSP のような fetch では見えない問題を検出する |
 
 ## 11. 用語
 

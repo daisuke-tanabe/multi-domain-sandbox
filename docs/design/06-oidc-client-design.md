@@ -110,7 +110,7 @@ Host の解決
   2. baseHost の前のラベルを tenantSlug とする。tanaka.crm.sandbox.com → service=crm, tenantSlug=tanaka
   3. redirect_uri = <scheme>://<host>/auth/callback
 
-GET /auth/login?return_to=/dashboard
+GET /auth/login?return_to=/end-users
   1. Host から tenantSlug を解決する
   2. return_to を検証。自ドメイン内の絶対パスのみ許可
   3. state, nonce, code_verifier を生成
@@ -154,7 +154,7 @@ Refresh Token は一回限りで、同じ値を二重に送ると Auth Server �
 - `startWebCore` は `/healthz` を `tenantContext` より前に返す。ALB のヘルスチェックはテナントのホストで来ない
 - `backchannelRoutes(deps, provider)` は `tenantContext` ミドルウェアより前に mount する。Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、ミドルウェア側にパスの特別扱いを持たせない。IP あたり 60 回/分のレート制限と 16 KB の body 上限を持つ
 - `oidcRoutes(deps, provider, renderError)` は `tenantContext` の後に mount し、Client を `c.get("tenantClient")` から受け取る。`/auth/*` は IP あたり 60 回/分のレート制限と 16 KB の body 上限を持つ。`AUTH_ROUTE_RATE_LIMIT`
-- web アプリ全体に `Cache-Control: no-store` を付ける。ログイン済みページには CSRF トークンや role が載るため、bfcache や共有端末に残さない
+- web アプリ全体に `Cache-Control: no-store` を付ける。`/session` と `/api/*` の応答には CSRF トークンや role が載るため、bfcache や共有端末に残さない。ハッシュ付きの `/assets/*` だけは immutable で上書きする
 - Tenant Logout の CSRF 比較は `timingSafeEqualString` で行う
 - Cookie の読み書きは `cookies.ts` にまとめる。セッション Cookie と pre-auth Cookie の読み取り、書き込み、削除。Secure と `__Host-` は `PUBLIC_SCHEME` が `https` のときに付く
 - ストアは `startWebCore` がサービスごとに `<clientId>:sess` `<clientId>:sid` `<clientId>:pre` `<clientId>:lock` `<clientId>:ratelimit` のプレフィックスで作る。`<clientId>:sid` は `SetStore`、`<clientId>:ratelimit` は `CounterStore`。1 プロセス 1 サービスのため、ストア内のキーは `<tenantSlug>:<sessionId>`、`sid:<sid>`、`<tenantSlug>:<preAuthId>` とし clientId を含めない
@@ -163,7 +163,25 @@ Refresh Token は一回限りで、同じ値を二重に送ると Auth Server �
 - `PreAuthState` は state / nonce / codeVerifier / returnTo の 4 項目。id と作成時刻は持たず、寿命はストアの TTL で管理する
 - `TenantSession.tenantId` は常に文字列。null にならない
 
-画面は `packages/web-core/src/app.ts` にあり、当面はプレースホルダ。`/` はログイン状態と Tenant Logout 後の案内、`/dashboard` は `requireSession` の後に `apiFetch` で `/v1/me` を呼び、role と Permission / Granted の表を出す。エンドユーザーの一覧、投稿、招待、権限の編集の画面は次の段階で React Router v7 の SPA として追加する。API は先に揃っている。判断事項D17。
+画面は React Router v8 の SPA で、`apps/<service>-web/app` と `packages/web-ui` にある。`packages/web-core/src/app.ts` の BFF は `/auth/*` に加えて次を持ち、SPA 以外の画面をサーバー側で描かない。判断事項D18。
+
+```text
+GET /session
+  ログイン状態を JSON で返す。{service, tenant, urls: {login, logout, globalLogout}, authenticated, user?, csrfToken?}
+  Token は返さない。globalLogout は <issuer>/logout?client_id=..&tenant=..
+
+ALL /api/*
+  1. セッションがなければ 401 {error: "unauthenticated"}
+  2. GET / HEAD / OPTIONS 以外は X-CSRF-Token ヘッダとセッションの csrfToken を timingSafeEqualString で照合。不一致は 403
+  3. body は application/json のみ。それ以外は 415。上限 64 KB
+  4. apiFetch で API_BASE_URL + (/api を除いたパス) を呼び、応答の status と JSON をそのまま返す
+  5. apiFetch が session_expired なら 401 にし、SPA が /auth/login?return_to=<現在のパス> へ遷移する
+
+GET /*
+  SPA の配信。SPA_DIR があれば index.html と /assets/*、SPA_DEV_SERVER_URL があれば react-router dev への中継。両方なければ最小の HTML
+```
+
+SPA 側は `packages/web-ui` の `api.ts` がこの契約を担う。`loadSession` が `/session` を読んで CSRF トークンを保持し、`api(path, init)` が `/api${path}` を `accept: application/json` で呼び、JSON body には `content-type` を、GET 以外には `x-csrf-token` を付ける。401 なら `/auth/login?return_to=<現在のパス>` へ遷移する。ルートの `clientLoader` は `loadShell` で、未ログインなら同じ遷移を行い、`?logged_out=1` のときだけログアウト済み画面を出す。
 
 設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。スキーマは `packages/web-core/src/config.ts` の `loadWebCoreConfig`。`CLIENT_SECRET` は 43 文字以上でなければ起動に失敗する。`PUBLIC_SCHEME` が `https` のときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` も必須になる。
 

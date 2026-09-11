@@ -4,16 +4,28 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --import tsx --watch src/main.ts",
+    "dev": "concurrently -k -n bff,spa \"node --env-file-if-exists=.env --import tsx --watch src/main.ts\" \"react-router dev\"",
+    "build": "react-router build",
     "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typegen": "react-router typegen",
+    "typecheck": "react-router typegen && tsc -p tsconfig.json && tsc -p tsconfig.app.json"
   },
   "dependencies": {
     "@sandbox/web-core": "workspace:*",
+    "@sandbox/web-ui": "workspace:*",
+    "isbot": "^5",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-router": "catalog:",
     "tsx": "catalog:"
   },
   "devDependencies": {
+    "@react-router/dev": "catalog:",
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "concurrently": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:"
   }
 }

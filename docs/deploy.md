@@ -7,6 +7,7 @@ AWS / Terraform 側はまだ旧構成のままである。旧構成ではテナ�
 さらにアプリはサービスごとに web と api を分けた構成に変わっている。旧構成の auth-server / tenant-web / api-server / provision は auth-api / crm-web / crm-api / cms-web / cms-api / provision になった。`scripts/deploy.sh` と `Dockerfile` は新しいアプリ名でビルドするが、Terraform の ECR リポジトリ名、ECS サービス名、タスク定義、CloudWatch Logs のロググループ名は旧名のままで一致しない。
 環境変数も `*-web` の `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` と `*-api` の `API_BASE_URL` `DATABASE_URL` `CLIENT_ID` `CLIENT_SECRET` に変わっており、旧構成の `TENANT_CLIENTS` と `API_AUDIENCE` はどのアプリも読まない。
 DB もサービスごとに分かれた。auth-api は identity DB、crm-api は crm DB、cms-api は cms DB にしか接続せず、3 つのデータベースが必要になる。Terraform は単一の RDS インスタンスに 1 つのデータベースを作る構成のままで、provision タスクは identity DB しか初期化しない。crm / cms の DB は `db/crm/init` と `db/cms/init` の SQL を別途適用する必要があり、その仕組みは未整備。RDS で 3 つのデータベースを作るか、インスタンスを分けるかは移行時に決める。
+`*-web` の画面は React Router の SPA になり、本番は `react-router build` の成果物 `build/client` を `SPA_DIR` で BFF に配らせる。`Dockerfile` はまだ `react-router build` を実行せず、`pnpm deploy` で展開した `src/main.ts` を起動するだけのため、`*-web` のイメージに SPA が入らない。`PUBLIC_SCHEME=https` では `SPA_DIR` が必須で、欠けると起動に失敗する。イメージのビルドに SPA のビルドを含める作業も移行に含める。
 Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名、タスク定義の環境変数、Secrets Manager の client_secret と各 DB ロールのパスワード、3 つのデータベースを現在の構成へ移行する作業は別途行う。それまでこの手順で apply しても現在のアプリは起動しない。以下の Terraform に関する記述は旧構成のものをそのまま残している。
 
 ## 結論
@@ -29,7 +30,7 @@ Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名
 | 秘密値 | Secrets Manager。DB パスワード、署名鍵、Token 暗号化鍵、client_secret、テストユーザーのパスワード |
 | ログ | CloudWatch Logs。`/ecs/multi-domain-sandbox/<app>` |
 
-ローカルとの差分は環境変数だけで吸収する。Cookie の Secure と `__Host-` プレフィックスは auth-api が `ISSUER` の scheme、`*-web` が `PUBLIC_SCHEME` から導き、切り替え用の変数はない。https にすると本番の値が揃っていることを起動時に検証する。auth-api は `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk` が必須で、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` が必須。欠けると起動に失敗する。
+ローカルとの差分は環境変数だけで吸収する。Cookie の Secure と `__Host-` プレフィックスは auth-api が `ISSUER` の scheme、`*-web` が `PUBLIC_SCHEME` から導き、切り替え用の変数はない。https にすると本番の値が揃っていることを起動時に検証する。auth-api は `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk` が必須で、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR` が必須。欠けると起動に失敗する。
 アプリ側で必要な環境変数は次のとおり。Terraform のタスク定義はまだこれらを渡していない。
 crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶだけで、crm-api / cms-api の `main.ts` はサービスの定義と routes を `packages/api-core` の起動関数に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。`*-api` は `PUBLIC_SCHEME` を読まず、aud は `API_BASE_URL` そのものになる。
 
@@ -40,6 +41,7 @@ crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶ
 | crm-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `crm` / Secrets Manager の値。43 文字以上 / `CRM` / `crm.<domain>` / `https://api.crm.<domain>` |
 | cms-web | 同上 | `cms` / Secrets Manager の値。43 文字以上 / `CMS` / `cms.<domain>` / `https://api.cms.<domain>` |
 | crm-web / cms-web | `ISSUER` `REDIS_URL` | `https://auth.<domain>` / `rediss://...`。`PUBLIC_SCHEME` が https のため両方必須 |
+| crm-web / cms-web | `SPA_DIR` | `build/client`。`react-router build` の成果物を BFF が配る。`PUBLIC_SCHEME` が https のため必須で、`SPA_DEV_SERVER_URL` は使わない |
 | crm-api | `API_BASE_URL` | `https://api.crm.<domain>`。そのまま aud になり、provision が oidc_clients.audience に書く `apiBaseUrl` と同じ値にする |
 | cms-api | `API_BASE_URL` | `https://api.cms.<domain>` |
 | crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:<password>@<rds>/crm?sslmode=no-verify` / `postgres://cms_app:<password>@<rds>/cms?sslmode=no-verify`。identity DB には接続しない |
@@ -101,7 +103,7 @@ git の短縮 SHA をイメージタグにして push し、タスク定義を�
 cd terraform && terraform output urls
 ```
 
-移行後はブラウザで `https://tanaka.crm.sandbox.daisuke-tanabe.dev/dashboard` を開き、alice でログインする。
+移行後はブラウザで `https://tanaka.crm.sandbox.daisuke-tanabe.dev/` を開き、alice でログインする。
 `SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。両スクリプトは `<tenant>.<service>.<SANDBOX_DOMAIN>` のホストを前提にするため、Terraform の移行が終わるまで AWS に対しては通らない。
 
 ```bash

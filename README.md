@@ -24,11 +24,12 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | ディレクトリ | 役割 | ローカルホスト |
 | --- | --- | --- |
 | `apps/auth-api` | OpenID Provider。ログイン画面、認可、Token 発行、SSO Session、ポータル、サービス向けの管理 API。画面は当面ここで配信し、React の auth-web は次段階で分離する | http://auth.localhost:3000 |
-| `apps/crm-web` | CRM の Tenant Web Application。BFF。1 プロセスで CRM の全テナントのホストを受ける。`main.ts` は `startWebCore("crm-web")` を呼ぶだけ | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
+| `apps/crm-web` | CRM の Tenant Web Application。React Router の SPA と薄い BFF。1 プロセスで CRM の全テナントのホストを受ける。`src/main.ts` は `startWebCore("crm-web")` を呼ぶだけで、`app/` にホーム、エンドユーザー、管理アカウントの画面を持つ | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
 | `apps/crm-api` | CRM の Resource Server。`definition.ts` に役割と権限、`end-users/` にエンドユーザーの CRUD とマスキング。`main.ts` は定義と routes を `startApiCore` に渡す | http://api.crm.localhost:3002 |
-| `apps/cms-web` | CMS の Tenant Web Application。crm-web と同じ実装をサービス設定だけ変えて起動する | http://tanaka.cms.localhost:3003 / http://suzuki.cms.localhost:3003 |
+| `apps/cms-web` | CMS の Tenant Web Application。crm-web と同じ構成で、`app/` にホーム、投稿、管理アカウントの画面を持つ | http://tanaka.cms.localhost:3003 / http://suzuki.cms.localhost:3003 |
 | `apps/cms-api` | CMS の Resource Server。`definition.ts` に役割と権限、`posts/` に投稿の CRUD | http://api.cms.localhost:3004 |
-| `packages/web-core` | `apps/*-web` の実装本体。crm-web と cms-web はこれを起動するだけ。BFF として画面、`/auth/*` の受け口、API 中継、設定スキーマ `config.ts`、起動関数 `start.ts`、テストを持つ | |
+| `packages/web-core` | `apps/*-web` の BFF 本体。`/auth/*` の受け口、SPA に状態を渡す `/session`、API への中継 `/api/*`、SPA の配信、エラー画面、設定スキーマ `config.ts`、起動関数 `start.ts`、テストを持つ。Token をブラウザへ出さない | |
+| `packages/web-ui` | `apps/*-web` が共有する React コード。BFF との通信 `api.ts`、ルートの clientLoader と共通の枠 `shell.tsx`、CRM と CMS で同じ管理アカウント画面 `members-page.tsx`、`styles.css` | |
 | `packages/api-core` | `apps/*-api` のフレームワーク。`ServiceDefinition` で役割と権限を宣言させ、Token 検証、自サービス DB の member 行の解決、権限の確定、`/v1/me`、管理アカウントの `/v1/members`、`MemberRepository`、auth-api の管理 API を呼ぶ `AuthAdminClient`、RLS 用の `withTenant`、設定スキーマ、起動関数を持つ。auth-api は使わない | |
 | `packages/shared` | Result 型、KV ストアと StoreFactory、PKCE、AES-GCM、secret の SHA-256 ハッシュ、redirect_uri テンプレート、JWT と JWKS 取得、Cookie、ロガー、環境変数の検証、pg 接続、識別子の enum、セッション期限、OIDC のワイヤ契約 | |
 | `packages/oidc-client` | Tenant Web Application 向け OIDC Client 共通モジュール | |
@@ -36,8 +37,8 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | `db/crm` `db/cms` | サービスごとの DB の初期化 SQL。ロール `crm_app` / `cms_app`、`members` `permission_overrides` と業務テーブル、RLS、シード | |
 | `tools/provision` | RDS の identity スキーマ作成、Cognito テストユーザー作成、シード投入。ECS の一回限りタスク。サービスの DB は扱わない | |
 | `terraform` | AWS 構成。ECS Fargate + ALB、RDS、ElastiCache、Cognito、Route 53、ACM | |
-| `scripts/smoke.ts` | 起動中のサーバーに対する実 HTTP の疎通確認。別サービスへの SSO、サービスごとの役割と権限、未契約サービスの拒否まで確認する | |
-| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。smoke と同じシナリオをブラウザで通す | |
+| `scripts/smoke.ts` | 起動中のサーバーに対する実 HTTP の疎通確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービスへの SSO、サービスごとの役割と権限、未契約サービスの拒否まで確認する | |
+| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を実際に描画し、画面の文字列が出るまで待って確認する | |
 | `scripts/deploy.sh` 他 | AWS へのビルドと apply。手順は [docs/deploy.md](./docs/deploy.md) | |
 
 ## 前提
@@ -77,8 +78,9 @@ cp apps/cms-api/.env.example apps/cms-api/.env
 | アプリ | 変数 | 内容 |
 | --- | --- | --- |
 | crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。oidc_clients と oidc_client_secrets の登録値と一致させる。`CLIENT_SECRET` は active な secret のいずれかで、43 文字以上でなければ起動に失敗する |
-| crm-web / cms-web | `BASE_HOST` `PUBLIC_SCHEME` | テナントのサブドメインを除いたホストと redirect_uri の scheme。`crm.localhost:3001` / `cms.localhost:3003`。Host `<tenant>.<BASE_HOST>` からテナント slug を決め、`<PUBLIC_SCHEME>://<host>/auth/callback` を redirect_uri にする。oidc_clients の `redirect_uri_template` を展開した値と一致する。`https` にすると Cookie に Secure と `__Host-` が付き、`REDIS_URL` と https の `ISSUER` / `API_BASE_URL` が必須になる |
-| crm-web / cms-web | `API_BASE_URL` | 呼び出す API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004` |
+| crm-web / cms-web | `BASE_HOST` `PUBLIC_SCHEME` | テナントのサブドメインを除いたホストと redirect_uri の scheme。`crm.localhost:3001` / `cms.localhost:3003`。Host `<tenant>.<BASE_HOST>` からテナント slug を決め、`<PUBLIC_SCHEME>://<host>/auth/callback` を redirect_uri にする。oidc_clients の `redirect_uri_template` を展開した値と一致する。`https` にすると Cookie に Secure と `__Host-` が付き、`REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR` が必須になる |
+| crm-web / cms-web | `API_BASE_URL` | 呼び出す API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004`。BFF の `/api/*` がここへ中継する |
+| crm-web / cms-web | `SPA_DIR` `SPA_DEV_SERVER_URL` | SPA の配り方。`SPA_DIR=build/client` なら `react-router build` の成果物を配る。`SPA_DEV_SERVER_URL=http://127.0.0.1:5173` なら `react-router dev` の Vite へ中継する。cms-web は 5174。両方あれば `SPA_DIR` を優先し、両方なければ `/auth/*` `/session` `/api/*` だけを返して警告を出す |
 | auth-api | `ISSUER` `DATABASE_URL` | Auth Server の公開 URL と identity DB の接続 URL。`postgres://sandbox_auth:sandbox_auth@127.0.0.1:5432/identity`。`ISSUER` が `https://` で始まると Cookie に Secure と `__Host-` が付き、`SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk` が必須になる |
 | crm-api / cms-api | `API_BASE_URL` | この API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004`。この値がそのまま aud になり、oidc_clients.audience と一致させる。Host が URL のホストと異なるリクエストは 404。`*-api` は `PUBLIC_SCHEME` を持たない |
 | crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:crm_app@127.0.0.1:5433/crm` / `postgres://cms_app:cms_app@127.0.0.1:5434/cms`。identity DB には接続しない |
@@ -91,7 +93,16 @@ cp apps/cms-api/.env.example apps/cms-api/.env
 pnpm dev
 ```
 
-auth-api / crm-web / crm-api / cms-web / cms-api の 5 アプリが同時に起動する。ブラウザで http://tanaka.crm.localhost:3001/dashboard を開く。
+auth-api / crm-web / crm-api / cms-web / cms-api の 5 アプリが同時に起動する。crm-web と cms-web は BFF と `react-router dev` の Vite を並行して起動し、BFF が Vite へ中継する。ブラウザで http://tanaka.crm.localhost:3001/ を開く。Vite のポート 5173 / 5174 は直接開かない。
+
+本番相当で動かすときは SPA をビルドし、`SPA_DIR` を指して BFF だけを起動する。
+
+```bash
+pnpm build
+SPA_DIR=build/client pnpm --filter @sandbox/crm-web start
+```
+
+`pnpm build` は各 web アプリで `react-router build` を実行し、`apps/<service>-web/build/client` を作る。`start` は BFF だけを起動し、`SPA_DIR` があれば Vite へ中継しない。
 
 ## ローカルのサービスとテナント
 
@@ -208,17 +219,26 @@ auth-api の管理 API。Back Channel 専用で `Authorization: Basic base64(cli
 
 ## 画面
 
-`*-web` の画面は当面のプレースホルダで、`/dashboard` が `/v1/me` を呼んで role と権限の表を出す。表は Permission と Granted の 2 列で、そのサービスの全 permission について yes / no を示す。エンドユーザーの一覧、投稿、招待、権限の編集の画面は次のコミットで React Router v7 の SPA として追加する。API は先に揃っている。
+`*-web` の画面は React Router v8 の SPA で、`apps/<service>-web/app` にある。BFF は Token を持ったまま `/session` でログイン状態と CSRF トークンだけを渡し、SPA は `/api/*` 経由でサービスの API を呼ぶ。ブラウザに Token は届かない。
+
+| 画面 | パス | 内容 |
+| --- | --- | --- |
+| ホーム | `/` | 役割と権限の表。そのサービスの全 permission について yes / no を示す |
+| エンドユーザー | `/end-users` | CRM。一覧と作成、更新、削除。`end_users:unmask` がなければ「メールと電話はマスクされています」、あれば「メールと電話をそのまま表示しています」と出る。作成、更新、削除のボタンは `end_users:create` `end_users:update` `end_users:delete` があるときだけ出る |
+| 投稿 | `/posts` | CMS。一覧と作成、編集、削除。`posts:create` がなければ「投稿を作成できません」と出る |
+| 管理アカウント | `/members` | CRM と CMS で同じ画面。一覧、メールと名前と役割での招待、役割の変更、権限の上書きの編集、削除。役割と権限の語彙は `/v1/me` の `service.roles` と `service.permissions` から取る |
+
+画面の出し分けは `/v1/me` の `permissions` で行い、最終判定は API がする。ヘッダにはサービス名、テナント、ユーザーと役割、ナビゲーション、このテナントからのログアウト、全体からログアウトのリンクが並ぶ。未ログインで開くと SPA が `/session` を見て `/auth/login` へ遷移する。
 
 ## 確認できる挙動
 
-1. tanaka.crm に未ログインでアクセスすると auth.localhost のログイン画面へ遷移する
-2. alice でログインすると tanaka の Dashboard に `role: owner` と CRM の権限の表が出る。`end_users:create` は yes。Cookie は tanaka.crm.localhost と auth.localhost にだけ発行される
+1. tanaka.crm に未ログインでアクセスすると SPA が `/session` で未ログインを知り、`/auth/login` を経て auth.localhost のログイン画面へ遷移する
+2. alice でログインすると tanaka のホームに「tanaka の CRM に owner としてログインしています」と CRM の権限の表が出る。`end_users:create` は yes。Cookie は tanaka.crm.localhost と auth.localhost にだけ発行される
 3. そのまま suzuki.crm を開くとログイン画面なしで入れる。role は viewer で `end_users:create` は no だが、上書きにより `end_users:unmask` は yes
 4. そのまま tanaka.cms を開くと、別サービスでもログイン画面なしで入れる。セッションは crm と別に作られ、Access Token の aud は cms の API になる。role は owner だが、cms 側の deny により `posts:create` は no で `posts:update` は yes
 5. suzuki.cms を開くと 403 になり「テナント suzuki は CMS を契約していません」と表示される。SSO Session は残る
-6. tanaka.crm でログアウトしても suzuki.crm と tanaka.cms はログイン済みのまま。tanaka.crm の Dashboard を開き直すと SSO Session によりパスワードなしで再ログインされる
-7. ログアウト後の画面にある「Sandbox 全体からログアウト」を押すと auth.localhost の確認画面に移り、SSO Session とすべてのサービス・テナントのセッションが無効化される。完了画面には「CRM (tanaka) に戻る」のように戻り先のリンクが出る
+6. tanaka.crm でログアウトすると `/?logged_out=1` に戻り「ログアウトしました」と出る。suzuki.crm と tanaka.cms はログイン済みのまま。「もう一度ログインする」を押すと SSO Session によりパスワードなしで再ログインされる
+7. ヘッダの「全体からログアウト」を押すと auth.localhost の確認画面に移り、SSO Session とすべてのサービス・テナントのセッションが無効化される。完了画面には「CRM (tanaka) に戻る」のように戻り先のリンクが出る
 8. bob で tanaka.crm を開くとアクセス権なしの画面になる。tanaka の crm に割り当てがないため。ログイン自体は成功しており suzuki.crm には入れる
 9. carol はどのサービスにも割り当てられていないため、どのホストを開いてもアクセス権なしになる
 10. http://auth.localhost:3000/ を直接開くとポータルになる。未ログインならログインフォーム、ログイン後はテナントごとに割り当てのあるサービスが並び、各サービスへパスワードなしで入れる。役割はサービスが持つためポータルには出ない。契約があっても割り当てのないサービスは出ない。carol には「利用できるサービスがありません。管理者に招待を依頼してください。」と出る
@@ -227,8 +247,8 @@ auth-api の管理 API。Back Channel 専用で `Authorization: Basic base64(cli
 ## Tenant Logout の挙動について
 
 サービスの「ログアウト」はそのサービス × テナントのセッションだけを消し、auth.localhost の SSO Session は残す。仕様書 19.1 のとおり。
-そのためログアウト直後にヘッダーの Dashboard を押すと、認可リクエストが auth に飛び、SSO Session によりログイン画面なしで再ログインされる。Google のサービスからログアウトしても Google アカウント自体はログインしたまま、という関係と同じ。
-Sandbox 全体からログアウトしたい場合は、ログアウト後の画面やポータルにある「Sandbox 全体からログアウト」を使う。URL は `http://auth.localhost:3000/logout?client_id=crm&tenant=tanaka` の形で、戻り先の表示に使う。この挙動は 2026-09-09 に現状維持と決定した。
+そのためログアウト直後に「もう一度ログインする」を押すと、認可リクエストが auth に飛び、SSO Session によりログイン画面なしで再ログインされる。Google のサービスからログアウトしても Google アカウント自体はログインしたまま、という関係と同じ。
+Sandbox 全体からログアウトしたい場合は、ログイン中のヘッダにある「全体からログアウト」かポータルの「Sandbox 全体からログアウト」を使う。URL は `http://auth.localhost:3000/logout?client_id=crm&tenant=tanaka` の形で、戻り先の表示に使う。この挙動は 2026-09-09 に現状維持と決定した。
 
 ## アクセス拒否の理由
 
@@ -260,15 +280,15 @@ pnpm lint
 pnpm test
 ```
 
-テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/web-core/src/app.test.ts` は auth-api と、サービスごとの web インスタンスと実物の crm-api / cms-api をプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、tanaka.cms の owner が cms 側の deny で `posts:create` を持たないこと、Logout までを通す。テストは 133 件。管理 API による招待と初回ログインでの紐付け、割り当ての解除、CRM のマスキングと CRUD と役割ごとの可否と member 行の JIT 作成、CMS の投稿と editor の招待と役割語彙の分離、JWKS の強制再取得の間引き、同じ Refresh Token の同時提示、別 Client からの Refresh、再ログイン時の旧 SSO Session 破棄、ログインのレート制限、Tenant 側の同時 Refresh のような並行性と悪用への耐性も含む。
+テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/web-core/src/app.test.ts` は auth-api と、サービスごとの web インスタンスと実物の crm-api / cms-api をプロセス内で接続し、Cookie ジャー付きの簡易ブラウザで `/auth/login?return_to=` からログインし、`/session` と `/api/v1/me` の JSON で別テナント SSO、別サービス SSO、未契約サービスの拒否、tanaka.cms の owner が cms 側の deny で `posts:create` を持たないこと、Logout までを通す。SPA は配らず、`/auth/*` `/session` `/api/*` を検証する。テストは 135 件。管理 API による招待と初回ログインでの紐付け、割り当ての解除、CRM のマスキングと CRUD と役割ごとの可否と member 行の JIT 作成、CMS の投稿と editor の招待と役割語彙の分離、JWKS の強制再取得の間引き、同じ Refresh Token の同時提示、別 Client からの Refresh、再ログイン時の旧 SSO Session 破棄、ログインのレート制限、Tenant 側の同時 Refresh のような並行性と悪用への耐性も含む。
 
-起動中のサーバーと PostgreSQL に対する実 HTTP の確認は次で行う。tanaka.crm でのログインと owner の権限表、suzuki.crm への SSO と viewer の権限表、tanaka.cms への SSO と cms の語彙、cms 側の deny、suzuki.cms の拒否、Tenant Logout、Cookie に JWT がないことを 9 項目で確認する。
+起動中のサーバーと PostgreSQL に対する実 HTTP の確認は次で行う。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、tanaka.crm でのログインと owner の権限、suzuki.crm への SSO と viewer の権限、tanaka.cms への SSO と cms の語彙、cms 側の deny、suzuki.cms の拒否、Tenant Logout、Cookie に JWT がないことを 9 項目で確認する。
 
 ```bash
 pnpm smoke
 ```
 
-実 Chrome で同じシナリオを通す場合は次を使う。ポータルからの SSO と Global Logout まで 9 項目を確認する。
+実 Chrome で SPA を描画して確認する場合は次を使う。ログイン後のホーム、エンドユーザー一覧、別テナントと別サービスへの SSO、投稿一覧、未契約サービスの拒否、Tenant Logout、ポータルからの SSO と Global Logout まで 11 項目を確認する。SPA は読み込み後に `/session` と `/api` を読んでから描くため、画面の文字列が出るまで待って判定する。
 
 ```bash
 pnpm chrome-check
@@ -284,7 +304,8 @@ AWS 側はまだテナントごとに Client を持ち単一の RDS を使う旧
 | Cognito | `COGNITO_ADAPTER=mock` | `COGNITO_ADAPTER=sdk`。USER_SRP_AUTH で実 User Pool に接続 |
 | Session / Code Store | `REDIS_URL` 未設定でインメモリ | `REDIS_URL` で ElastiCache Redis |
 | 署名鍵 | 起動ごとに生成 | `SIGNING_KEY_PEM` を Secrets Manager から注入 |
-| Cookie | プレフィックスなし。`ISSUER` と `PUBLIC_SCHEME` が http | `ISSUER` が https、`PUBLIC_SCHEME` が https のとき `__Host-` / `__Secure-`。専用の切り替え変数はない。https のとき auth-api は `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk`、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` がないと起動しない |
+| Cookie | プレフィックスなし。`ISSUER` と `PUBLIC_SCHEME` が http | `ISSUER` が https、`PUBLIC_SCHEME` が https のとき `__Host-` / `__Secure-`。専用の切り替え変数はない。https のとき auth-api は `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk`、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR` がないと起動しない |
+| SPA の配信 | `SPA_DEV_SERVER_URL` で `react-router dev` の Vite へ中継 | `pnpm build` の `build/client` を `SPA_DIR` で配る。Vite への中継は使えない |
 | client_secret | `CLIENT_SECRET` のローカル固定値。`crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` / `cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA` | Terraform が 32 バイト以上の乱数を生成し Secrets Manager に保存。provision が oidc_client_secrets に active で upsert する。どちらも 43 文字以上 |
 | API の aud | `API_BASE_URL` の `http://api.crm.localhost:3002` / `http://api.cms.localhost:3004` | 同じ仕組みで `https://api.<service>.<domain>` |
 | DB | docker compose の 3 コンテナが初期化 SQL を適用 | identity は provision タスクがスキーマとシードを投入。crm / cms の DB は未整備で、`db/<service>/init` を別途適用する必要がある |
@@ -294,4 +315,4 @@ AWS 側はまだテナントごとに Client を持ち単一の RDS を使う旧
 - MFA チャレンジ。`/login/challenge`
 - Refresh Token 系列の永続化と監視
 - 複数テナントをまたぐ管理 API と `admin` scope
-- `*-web` の画面を React Router v7 の SPA に置き換え、エンドユーザー、投稿、招待、権限編集の画面を追加する
+- auth-api のログイン画面とポータルを `auth-web` として分離する

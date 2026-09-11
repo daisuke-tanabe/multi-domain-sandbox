@@ -53,6 +53,7 @@
 | 長期放置 | アイドルと絶対の二重タイムアウト |
 | Cookie のサブドメインからの上書き | `__Host-` により Domain 指定を不可能にする |
 | CSRF。ログイン POST / Logout POST | 同期トークン方式。Cookie 参照 ID とフォーム値の一致。比較は `timingSafeEqualString` |
+| CSRF。SPA から `/api/*` への書き込み | `/session` で渡した CSRF トークンを `X-CSRF-Token` ヘッダで要求し、GET / HEAD / OPTIONS 以外で不一致なら 403。body は JSON のみで、フォーム送信では通らない |
 | Login CSRF | ログインフォームの同期トークン。rid との紐付けと使用時の消費は未対応で、テナント側の state 検証が code の差し替えを止める |
 | lastSeenAt 更新による Token の巻き戻し | Tenant 側の `touchSession` は書く直前にセッションを読み直し、並行する Refresh が更新した Token を古い値で上書きしない |
 
@@ -60,7 +61,7 @@
 
 | 脅威 | 対策 |
 | --- | --- |
-| Token 漏洩 | ブラウザに置かない。サーバー側ストアのみ |
+| Token 漏洩 | ブラウザに置かない。サーバー側ストアのみ。SPA に渡す `/session` は Token を含まず、API は BFF の `/api/*` が中継する |
 | Refresh Token 再利用 | ローテーションと系列失効。消費は GETDEL で先に行い、直後に `rotated` として書き戻す。`rotated` / `revoked` の値が提示されたら系列全体を失効 |
 | Refresh Token の同時提示 | 同じ値を同時に 2 回提示しても、GETDEL で取り出せるのは 1 回だけ。成功は 1 つで、もう一方は `invalid_grant`。系列は失効しないため、正規の Client が続行できる |
 | 別 Client からの Refresh Token 提示 | client_id 不一致は漏洩とみなし `client_mismatch` として系列全体を失効 |
@@ -149,6 +150,15 @@ Cache-Control: no-store   (認証関連レスポンス)
 
 `<tenant>.<service>.sandbox.com` は `form-action 'self'` を追加してよい。フォームの送信先も送信後のリダイレクト先も自ホストに閉じるため。
 
+`<tenant>.<service>.sandbox.com` の CSP は SPA の配り方で `script-src` と `connect-src` が変わる。
+
+| 配り方 | `script-src` | `connect-src` |
+| --- | --- | --- |
+| 静的配信。`SPA_DIR` | `'self'` と `index.html` のインラインスクリプトの `'sha256-...'`。`'unsafe-inline'` は使わない | `'self'` |
+| 開発時の中継。`SPA_DEV_SERVER_URL` | `'self' 'unsafe-inline'` | `'self'` と Vite の origin と ws origin。HMR 用 |
+
+中継は開発専用で、`PUBLIC_SCHEME=https` では `SPA_DIR` を必須にして中継で起動できないようにする。`style-src` は `'self' 'unsafe-inline'`、`img-src` は `'self' data:`、`base-uri` は `'self'`。
+
 auth.sandbox.com には `form-action` を付けない。Chrome はフォーム送信後のリダイレクト先にも `form-action` を適用するため、ログイン POST から各テナント × サービスの redirect_uri への 302 がブロックされる。redirect_uri はテンプレートとテナントの組み合わせで動的に増えるため列挙できない。ログインフォームの CSRF は同期トークンで防ぐ。
 
 `/token` `/userinfo` `/revoke` の応答には `Cache-Control: no-store` と `Pragma: no-cache` を付ける。
@@ -179,7 +189,7 @@ Cookie の Secure と `__Host-` を外せる設定値を持たない。公開 sc
 | アプリ | 導出 | https のときの必須条件 |
 | --- | --- | --- |
 | auth-api | `cookieSecure = ISSUER が https:// で始まる` | `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk`。欠けると起動に失敗する |
-| crm-web / cms-web | `cookieSecure = PUBLIC_SCHEME === "https"` | `REDIS_URL` が設定され、`ISSUER` と `API_BASE_URL` が https。欠けると起動に失敗する |
+| crm-web / cms-web | `cookieSecure = PUBLIC_SCHEME === "https"` | `REDIS_URL` と `SPA_DIR` が設定され、`ISSUER` と `API_BASE_URL` が https。欠けると起動に失敗する |
 
 https で公開する構成で、起動ごとに生成される署名鍵、インメモリのセッション、モックの Cognito をそのまま使えないようにするための制約。ローカルの http では制約を課さない。
 
@@ -206,9 +216,10 @@ https で公開する構成で、起動ごとに生成される署名鍵、イ�
 | --- | --- | --- |
 | auth-api | 全ルート | 16 KB |
 | crm-web / cms-web | `/auth/*` と `/auth/backchannel-logout` | 16 KB |
+| crm-web / cms-web | `/api/*` | 64 KB。中継先の API と同じ |
 | crm-api / cms-api | 全ルート | 64 KB |
 
-Hono の `bodyLimit` を使う。フォーム、Token リクエスト、logout_token は数 KB で足りる。業務 API は CMS の投稿本文を含むため 64 KB にしている。
+Hono の `bodyLimit` を使う。フォーム、Token リクエスト、logout_token は数 KB で足りる。業務 API は CMS の投稿本文を含むため 64 KB にしており、BFF の `/api/*` も同じ上限にする。
 
 ## 未対応
 

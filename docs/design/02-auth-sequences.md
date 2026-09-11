@@ -41,10 +41,15 @@ sequenceDiagram
     participant SsoStore
     participant Sess
 
-    Browser->>TanakaCrm: GET /dashboard
+    Browser->>TanakaCrm: GET /
+    TanakaCrm-->>Browser: 200 SPA の index.html
+    Browser->>TanakaCrm: GET /session
     Note over TanakaCrm: tenant_session Cookieなし → 未ログイン<br/>Host から service=crm, tenantSlug=tanaka を解決
+    TanakaCrm-->>Browser: 200 {authenticated:false, urls:{login:"/auth/login", ...}}
+    Note over Browser: SPA の clientLoader が /auth/login?return_to=/ へ遷移
+    Browser->>TanakaCrm: GET /auth/login?return_to=/
     TanakaCrm->>TanakaCrm: state, nonce, code_verifier を生成<br/>code_challenge = BASE64URL(SHA256(code_verifier))
-    TanakaCrm->>Sess: pre-auth保存<br/>{state, nonce, code_verifier, return_to:"/dashboard"} TTL 30分
+    TanakaCrm->>Sess: pre-auth保存<br/>{state, nonce, code_verifier, return_to:"/"} TTL 30分
     TanakaCrm-->>Browser: 302 https://auth.sandbox.com/authorize<br/>?response_type=code&client_id=crm<br/>&redirect_uri=https://tanaka.crm.sandbox.com/auth/callback<br/>&scope=openid profile email<br/>&state=S1&nonce=N1<br/>&code_challenge=C1&code_challenge_method=S256<br/>Set-Cookie: tenant_pre_auth=P1#59; HttpOnly#59; Secure#59; SameSite=Lax#59; Path=/auth
 
     Browser->>Auth: GET /authorize?...
@@ -91,9 +96,13 @@ sequenceDiagram
     TanakaCrm->>Sess: Tenant Session作成。キー crm:tanaka:T1<br/>{user_id=sub, tenant_id, tenant_slug, sid, access_token, refresh_token, expires_at}
     TanakaCrm->>Sess: sid 逆引き crm:sid:<sid> に T1 を追加
     TanakaCrm->>Sess: pre-auth P1 削除
-    TanakaCrm-->>Browser: 302 /dashboard<br/>Set-Cookie: tenant_session=T1#59; HttpOnly#59; Secure#59; SameSite=Lax#59; Path=/<br/>Set-Cookie: tenant_pre_auth=#59; Max-Age=0
-    Browser->>TanakaCrm: GET /dashboard (tenant_session=T1)
-    TanakaCrm-->>Browser: 200 ログイン済みページ。role: owner と権限の表
+    TanakaCrm-->>Browser: 302 /<br/>Set-Cookie: tenant_session=T1#59; HttpOnly#59; Secure#59; SameSite=Lax#59; Path=/<br/>Set-Cookie: tenant_pre_auth=#59; Max-Age=0
+    Browser->>TanakaCrm: GET / → 200 index.html
+    Browser->>TanakaCrm: GET /session (tenant_session=T1)
+    TanakaCrm-->>Browser: 200 {authenticated:true, user, csrfToken}。Token は含まない
+    Browser->>TanakaCrm: GET /api/v1/me (tenant_session=T1)
+    TanakaCrm-->>Browser: 200 {role: owner, permissions, service.roles, service.permissions}
+    Note over Browser: SPA がホームに role と権限の表を描く
 ```
 
 要点。
@@ -103,7 +112,7 @@ sequenceDiagram
 - 認可リクエストのテナントは client_id と redirect_uri の組から Auth Server が解決する。redirect_uri をサービスの redirect_uri_template に当てて slug を取り出し、tenants を引く。Tenant Web Application はテナントを申告しない
 - アクセス判定は Cognito 認証成功後、code 発行前に行う。契約がないサービス、そのテナントのそのサービスに割り当てのないユーザーには code を発行しない
 - 認証は成功しているため SSO Session は作成する。アクセスできるテナントへ移動すればログイン画面なしで入れる
-- ブラウザに渡るのは Cookie のみ。access_token / refresh_token は TanakaCrm のサーバー側セッションに保存する
+- ブラウザに渡るのは Cookie のみ。access_token / refresh_token は TanakaCrm のサーバー側セッションに保存する。SPA は `/session` でログイン状態と CSRF トークンだけを受け取り、API は `/api/*` 経由で呼ぶ
 - ログイン成功時に Cookie が指す旧 SSO Session があれば破棄する。Cookie の上書きだけでは旧セッションが期限まで残る
 
 ## 2. 別テナント・別サービスへのSSO
@@ -122,8 +131,9 @@ sequenceDiagram
     participant SsoStore
     participant Sess
 
-    Browser->>SuzukiCrm: GET /dashboard
+    Browser->>SuzukiCrm: GET / → 200 index.html → GET /session → {authenticated:false}
     Note over SuzukiCrm: tenant_session Cookieなし<br/>tanaka.crm の Cookie は suzuki.crm には届かない
+    Browser->>SuzukiCrm: GET /auth/login?return_to=/
     SuzukiCrm->>Sess: pre-auth保存 {state:S2, nonce:N2, code_verifier:V2, return_to}
     SuzukiCrm-->>Browser: 302 https://auth.sandbox.com/authorize<br/>?client_id=crm&redirect_uri=https://suzuki.crm.sandbox.com/auth/callback<br/>&state=S2&nonce=N2&code_challenge=C2&code_challenge_method=S256&...
 
@@ -146,9 +156,9 @@ sequenceDiagram
     Auth-->>SuzukiCrm: 200 {id_token, access_token, refresh_token, ...}
     SuzukiCrm->>SuzukiCrm: id_token検証。aud=crm, nonce==N2, tenant_slug==suzuki
     SuzukiCrm->>Sess: Tenant Session作成 crm:suzuki:T2
-    SuzukiCrm-->>Browser: 302 /dashboard<br/>Set-Cookie: tenant_session=T2
-    Browser->>SuzukiCrm: GET /dashboard
-    SuzukiCrm-->>Browser: 200 ログイン済みページ。role: viewer と権限の表
+    SuzukiCrm-->>Browser: 302 /<br/>Set-Cookie: tenant_session=T2
+    Browser->>SuzukiCrm: GET / → GET /session → GET /api/v1/me
+    SuzukiCrm-->>Browser: 200 {role: viewer, permissions}。SPA がホームを描く
 ```
 
 同一ユーザーが tanaka の crm では owner、suzuki の crm では viewer というように、テナント × サービスごとに異なる role を持てる。role は CRM DB の members から crm-api が解決し、Access Token には載せない。Auth Server は「入れるか」だけを見る。
@@ -333,7 +343,8 @@ sequenceDiagram
     participant ApiCrm as ApiCrm (api.crm.sandbox.com)
     participant CrmDB
 
-    Browser->>TanakaCrm: GET /dashboard (tenant_session=T1)
+    Browser->>TanakaCrm: GET /api/v1/end-users (tenant_session=T1)
+    Note over TanakaCrm: セッションがなければ 401 {error: unauthenticated}<br/>書き込みなら X-CSRF-Token を照合し、不一致は 403
     TanakaCrm->>Sess: セッション crm:tanaka:T1 取得。access_token を取り出す
     TanakaCrm->>ApiCrm: GET /v1/end-users<br/>Host: api.crm.sandbox.com<br/>Authorization: Bearer <access_token>
     ApiCrm->>ApiCrm: Host が aud=https://api.crm.sandbox.com のホストと一致するか確認<br/>違えば 404
@@ -349,10 +360,10 @@ sequenceDiagram
     Note over ApiCrm,CrmDB: tenant_id は Token由来のみ。リクエストパラメータのtenant_idは使わない<br/>トランザクションごとに set_config('app.tenant_id') で RLS を併用
     CrmDB-->>ApiCrm: rows
     ApiCrm-->>TanakaCrm: 200 JSON。unmask がなければ email と phone をマスク
-    TanakaCrm-->>Browser: 200 HTML
+    TanakaCrm-->>Browser: 200 JSON をそのまま返す。SPA が一覧を描く
 ```
 
-ブラウザは API Server と直接通信しない。CORS設定は不要になる。CRM の Access Token を api.cms.sandbox.com に出すと aud 不一致で 401 になる。
+ブラウザは API Server と直接通信しない。BFF の `/api/*` が同一オリジンで中継するため CORS設定は不要になる。API がセッション切れを返したら BFF は 401 にし、SPA が `/auth/login` へ遷移して再ログインする。CRM の Access Token を api.cms.sandbox.com に出すと aud 不一致で 401 になる。
 役割も権限も Token には載っていない。API Server は Identity DB を見ず、役割と権限の上書きを自サービスの DB から毎回読む。「入れるか」は Auth Server が Token 発行時と Refresh 時に判定済みで、割り当てを外された人は Refresh で `invalid_grant` になり最大 15 分で API を呼べなくなる。alice が tanaka.cms で `POST /v1/posts` を呼ぶと、owner の既定に cms 側の `posts:create` の deny が重なり 403 になる。
 
 ## 4.1 招待と初回ログインでの紐付け
@@ -419,9 +430,10 @@ sequenceDiagram
     participant TanakaCrm as TanakaCrm (tanaka.crm.sandbox.com)
     participant Sess
 
-    Browser->>TanakaCrm: GET /dashboard (tenant_session=T1)
+    Browser->>TanakaCrm: GET / → 200 index.html
+    Browser->>TanakaCrm: GET /session (tenant_session=T1)
     TanakaCrm->>Sess: crm:tanaka:T1 を検証。lastSeenAt 更新
-    TanakaCrm-->>Browser: 200
+    TanakaCrm-->>Browser: 200 {authenticated:true, ...}
 ```
 
 ## 6. Tenant Session期限切れ。SSO Sessionは有効
@@ -435,14 +447,17 @@ sequenceDiagram
     participant TanakaCrm as TanakaCrm (tanaka.crm.sandbox.com)
     participant Auth as Auth (auth.sandbox.com)
 
-    Browser->>TanakaCrm: GET /dashboard (tenant_session=期限切れ)
+    Browser->>TanakaCrm: GET /session または GET /api/... (tenant_session=期限切れ)
+    TanakaCrm-->>Browser: /session は {authenticated:false}、/api/* は 401
+    Note over Browser: SPA が /auth/login?return_to=<現在のパス> へ遷移
+    Browser->>TanakaCrm: GET /auth/login?return_to=/end-users
     TanakaCrm-->>Browser: 302 /authorize へ
     Browser->>Auth: GET /authorize (sso_session有効)
     Auth-->>Browser: 302 /auth/callback?code&state
     Browser->>TanakaCrm: GET /auth/callback
     TanakaCrm->>Auth: POST /token
     Auth-->>TanakaCrm: tokens
-    TanakaCrm-->>Browser: 302 /dashboard<br/>Set-Cookie: tenant_session=新規ID
+    TanakaCrm-->>Browser: 302 /end-users<br/>Set-Cookie: tenant_session=新規ID
 ```
 
 ## 7. SSO Session期限切れ

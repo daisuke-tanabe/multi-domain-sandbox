@@ -19,6 +19,10 @@ const envSchema = z
     /** テナントのサブドメインを除いたホスト。例 crm.localhost:3001、crm.example.com */
     BASE_HOST: z.string().min(1),
     API_BASE_URL: z.string().url(),
+    /** react-router build の成果物。未設定なら SPA_DEV_SERVER_URL へ中継する */
+    SPA_DIR: z.string().min(1).optional(),
+    /** react-router dev の URL。開発時のみ */
+    SPA_DEV_SERVER_URL: z.string().url().optional(),
   })
   .transform((env): WebCoreConfig => ({
     port: env.PORT,
@@ -29,6 +33,8 @@ const envSchema = z
     // Cookie の Secure と __Host- は公開 scheme から決める。別の変数で外せる状態を作らない
     cookieSecure: env.PUBLIC_SCHEME === "https",
     baseHost: env.BASE_HOST.toLowerCase(),
+    spaDir: env.SPA_DIR,
+    spaDevServerUrl: env.SPA_DEV_SERVER_URL,
     service: {
       clientId: env.CLIENT_ID,
       clientSecret: env.CLIENT_SECRET,
@@ -45,6 +51,7 @@ const envSchema = z
     if (!config.issuer.startsWith("https://")) issues.push(["ISSUER", "must be https"]);
     if (!config.service.apiBaseUrl.startsWith("https://"))
       issues.push(["API_BASE_URL", "must be https"]);
+    if (config.spaDir === undefined) issues.push(["SPA_DIR", "is required"]);
     for (const [path, message] of issues) {
       ctx.addIssue({
         code: "custom",
@@ -62,6 +69,8 @@ export interface WebCoreConfig {
   readonly redisUrl: string | undefined;
   readonly cookieSecure: boolean;
   readonly baseHost: string;
+  readonly spaDir: string | undefined;
+  readonly spaDevServerUrl: string | undefined;
   readonly service: ServiceConfig;
 }
 

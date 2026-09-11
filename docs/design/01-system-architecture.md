@@ -32,21 +32,21 @@ flowchart TB
     end
 
     subgraph Crm ["CRM  OIDC Client: crm"]
-        WebCrm["Tenant Web App (BFF)<br/>tanaka.crm.sandbox.com<br/>suzuki.crm.sandbox.com"]
+        WebCrm["Tenant Web App<br/>SPA + BFF<br/>tanaka.crm.sandbox.com<br/>suzuki.crm.sandbox.com"]
         ApiCrm["API Server<br/>api.crm.sandbox.com"]
         CrmDB[("CRM DB<br/>members / permission_overrides<br/>end_users<br/>tenant_idで分離")]
     end
 
     subgraph Cms ["CMS  OIDC Client: cms"]
-        WebCms["Tenant Web App (BFF)<br/>tanaka.cms.sandbox.com"]
+        WebCms["Tenant Web App<br/>SPA + BFF<br/>tanaka.cms.sandbox.com"]
         ApiCms["API Server<br/>api.cms.sandbox.com"]
         CmsDB[("CMS DB<br/>members / permission_overrides<br/>posts<br/>tenant_idで分離")]
     end
 
     Sess[("Tenant Session Store<br/>ストア clientId:sess<br/>キー tenantSlug:sessionId")]
 
-    User -- "tenant_session Cookie<br/>ホストごとに別" --> WebCrm
-    User -- "tenant_session Cookie<br/>ホストごとに別" --> WebCms
+    User -- "tenant_session Cookie<br/>ホストごとに別<br/>SPA / /session / /api/*" --> WebCrm
+    User -- "tenant_session Cookie<br/>ホストごとに別<br/>SPA / /session / /api/*" --> WebCms
     User -- "sso_session Cookie<br/>認可リクエスト / ログインUI / ポータル" --> Auth
     Auth -- "InitiateAuth 等" --> Cognito
     Auth -- "読み書き" --> IdDB
@@ -62,7 +62,7 @@ flowchart TB
     ApiCms -- "JWKS取得<br/>管理 API で招待 / 解除" --> Auth
 ```
 
-サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。web の実装は `packages/web-core` で共有し、crm-web / cms-web の `main.ts` は `startWebCore` を呼ぶだけ。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api は `definition.ts` で役割と権限を宣言し、サービス固有の routes と repository を持って `startApiCore` に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
+サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。web は React Router v8 の SPA と薄い BFF で、BFF は `packages/web-core`、共通の React コードは `packages/web-ui` で共有する。crm-web / cms-web の `src/main.ts` は `startWebCore` を呼ぶだけで、`app/` にサービス固有の画面を持つ。判断事項D18。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api は `definition.ts` で役割と権限を宣言し、サービス固有の routes と repository を持って `startApiCore` に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
 DB もサービスごとに分かれる。ローカルは docker compose の `db-identity` 5432、`db-crm` 5433、`db-cms` 5434 の 3 コンテナで、初期化 SQL は `db/identity/init` `db/crm/init` `db/cms/init`。判断事項D17。
 
 ## サービスとテナント
@@ -111,7 +111,7 @@ suzuki.cms.localhost:3003 は redirect_uri が cms のテンプレートに一�
 
 | 経路 | 種別 | 通るもの | 保護 |
 | --- | --- | --- | --- |
-| ブラウザ → `<tenant>.<service>.sandbox.com` | Front Channel | 画面、tenant_session Cookie | TLS、Cookie属性、CSRFトークン |
+| ブラウザ → `<tenant>.<service>.sandbox.com` | Front Channel | SPA の静的ファイル、`/session` と `/api/*` の JSON、tenant_session Cookie | TLS、Cookie属性、`X-CSRF-Token`、CSP |
 | ブラウザ → auth.sandbox.com | Front Channel | 認可リクエスト、ログインUI、ポータル、sso_session Cookie、code、state | TLS、Cookie属性、CSRFトークン |
 | Tenant Web App → auth.sandbox.com | Back Channel | code交換、Refresh、UserInfo | TLS、client_secret_basic、PKCE |
 | Tenant Web App → `api.<service>.sandbox.com` | Back Channel | Bearer Access Token | TLS、JWT署名検証、aud検証 |
@@ -175,8 +175,11 @@ flowchart LR
 | `/auth/callback` | GET | code受領、Back Channelで交換、ID Token の tenant_slug 検証、Tenant Session作成 |
 | `/auth/logout` | POST | Tenant Logout |
 | `/auth/backchannel-logout` | POST | Back-Channel Logout受信。aud が自サービスの client_id であることを確認し、sid に紐付く全テナントのセッションを削除 |
-| `/dashboard` | GET | サーバー側でAccess Tokenを付与して `/v1/me` を呼び、role と権限の表を出す。React Router v7 の SPA に置き換えるまでのプレースホルダ |
+| `/session` | GET | SPA に渡すログイン状態。`service` `tenant` `urls` `authenticated` と、ログイン済みなら `user` `csrfToken`。Token は返さない |
+| `/api/*` | ALL | サービスの API への中継。`/api` を除いたパスを `API_BASE_URL` に付け、サーバー側の Access Token を Bearer で付ける。セッションがなければ 401、書き込みは `X-CSRF-Token` 必須で不一致は 403、JSON 以外の body は 415 |
+| `/*` | GET | SPA の配信。`SPA_DIR` の `index.html` と `/assets/*`、または開発時の `react-router dev` への中継 |
 
+画面はすべて SPA が描く。ホームは役割と権限の表、CRM は `/end-users`、CMS は `/posts`、両方に `/members` がある。未ログインで開くと SPA が `/session` を見て `/auth/login?return_to=<パス>` へ遷移する。判断事項D18。
 `/auth/backchannel-logout` はテナントに依存しないため、サービスのベースホストで受ける。CRM は `https://crm.sandbox.com/auth/backchannel-logout`、CMS は `https://cms.sandbox.com/auth/backchannel-logout`。
 
 ## API Server エンドポイント規約
@@ -196,7 +199,8 @@ flowchart LR
 | --- | --- | --- |
 | crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。`crm` / `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` / `CRM` のように oidc_clients と oidc_client_secrets の登録値と一致させる。`CLIENT_SECRET` は active な secret のいずれかで、43 文字以上でなければ起動に失敗する |
 | crm-web / cms-web | `BASE_HOST` `API_BASE_URL` | テナント slug を除いたホストと、呼び出す API の公開 URL。crm は `crm.localhost:3001` と `http://api.crm.localhost:3002`、cms は `cms.localhost:3003` と `http://api.cms.localhost:3004`。Host `<tenant>.<BASE_HOST>` からテナントを解決する |
-| crm-web / cms-web | `PORT` `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `REDIS_URL` | 待ち受けポート、redirect_uri の scheme、Auth Server の issuer、サーバー間通信先、Session Store。`REDIS_URL` 未設定はインメモリ。Cookie の Secure と `__Host-` は `PUBLIC_SCHEME` が `https` のときに付き、そのときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` が必須 |
+| crm-web / cms-web | `PORT` `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `REDIS_URL` | 待ち受けポート、redirect_uri の scheme、Auth Server の issuer、サーバー間通信先、Session Store。`REDIS_URL` 未設定はインメモリ。Cookie の Secure と `__Host-` は `PUBLIC_SCHEME` が `https` のときに付き、そのときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR` が必須 |
+| crm-web / cms-web | `SPA_DIR` `SPA_DEV_SERVER_URL` | SPA の配り方。`SPA_DIR=build/client` は `react-router build` の成果物を配る。`SPA_DEV_SERVER_URL=http://127.0.0.1:5173` は `react-router dev` への中継で開発専用。cms は 5174。両方なければ `/auth/*` `/session` `/api/*` だけを返す |
 | auth-api | `ISSUER` `DATABASE_URL` `COGNITO_ADAPTER` 等 | Client やテナントの設定は持たず、Identity DB から読む。`DATABASE_URL` は `postgres://sandbox_auth:sandbox_auth@127.0.0.1:5432/identity`。Cookie の Secure と `__Host-` は `ISSUER` が `https://` で始まるときに付き、そのときは `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk` が必須 |
 | crm-api / cms-api | `API_BASE_URL` | この API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004`。この値がそのまま aud になり、Host が URL のホストと異なるリクエストは 404 |
 | crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:crm_app@127.0.0.1:5433/crm` / `postgres://cms_app:cms_app@127.0.0.1:5434/cms`。identity DB には接続しない |
@@ -215,7 +219,7 @@ client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-P
 | 既存テナントの契約追加 | tenant_services を追加し、そのサービスの最初の管理者を tenant_service_members と members に登録する | なし |
 | 利用者の招待 | サービスの画面から `POST /v1/members` に email と role を送る。サービスの API が auth-api の管理 API で tenant_service_members に「入れる」を登録し、自 DB の members に役割付きの行を作る。外すときは `DELETE /v1/members/:userId` で両方を消す | なし。同テナントの他サービスには影響しない |
 | 権限の個別調整 | サービスの画面から `PUT /v1/members/:userId/permissions` で permission_overrides を置き換える。Auth Server には登録しない | なし。次のリクエストから反映 |
-| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services を登録。`db/<service>/init` に members と permission_overrides と業務テーブルを持つ DB を用意。`apps/<service>-web` を追加して `packages/web-core` を環境変数で起動し、`apps/<service>-api` に `definition.ts` で役割と権限を宣言して routes を書き `packages/api-core` の `startApiCore` に渡す。provision の `SERVICES` に追加 | なし |
+| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services を登録。`db/<service>/init` に members と permission_overrides と業務テーブルを持つ DB を用意。`apps/<service>-web` を追加して `packages/web-core` を環境変数で起動し、`app/routes` にサービス固有の画面を置く。`apps/<service>-api` に `definition.ts` で役割と権限を宣言して routes を書き `packages/api-core` の `startApiCore` に渡す。provision の `SERVICES` に追加 | なし |
 | client_secret のローテーション | oidc_client_secrets に新 secret を active で追加 → サービスの `CLIENT_SECRET` を差し替え → 旧行を revoked に更新 | なし。切替中は新旧どちらでも `/token` が通る |
 | 管理画面 | 専用clientを登録し、管理用scopeを付与 | なし |
 
@@ -227,6 +231,7 @@ client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-P
 | --- | --- | --- |
 | 言語 | TypeScript | リポジトリ標準 |
 | HTTPフレームワーク | Hono | 軽量。BFF / Auth / API を同一スタックで書ける |
+| 画面 | React Router v8 の SPA モード。ビルドは Vite | BFF は静的ファイルを配るだけで React の実行環境を持たない。他プロジェクトの SPA に持ち込める |
 | モノレポ | pnpm workspace | 雛形標準 |
 | JWT / JWKS | jose | 標準準拠 |
 | Cognito連携 | アダプタで抽象化 | ローカルはモック、本番は @aws-sdk/client-cognito-identity-provider |

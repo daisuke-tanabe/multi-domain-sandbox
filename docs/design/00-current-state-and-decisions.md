@@ -10,6 +10,7 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 Identity DB の主キーはサロゲート ID、redirect_uri はサービスごとのテンプレート、client_secret は複数行でローテーション可能、ハッシュは SHA-256 とする。判断事項D15。
 招待と役割はテナント単位ではなくサービス単位で持つ。契約は会社単位の tenant_services、割り当てはサービス単位の tenant_service_members に置く。判断事項D16。
 DB はサービスごとに分け、identity は「入れるか」だけを持つ。役割と権限はサービスの DB の members と permission_overrides に置き、Token には載せない。招待はサービスの画面から auth-api の管理 API を経由して行い、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。判断事項D17。
+Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF が `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担う。SPA は Token を見ない。判断事項D18。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -83,7 +84,8 @@ DB はサービスごとに分け、identity は「入れるか」だけを持�
 | D14 | apps はサービスごとに web と api を 1 組ずつ持ち、実装は packages/web-core と packages/api-core に共有する。auth は auth-api に改名。2026-09-11 決定 |
 | D15 | Identity DB の主キーはサロゲート ID。redirect_uri はサービスごとの `redirect_uri_template`。client_secret は oidc_client_secrets に複数行持ちローテーション可能。ハッシュは SHA-256。2026-09-11 決定 |
 | D16 | 招待と役割はサービス単位。契約は会社単位の tenant_services、割り当ては tenant_service_members。tenant_members は会社横断の役割にだけ使う。Token に role も permission も載せない。2026-09-11 決定。役割の置き場所は D17 で見直し |
-| D17 | DB はサービスごとに分け、PostgreSQL のコンテナも分ける。identity は「入れるか」だけを持ち、役割と権限はサービスの DB の members と permission_overrides に置く。招待はサービスの画面から auth-api の管理 API を経由し、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。画面は次の段階で React Router v7 の SPA にする。2026-09-11 決定 |
+| D17 | DB はサービスごとに分け、PostgreSQL のコンテナも分ける。identity は「入れるか」だけを持ち、役割と権限はサービスの DB の members と permission_overrides に置く。招待はサービスの画面から auth-api の管理 API を経由し、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。画面は当面プレースホルダにし、D18 で SPA にした。2026-09-11 決定 |
+| D18 | `*-web` の画面は React Router v8 の SPA モード。`packages/web-core` の BFF は `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担い、Token をブラウザへ出さない。共通の React コードは `packages/web-ui`。2026-09-11 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -201,7 +203,7 @@ DB はサービスごとに分け、identity は「入れるか」だけを持�
 - `apps/crm-api` と `apps/cms-api` は API Server。`packages/api-core` の Hono アプリを `API_BASE_URL` で起動する。aud は `API_BASE_URL` の1つだけで、Host が URL のホストと異なるリクエストは 404
 - `tools/provision` は AWS 向けの一回限りタスクで、全サービスの `SERVICES` を引き続き受け取る
 - `*-web` はクライアントを意味するが、Token と Cookie をブラウザへ出さない BFF 方式のため薄いサーバーは残す。判断事項D1
-- 次の段階で `*-web` の画面を React Router v7 の SPA に置き換え、auth-api から画面を `auth-web` として分離する予定
+- `*-web` の画面は D18 で React Router v8 の SPA に置き換えた。auth-api から画面を `auth-web` として分離するのは次の段階
 
 ### D15. Identity DB の主キーと redirect_uri、client_secret の持ち方
 
@@ -291,7 +293,7 @@ DB はサービスごとに分け、identity は「入れるか」だけを持�
 - サービスが自分の DB と自分の役割語彙だけで完結し、Auth Server は「誰がどのテナントのどのサービスに入れるか」だけを持つ。認証基盤とサービスの境界が DB の境界と一致する
 - 権限の変更は次のリクエストから反映され、API は auth-api の可用性に依存しない。「入れるか」は Token 発行時と Refresh 時に判定済みで、割り当てを外された人は最大 15 分で Refresh に失敗する
 - 招待をサービスの中で完結させ、auth-api は Client 認証で自サービスの割り当てだけを操作させる。メールでの事前作成により、招待時に user_id が確定する
-- 画面は SPA で作り直すため、Hono の HTML はプレースホルダに留める
+- 画面は SPA で作り直すため、Hono の HTML はプレースホルダに留める。D18 で置き換えた
 
 具体化。
 
@@ -302,9 +304,43 @@ DB はサービスごとに分け、identity は「入れるか」だけを持�
 - `packages/api-core` はサービス API のフレームワークになる。`ServiceDefinition` で役割の順序、既定の役割、権限、役割ごとの既定を宣言し、`members:read` `members:invite` `members:manage` は自動で足す。`MemberRepository` が `<schema>.members` と `<schema>.permission_overrides` を扱い、`resolveTenantContext` は Host 確認 → Token 検証 → member 行の取得か既定の役割での JIT 作成 → 上書きの適用の順で `TenantContext` を作る。`/v1/me` と `/v1/members` はどのサービスにも付く。`AuthAdminClient` が auth-api の管理 API を呼ぶ
 - `apps/crm-api` は owner / admin / member / viewer と `end_users:*` を宣言し、`/v1/end-users` の CRUD を持つ。`end_users:unmask` がなければメールと電話をマスクする。`apps/cms-api` は owner / editor / viewer と `posts:*` を宣言し、`/v1/posts` の CRUD を持つ
 - `*-api` の環境変数は `PORT` `API_BASE_URL` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` `CLIENT_ID` `CLIENT_SECRET`。`DATABASE_URL` は自サービスの DB、`CLIENT_ID` と `CLIENT_SECRET` は管理 API の Client 認証で `*-web` と同じ値
-- `packages/web-core` は `/dashboard` で `/v1/me` を呼び、role と Permission / Granted の表を出す。E2E の harness は実物の crm-api / cms-api を接続する
+- `packages/web-core` の `/dashboard` プレースホルダは D18 で SPA に置き換えた。E2E の harness は実物の crm-api / cms-api を接続する
 - provision は identity DB だけを扱い、`SEED_SERVICE_MEMBERSHIPS` は役割を持たない。crm / cms の DB の初期化は AWS では未整備
 - シード。identity では alice が tanaka × crm、tanaka × cms、suzuki × crm に入れ、bob が suzuki × crm に入れる。crm の members は alice が tanaka で owner、suzuki で viewer、bob が suzuki で admin。suzuki の alice に `end_users:unmask` の allow。cms の members は alice が tanaka で owner で、`posts:create` の deny。crm の end_users は tanaka に 3 件、suzuki に 2 件。cms の posts は tanaka に 2 件。dave はモック Cognito にだけ存在し、招待と初回ログインの紐付けの確認に使う
+
+### D18. 画面の実行形態。React Router v8 の SPA と薄い BFF
+
+問題点。D17 までの `*-web` は Hono がサーバー側で HTML を描き、`/dashboard` で role と権限の表を出すプレースホルダだった。エンドユーザー、投稿、招待、権限編集の画面を足すには、サーバー側の HTML で作るか SPA にするかを決める必要がある。D1 で BFF 構成を決めているため、SPA にしても Token をブラウザへ出さない制約は保つ必要があり、ブラウザから API を呼ぶ経路と CSRF の扱いを決めなければならない。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| 画面の描画 | A. React Router の SPA モード。`ssr: false` で `clientLoader` だけを使い、BFF は静的ファイルを配る | 画面の状態管理とルーティングをブラウザで完結できる。BFF に React の実行環境が要らず、`packages/web-core` が Hono のまま薄く保てる。他プロジェクトの SPA にそのまま持ち込める | 初回表示は `/session` と `/v1/me` を読んでからになる。SSR がないため HydrateFallback を出す |
+| 画面の描画 | B. React Router の SSR。BFF が React をサーバーで実行する | 初回表示が速い。loader をサーバーで動かせる | BFF が React のサーバー実行を持ち、Hono の BFF と 2 つのサーバーになる。Token をサーバーの loader で扱う経路が増え、境界が曖昧になる |
+| 画面の描画 | C. Hono の HTML を続ける | 変更が少ない | フォームと部分更新の実装が膨らむ。他プロジェクトの React 構成に持ち込めない |
+| API の呼び出し | A. BFF の `/api/*` が同一オリジンで中継し、サーバー側の Access Token を付ける | ブラウザに Token が出ない。CORS が要らない。API の `API_BASE_URL` をブラウザに渡さない | BFF を 1 ホップ経由する |
+| API の呼び出し | B. ブラウザが API のホストへ直接呼ぶ | BFF の中継が要らない | Token をブラウザに渡すか、API に独自の Cookie が要る。D1 で却下した形 |
+| CSRF | A. `/session` で渡す CSRF トークンを書き込みの `X-CSRF-Token` ヘッダで要求し、body は JSON に限る | Cookie が Lax でも書き込みを守れる。フォーム送信では付かないヘッダなので、他オリジンからの書き込みを止められる | SPA が `/session` を先に読む必要がある |
+| CSRF | B. SameSite=Lax だけに頼る | 実装が要らない | 同一サイトの別ホストからの書き込みを止められない |
+| CSP | A. 静的配信では `script-src 'self'` と `index.html` のインラインスクリプトのハッシュに限定し、Vite への中継は開発専用で `'unsafe-inline'` を許す | 本番で `'unsafe-inline'` を使わない。開発の HMR も動く | 中継モードを本番で使えないよう `PUBLIC_SCHEME=https` で `SPA_DIR` を必須にする |
+| CSP | B. 常に `'unsafe-inline'` を許す | 設定が 1 つで済む | XSS の防御が弱くなる |
+
+決定はすべて A。理由は次のとおり。
+
+- D1 の BFF 構成を保ったまま、画面を SPA にできる。Token はサーバー側セッションに留まり、ブラウザは Cookie 付きの同一オリジン fetch だけを行う
+- `packages/web-core` が Hono の薄い BFF のまま残り、他プロジェクトへ持ち込むときに React の実行環境を要求しない
+- 画面の出し分けは `/v1/me` の確定した権限で行い、最終判定は API がするため、権限のロジックが 1 か所に留まる
+- 静的配信の CSP で `'unsafe-inline'` を使わず、開発の利便性は中継モードに閉じ込める
+
+具体化。
+
+- `packages/web-core` は `/auth/*`、`GET /session`、`ALL /api/*`、SPA の配信を持つ。`/session` は `service` `tenant` `urls` `authenticated` と、ログイン済みなら `user` `csrfToken` を返し、Token は返さない。`/api/*` はセッションがなければ 401、GET / HEAD / OPTIONS 以外は `X-CSRF-Token` の一致を要求して不一致は 403、body は JSON のみで 415、上限 64 KB。API のセッション切れは 401 にして SPA を再ログインさせる
+- SPA の配り方は `SPA_DIR` と `SPA_DEV_SERVER_URL` で決める。`SPA_DIR` は `react-router build` の `build/client` で、`/assets/*` を immutable で配り、それ以外の GET は `index.html` を返す。`SPA_DEV_SERVER_URL` は `react-router dev` の Vite への中継で開発専用。両方なければ最小の HTML を返し警告を出す。テストはこのモード
+- CSP は静的配信で `script-src 'self'` と `index.html` のインラインスクリプトの sha256、中継で `'unsafe-inline'` と Vite の origin と ws origin への `connect-src`。`PUBLIC_SCHEME=https` では `SPA_DIR` を必須にする
+- `/healthz` と Back-Channel Logout はテナント解決の前に受ける。不明なホストや未契約のような SPA へ渡す前のエラーは `packages/web-core/src/views` のサーバー側 HTML で返す
+- `packages/web-ui` を新設し、`api.ts` に `loadSession` `api` `loadMe` `ApiError` `describeError`、`shell.tsx` に `loadShell` `useShell` `usePermissions` `AppShell`、`members-page.tsx` に CRM と CMS 共通の管理アカウント画面、`styles.css` を置く。`loadShell` はルートの `clientLoader` で、未ログインなら `/auth/login?return_to=<現在のパス>` へ送り、`?logged_out=1` のときだけログアウト済み画面を出す
+- `apps/crm-web` と `apps/cms-web` は `src/main.ts` で BFF を起動し、`app/root.tsx` `app/routes.ts` `app/routes/*.tsx` に画面、`react-router.config.ts` `vite.config.ts` `tsconfig.app.json` を持つ。CRM はホーム、エンドユーザー、管理アカウント、CMS はホーム、投稿、管理アカウント。`dev` は BFF と `react-router dev` を並行起動、`build` は `react-router build`、`start` は BFF のみ
+- Tenant Logout は `/?logged_out=1` へ戻す。SPA のログアウト済み画面はログインへのリンクを持ち、全体からのログアウトはログイン中のヘッダに置く
+- `scripts/smoke.ts` は `/session` と `/api/v1/me` の JSON を叩き、`scripts/chrome-check.ts` は実 Chrome で SPA を描画して確認する
 
 ## 5. 移行計画
 
@@ -320,6 +356,6 @@ DB はサービスごとに分け、identity は「入れるか」だけを持�
 | 5 | Tenant Logout。エラーケース対応 | エラーケース一覧のテストが通る |
 | 6 | MFA、Global Logout、Refresh Tokenローテーション | 拡張シーケンスが通る |
 | 7 | サービスごとの DB、管理 API による招待、サービス固有の API | 招待した人が初回ログインで紐付き、サービスの画面から役割と権限を変えられる |
-| 8 | React Router v7 の SPA。エンドユーザー、投稿、招待、権限編集の画面 | 画面から 7 の操作ができる |
+| 8 | React Router v8 の SPA と薄い BFF。エンドユーザー、投稿、招待、権限編集の画面。判断事項D18 | 画面から 7 の操作ができる |
 
 既存システムがある適用先では、フェーズ2完了後に既存ログインを `/auth/login` へ差し替え、Cognito Tokenを直接使う箇所をAPI Server経由へ置き換える工程をフェーズ3と4の間に挟む。

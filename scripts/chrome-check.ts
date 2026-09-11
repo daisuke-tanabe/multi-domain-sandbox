@@ -19,10 +19,10 @@ import { createReporter } from "./check-reporter.ts";
  */
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 9223;
-const TANAKA_CRM = `${TANAKA_CRM_ORIGIN}/dashboard`;
-const SUZUKI_CRM = `${SUZUKI_CRM_ORIGIN}/dashboard`;
-const TANAKA_CMS = `${TANAKA_CMS_ORIGIN}/dashboard`;
-const SUZUKI_CMS = `${SUZUKI_CMS_ORIGIN}/dashboard`;
+const TANAKA_CRM = `${TANAKA_CRM_ORIGIN}/`;
+const SUZUKI_CRM = `${SUZUKI_CRM_ORIGIN}/`;
+const TANAKA_CMS = `${TANAKA_CMS_ORIGIN}/`;
+const SUZUKI_CMS = `${SUZUKI_CMS_ORIGIN}/`;
 const LOGIN_URL_PREFIX = `${AUTH_ORIGIN}/login`;
 
 type CdpMessage = {
@@ -114,6 +114,29 @@ class Cdp {
     const inner = result.result;
     return typeof inner === "object" && inner !== null ? Reflect.get(inner, "value") : undefined;
   }
+
+  public async waitForUrl(prefix: string, timeoutMs = 8000): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    let href = "";
+    while (Date.now() < deadline) {
+      href = String(await this.evaluate("location.href"));
+      if (href.startsWith(prefix)) return href;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return href;
+  }
+
+  /** SPA は load 後に /session と /api を読んでから描画するので、本文に文字列が出るまで待つ */
+  public async waitForText(text: string, timeoutMs = 8000): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    let body = "";
+    while (Date.now() < deadline) {
+      body = String(await this.evaluate("document.body.innerText"));
+      if (body.includes(text)) return body;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return body;
+  }
 }
 
 const { check, finish } = createReporter();
@@ -136,8 +159,9 @@ try {
     }
   });
 
+  // SPA は読み込み後に /session を見て /auth/login へ遷移するので、URL が変わるまで待つ
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TANAKA_CRM }));
-  const loginUrl = String(await cdp.evaluate("location.href"));
+  const loginUrl = await cdp.waitForUrl(LOGIN_URL_PREFIX);
   check(
     "anonymous access reaches the auth login page",
     loginUrl.startsWith(LOGIN_URL_PREFIX),
@@ -149,34 +173,52 @@ try {
     `document.querySelector('input[name=password]').value = ${JSON.stringify(SEED_USER_PASSWORD)}`,
   );
   await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
+  const afterLoginBody = await cdp.waitForText("としてログインしています");
   const afterLogin = String(await cdp.evaluate("location.href"));
-  const afterLoginBody = String(await cdp.evaluate("document.body.innerText"));
   check(
-    "submitting the login form navigates to tanaka.crm dashboard",
-    afterLogin === TANAKA_CRM && afterLoginBody.includes("role: owner"),
+    "submitting the login form navigates to the tanaka.crm SPA as owner",
+    afterLogin === TANAKA_CRM && afterLoginBody.includes("owner としてログインしています"),
     `${afterLogin}; csp errors: ${consoleErrors.length}`,
   );
 
-  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CRM }));
-  const suzukiUrl = String(await cdp.evaluate("location.href"));
-  const suzukiBody = String(await cdp.evaluate("document.body.innerText"));
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: `${TANAKA_CRM}end-users` }));
+  const endUsersBody = await cdp.waitForText("山田 太郎");
   check(
-    "suzuki.crm is entered via SSO without a login page",
-    suzukiUrl === SUZUKI_CRM && suzukiBody.includes("role: viewer"),
+    "crm end users are listed unmasked for the owner",
+    endUsersBody.includes("taro.yamada@example.com") && endUsersBody.includes("そのまま表示"),
+    String(await cdp.evaluate("location.href")),
+  );
+
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CRM }));
+  const suzukiBody = await cdp.waitForText("としてログインしています");
+  const suzukiUrl = String(await cdp.evaluate("location.href"));
+  check(
+    "suzuki.crm is entered via SSO without a login page as viewer",
+    suzukiUrl === SUZUKI_CRM && suzukiBody.includes("viewer としてログインしています"),
     suzukiUrl,
   );
 
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TANAKA_CMS }));
+  const cmsBody = await cdp.waitForText("としてログインしています");
   const cmsUrl = String(await cdp.evaluate("location.href"));
-  const cmsBody = String(await cdp.evaluate("document.body.innerText"));
   check(
     "tanaka.cms (another service) is entered via SSO",
-    cmsUrl === TANAKA_CMS && cmsBody.includes("role: owner") && cmsBody.includes("CMS"),
+    cmsUrl === TANAKA_CMS &&
+      cmsBody.includes("owner としてログインしています") &&
+      cmsBody.includes("CMS"),
     cmsUrl,
   );
 
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: `${TANAKA_CMS}posts` }));
+  const postsBody = await cdp.waitForText("はじめての投稿");
+  check(
+    "cms posts are listed and posts:create is denied by the override",
+    postsBody.includes("お知らせ") && postsBody.includes("投稿を作成できません"),
+    String(await cdp.evaluate("location.href")),
+  );
+
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CMS }));
-  const suzukiCmsBody = String(await cdp.evaluate("document.body.innerText"));
+  const suzukiCmsBody = await cdp.waitForText("契約していません");
   check(
     "suzuki.cms is refused because suzuki has no cms contract",
     suzukiCmsBody.includes("契約していません"),
@@ -184,13 +226,14 @@ try {
   );
 
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: TANAKA_CRM }));
+  await cdp.waitForText("ログアウト");
   await cdp.navigateWith(() =>
     cdp.evaluate("document.querySelector('form[action=\"/auth/logout\"]').submit()"),
   );
-  const afterLogout = String(await cdp.evaluate("document.body.innerText"));
+  const afterLogout = await cdp.waitForText("ログアウトしました");
   check(
     "tenant logout works from the real browser",
-    afterLogout.includes("未ログインです"),
+    afterLogout.includes("ログアウトしました"),
     String(await cdp.evaluate("location.href")),
   );
 
@@ -220,7 +263,7 @@ try {
   await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
   const afterGlobal = String(await cdp.evaluate("document.body.innerText"));
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CRM }));
-  const tenantBAfterGlobal = String(await cdp.evaluate("location.href"));
+  const tenantBAfterGlobal = await cdp.waitForUrl(LOGIN_URL_PREFIX);
   check(
     "global logout ends the SSO session and suzuki.crm asks for a password again",
     afterGlobal.includes("Sandbox からログアウトしました") &&

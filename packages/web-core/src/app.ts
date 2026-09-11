@@ -1,42 +1,41 @@
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
-import { z } from "zod";
 import {
   apiFetch,
   backchannelRoutes,
   oidcRoutes,
-  requireSession,
   tenantContext,
   type OidcClientDeps,
   type OidcEnv,
   type OidcProvider,
   type RenderError,
-  type TenantSession,
 } from "@sandbox/oidc-client";
 import { timingSafeEqualString } from "@sandbox/shared";
-import { dashboardPage, errorPage, homePage, type PageLabels, type Viewer } from "./views/pages.ts";
+import { mountSpa, spaCsp, type SpaOptions } from "./spa.ts";
+import { errorPage, type PageLabels } from "./views/pages.ts";
 
 export interface WebCoreAppOptions {
   readonly deps: OidcClientDeps;
   readonly provider: OidcProvider;
+  readonly spa: SpaOptions;
 }
 
-const meSchema = z.object({
-  role: z.string(),
-  permissions: z.array(z.string()),
-  service: z.object({ roles: z.array(z.string()), permissions: z.array(z.string()) }),
-});
-
-function toViewer(session: TenantSession): Viewer {
-  return { name: session.name, email: session.email, csrfToken: session.csrfToken };
-}
+const API_PREFIX = "/api/";
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /**
- * サービスの Web。BFF として API をサーバー間で呼び、ブラウザには HTML と Cookie だけを返す。1 プロセス 1 サービス
+ * サービスの Web の BFF。画面は SPA が描き、このサーバーは次だけを担う。
+ *   /auth/*    OIDC のログイン、コールバック、ログアウト、Back-Channel Logout
+ *   /session   SPA に渡すログイン状態と CSRF トークン。Token は渡さない
+ *   /api/*     サービスの API への中継。サーバー側の Access Token を Bearer で付ける
+ *   それ以外   SPA の配信
+ * Token と Cookie はブラウザへ出さない。1 プロセス 1 サービス
  */
 export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
-  const { deps, provider } = options;
+  const { deps, provider, spa } = options;
   const app = new Hono<OidcEnv>();
+  const csp = spaCsp(spa);
 
   const renderError: RenderError = (c, title, message, status) =>
     c.html(errorPage(hostLabels(c), title, message), status);
@@ -47,13 +46,17 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
       referrerPolicy: "no-referrer",
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
+        scriptSrc: [...csp.scriptSrc],
+        connectSrc: [...csp.connectSrc],
         styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:"],
         frameAncestors: ["'none'"],
         formAction: ["'self'"],
+        baseUri: ["'self'"],
       },
     }),
   );
-  // ログイン済みページには CSRF トークンや役割が載る。bfcache や共有端末に残さない
+  // ログイン状態や役割を返す応答を bfcache や共有端末に残さない。静的アセットは mountSpa 側で上書きする
   app.use(async (c, next) => {
     c.header("Cache-Control", "no-store");
     await next();
@@ -69,76 +72,73 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
   );
   app.route("/", oidcRoutes(deps, provider, renderError));
 
-  app.get("/", (c) => {
-    const session = c.get("tenantSession");
+  app.get("/session", (c) => {
     const client = c.get("tenantClient");
+    const session = c.get("tenantSession");
     const globalLogoutUrl = new URL("/logout", provider.issuer);
     globalLogoutUrl.searchParams.set("client_id", client.clientId);
     globalLogoutUrl.searchParams.set("tenant", client.tenantSlug);
-    return c.html(
-      homePage({
-        serviceName: client.name,
-        tenantSlug: client.tenantSlug,
-        viewer: session === undefined ? undefined : toViewer(session),
-        justLoggedOut: c.req.query("logged_out") === "1",
-        globalLogoutUrl: globalLogoutUrl.toString(),
-      }),
-    );
+    const base = {
+      service: { clientId: client.clientId, name: client.name },
+      tenant: { slug: client.tenantSlug },
+      urls: {
+        login: "/auth/login",
+        logout: "/auth/logout",
+        globalLogout: globalLogoutUrl.toString(),
+      },
+    };
+    if (session === undefined) return c.json({ ...base, authenticated: false });
+    return c.json({
+      ...base,
+      authenticated: true,
+      user: { id: session.userId, email: session.email, name: session.name },
+      csrfToken: session.csrfToken,
+    });
   });
 
-  // このサービスでの役割と権限を API から取って出す。画面の本体は React 化で置き換える
-  app.get("/dashboard", requireSession(), async (c) => {
-    const session = c.get("tenantSession");
-    if (session === undefined) return c.redirect("/auth/login");
+  // API への中継。ブラウザは Token を持たない。書き込みは CSRF トークンを要求する
+  app.use("/api/*", bodyLimit({ maxSize: 64 * 1024 }));
+  app.all("/api/*", async (c) => {
     const client = c.get("tenantClient");
-    const me = await apiFetch(deps, provider, client, session, `${client.apiBaseUrl}/v1/me`);
-    if (!me.ok) return handleApiAccessError(c, me.error.kind);
-    if (me.value.response.status === 403) {
-      return renderError(
-        c,
-        "アクセス権がありません",
-        "このテナントへのアクセス権がありません。",
-        403,
-      );
+    const session = c.get("tenantSession");
+    if (session === undefined) return c.json({ error: "unauthenticated" }, 401);
+    if (!SAFE_METHODS.has(c.req.method)) {
+      const token = c.req.header("x-csrf-token");
+      if (token === undefined || !timingSafeEqualString(token, session.csrfToken)) {
+        return c.json({ error: "csrf_mismatch" }, 403);
+      }
     }
-    const body = meSchema.safeParse(await me.value.response.json());
-    if (!body.success)
-      return renderError(c, "一時的なエラーです", "API 応答を解釈できません。", 503);
-    return c.html(
-      dashboardPage({
-        serviceName: client.name,
-        tenantSlug: client.tenantSlug,
-        viewer: toViewer(session),
-        role: body.data.role,
-        permissions: body.data.permissions,
-        availablePermissions: body.data.service.permissions,
-      }),
-    );
+    const upstreamPath = c.req.path.slice(API_PREFIX.length - 1);
+    const url = new URL(upstreamPath + new URL(c.req.url).search, client.apiBaseUrl);
+    const init: RequestInit = { method: c.req.method };
+    // 本文は JSON だけ通す。DELETE のように本文のない書き込みは Content-Type なしで通す
+    const requestType = c.req.header("content-type");
+    if (!SAFE_METHODS.has(c.req.method) && requestType !== undefined) {
+      if (!requestType.startsWith("application/json")) {
+        return c.json({ error: "unsupported_media_type" }, 415);
+      }
+      init.headers = { "content-type": "application/json" };
+      init.body = await c.req.text();
+    }
+    const result = await apiFetch(deps, provider, client, session, url.toString(), init);
+    if (!result.ok) {
+      if (result.error.kind === "session_expired") return c.json({ error: "unauthenticated" }, 401);
+      return c.json({ error: "temporarily_unavailable" }, 503);
+    }
+    const upstream = result.value.response;
+    const body = await upstream.text();
+    const headers = new Headers();
+    const contentType = upstream.headers.get("content-type");
+    if (contentType !== null) headers.set("content-type", contentType);
+    return new Response(body === "" ? null : body, { status: upstream.status, headers });
   });
 
-  function handleApiAccessError(
-    c: Context<OidcEnv>,
-    kind: "session_expired" | "provider_unavailable",
-  ): Response | Promise<Response> {
-    if (kind === "session_expired") {
-      // Refresh が拒否された。SSO Session が生きていれば /auth/login で無画面復帰する
-      return c.redirect(`/auth/login?return_to=${encodeURIComponent(c.req.path)}`);
-    }
-    return renderError(c, "一時的なエラーです", "認証サーバーに接続できません。", 503);
-  }
+  mountSpa(app, spa);
 
-  app.notFound((c) =>
-    c.html(
-      errorPage(hostLabels(c), "ページが見つかりません", "指定されたページは存在しません。"),
-      404,
-    ),
-  );
+  app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((error, c) => {
     deps.logger.error("unhandled error", { path: c.req.path, message: error.message });
-    return c.html(
-      errorPage(hostLabels(c), "一時的なエラーです", "しばらくしてから再試行してください。"),
-      500,
-    );
+    return c.json({ error: "server_error" }, 500);
   });
 
   return app;

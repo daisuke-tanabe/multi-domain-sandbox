@@ -4,7 +4,7 @@
 
 Logout は Tenant Logout と Global Logout の2種類に分離する。
 Tenant Logout は自ホストのテナント × サービスの Session と Refresh Token のみを失効させ、SSO Session を維持する。
-Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout で実現する。Back-Channel Logout はサービス単位で送り、サービスは sid で自サービスの全テナントの Session を削除する。Tenant Logout 後の画面から Global Logout へ誘導する。
+Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout で実現する。Back-Channel Logout はサービス単位で送り、サービスは sid で自サービスの全テナントの Session を削除する。ログイン中の画面のヘッダとポータルから Global Logout へ誘導する。
 
 ## 失効対象の対応表
 
@@ -25,14 +25,14 @@ Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout �
 | --- | --- |
 | エンドポイント | `POST /auth/logout`。GET は受け付けない |
 | CSRF | 同期トークン必須 |
-| 処理 | Refresh Token を `/revoke` で失効 → Tenant Session 削除 → Cookie 削除 → `/` へ 302 |
+| 処理 | Refresh Token を `/revoke` で失効 → Tenant Session 削除 → Cookie 削除 → `/?logged_out=1` へ 302。SPA はこのクエリがあるときだけ再ログインへ送らず、ログアウト済み画面を出す |
 | 冪等性 | セッションがなくても 302 |
 | SSO Session | 維持する。仕様書19.1 |
 | 範囲 | Host のテナント × サービスのみ。tanaka.crm でログアウトしても suzuki.crm と tanaka.cms は残る |
 
 ### 再ログイン時の挙動
 
-SSO Session が残っているため、Logout 直後に `/auth/login` を踏むとパスワード入力なしで再ログインされる。仕様どおりの挙動だが、ユーザーには「Sandbox 全体からログアウトする」導線として Global Logout へのリンクをログアウト完了画面に置く。リンクは `https://auth.sandbox.com/logout?client_id=crm&tenant=tanaka` のように、戻り先を復元するためのサービスとテナントを付ける。
+SSO Session が残っているため、Logout 直後に `/auth/login` を踏むとパスワード入力なしで再ログインされる。仕様どおりの挙動だが、ユーザーには「全体からログアウト」の導線として Global Logout へのリンクをログイン中の画面のヘッダに置く。リンクは `/session` の `urls.globalLogout` で渡し、`https://auth.sandbox.com/logout?client_id=crm&tenant=tanaka` のように、戻り先を復元するためのサービスとテナントを付ける。ログアウト済み画面には「もう一度ログインする」のリンクを置く。
 
 ### /revoke エンドポイント
 

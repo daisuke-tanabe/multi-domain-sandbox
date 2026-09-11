@@ -5,7 +5,7 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 133 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶだけのため web のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続する。
+現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 135 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。React の画面は `scripts/chrome-check.ts` が実 Chrome で描画して確認する。
 
 ## テストピラミッド
 
@@ -118,7 +118,9 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | O1-O3 | Tenant Logout |
 | O6 | Back-Channel Logout。aud のサービスの全テナントのセッションが消え、他サービスは残る |
 | 正常 | apiFetch が Bearer を付与し、期限切れ時に Refresh 後1回だけ再試行する |
-| 権限 | tanaka.cms の Dashboard は `role: owner` だが、cms 側の `posts:create` の deny により表の `posts:create` が no、`posts:update` が yes。suzuki.crm の Dashboard は `role: viewer` で `end_users:create` が no、上書きにより `end_users:unmask` が yes。tanaka.crm では `end_users:create` が yes |
+| 正常 | `/session` が未ログインで `authenticated: false`、ログイン済みで `user` と `csrfToken` を返し、Token を含まない |
+| 正常 | `/api/*` がセッションなしで 401、書き込みで `X-CSRF-Token` がなければ 403、JSON 以外の body で 415。GET はサーバー側の Access Token で API に中継される |
+| 権限 | tanaka.cms の `/api/v1/me` は `role: owner` だが、cms 側の `posts:create` の deny により permissions に `posts:create` がなく `posts:update` がある。suzuki.crm は `role: viewer` で `end_users:create` がなく、上書きにより `end_users:unmask` がある。tanaka.crm では `end_users:create` がある |
 
 ### API Server
 
@@ -153,8 +155,8 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 
 | # | シナリオ | 確認内容 |
 | --- | --- | --- |
-| E1 | 初回ログイン | tanaka.crm 未ログイン → ログイン画面 → 認証 → Dashboard に `role: owner` と権限の表。Cookie が tanaka.crm と auth にそれぞれ1つ。Domain 属性なし |
-| E2 | 別テナント SSO | E1 後に suzuki.crm へアクセス → ログイン画面を経由せず Dashboard に `role: viewer`。ネットワークログにログイン画面の GET がないこと |
+| E1 | 初回ログイン | tanaka.crm 未ログイン → SPA が `/session` を見て `/auth/login` へ → ログイン画面 → 認証 → ホームに owner と権限の表。Cookie が tanaka.crm と auth にそれぞれ1つ。Domain 属性なし |
+| E2 | 別テナント SSO | E1 後に suzuki.crm へアクセス → ログイン画面を経由せずホームに viewer。ネットワークログにログイン画面の GET がないこと |
 | E3 | Tenant Logout | tanaka.crm でログアウト → tanaka.crm は未ログイン、suzuki.crm と tanaka.cms はログイン済み。auth の Cookie は残る |
 | E4 | 他テナントデータ拒否 | tanaka の Token で suzuki の end_user ID を指定 → 404 |
 | E5 | 割り当てなし | どのサービスにも割り当てのない carol が tanaka.crm へアクセス → 403 アクセス権なし画面。ログイン画面は出ない。SSO Session は残る |
@@ -171,7 +173,7 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 
 各シナリオで以下を横断的に検証する。
 
-- URL、Cookie、HTML、ネットワークログのいずれにも JWT が現れない
+- URL、Cookie、HTML、`/session` の JSON、ネットワークログのいずれにも JWT が現れない
 - サーバーログに Token / Cookie 値 / code が出力されない
 - 各ホストの Cookie が他ホストに送られない
 
@@ -215,7 +217,7 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | Session Store | インメモリ実装。TTL を進めるためのテスト用クロック |
 | Identity DB | テストはインメモリの `IdentityRepository`。RLS テストはローカル PostgreSQL 必須 |
 | サービスの DB | テストは `MemoryMemberRepository` と各サービスのインメモリ Repository。`MemoryAuthAdminClient` が auth-api の管理 API を代替する |
-| web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003 |
+| web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003。SPA は配らず、簡易ブラウザの `Browser.fetch` `readJson` `readSession` と、`/auth/login?return_to=<path>` から入る `loginThrough` で `/session` と `/api/*` を検証する |
 | api インスタンス | サービスごとに別インスタンス。`apps/crm-api/src/test-support.ts` と `apps/cms-api/src/test-support.ts` が実物の定義と routes で組み立て、web-core の harness もこれを使う。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
 | テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |

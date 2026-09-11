@@ -102,7 +102,7 @@ export async function createSandbox(): Promise<SandboxHarness> {
       fetch: (input, init) => dispatch(new URL(input), init),
     };
     const provider = new OidcProvider(webDeps.provider, webDeps.fetch, auth.clock);
-    const web = createWebCoreApp({ deps: webDeps, provider });
+    const web = createWebCoreApp({ deps: webDeps, provider, spa: { kind: "none" } });
     apps.set(new URL(service.apiBaseUrl).host, api.app);
     // Back-Channel Logout はサービス単位の URI (crm.localhost:3001 など) に届く
     apps.set(baseHost, web);
@@ -170,6 +170,17 @@ export class Browser {
 
   public navigate(url: string): Promise<NavigationResult> {
     return this.request(new URL(url), { method: "GET" }, []);
+  }
+
+  /** リダイレクトを追わず、Cookie だけ付けて 1 回呼ぶ。SPA からの fetch 相当 */
+  public async fetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const target = new URL(url);
+    const headers = new Headers(init.headers);
+    const cookieHeader = this.cookieHeaderFor(target);
+    if (cookieHeader !== "") headers.set("Cookie", cookieHeader);
+    const response = await this.dispatch(target, { ...init, headers });
+    this.storeCookies(target, response);
+    return response;
   }
 
   public submitForm(url: string, fields: Record<string, string>): Promise<NavigationResult> {
@@ -257,7 +268,11 @@ export async function loginThrough(
   startUrl: string,
   credentials: { username: string; password: string },
 ): Promise<NavigationResult> {
-  const first = await browser.navigate(startUrl);
+  // SPA は未ログインなら /auth/login?return_to=<path> へ送る。ここではその遷移を直接起こす
+  const start = new URL(startUrl);
+  const first = await browser.navigate(
+    `${start.origin}/auth/login?return_to=${encodeURIComponent(start.pathname)}`,
+  );
   if (!first.finalUrl.pathname.startsWith("/login")) return first;
   const form = readLoginForm(first.body);
   return browser.submitForm(`${AUTH_ORIGIN}/login`, {
@@ -270,4 +285,16 @@ export async function loginThrough(
 
 export function visitedPaths(result: NavigationResult): ReadonlyArray<string> {
   return result.history.map((url) => `${url.host}${url.pathname}`);
+}
+
+/** BFF の JSON 応答を読む。SPA が /session や /api を呼ぶのと同じ経路 */
+export async function readJson(browser: Browser, url: string): Promise<Record<string, unknown>> {
+  const res = await browser.fetch(url);
+  const body: unknown = await res.json();
+  if (typeof body !== "object" || body === null) throw new Error(`expected JSON from ${url}`);
+  return { ...body };
+}
+
+export function readSession(browser: Browser, origin: string): Promise<Record<string, unknown>> {
+  return readJson(browser, `${origin}/session`);
 }
