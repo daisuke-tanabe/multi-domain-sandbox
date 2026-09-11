@@ -54,13 +54,14 @@ token=<refresh_token>&token_type_hint=refresh_token
 
 | 項目 | 内容 |
 | --- | --- |
-| エンドポイント | `GET /logout?client_id=crm&tenant=tanaka` で確認画面。確認フォームは csrf、client_id、tenant を hidden で持ち、`POST /logout` に送る |
-| CSRF | 同期トークン必須 |
-| 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → Cookie 削除 |
+| エンドポイント | `GET /logout?client_id=crm&tenant=tanaka` は auth-web の SPA。SPA が `GET /api/logout?client_id=&tenant=` を読み、SSO Session があれば `authenticated: true` と `csrfToken` と `returnTo` を受けて確認画面を描く。確認フォームは csrf、client_id、tenant を hidden で持ち、HTML フォームの POST で `POST /logout` に送る。POST は完了後に `/logout?client_id=&tenant=` へ 303 し、SPA が `/api/logout` の `authenticated: false` で完了画面を描く |
+| CSRF | 同期トークン必須。`/api/logout` が Cookie とトークンを発行する |
+| 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → Cookie 削除 → `/logout` へ 303 |
 | 通知先 | `sso:clients` の集合に含まれるサービスのうち、`oidc_clients.status` が `active` で backchannel_logout_uri を持つもの。サービスごとに1通。停止した Client には送らない |
 | タイムアウト | `fetch` に `AbortSignal.timeout(5000)` を付ける。`BACKCHANNEL_TIMEOUT_MS`。1 サービスの無応答が完了画面を止めない |
 | 通知失敗 | 完了扱い。対象サービスの Session は Refresh 失敗で最大15分以内に失効 |
-| 完了画面 | `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin へ「CRM (tanaka) に戻る」のリンク。加えて `/` ポータルへのリンク |
+| 完了画面 | SPA が「Sandbox からログアウトしました」を出す。`/api/logout` の `returnTo` は `{label: "CRM (tanaka)", href: "https://tanaka.crm.sandbox.com/"}` で、`client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin から導く。SPA は「CRM (tanaka) に戻る」のリンクを出す。`returnTo` がなければリンクを出さない |
+| レート制限 | `/logout` と `/api/logout` は同じ IP あたり 60 回/分 |
 
 サービスへの通知はテナントを区別しない。alice が tanaka.crm と suzuki.crm にログインしていても crm には1通だけ送り、crm 側が sid で両方のセッションを削除する。
 
@@ -73,7 +74,7 @@ template  = https://{tenant}.crm.sandbox.com/auth/callback
 リンク    = https://tanaka.crm.sandbox.com/   (展開結果の origin)
 ```
 
-`tenant` はクエリで受け取った文字列をそのまま使わず、slug の形式 `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$` を満たす場合だけ展開する。展開元がサービスの登録テンプレートなので、リンク先はサービスのホスト以外になり得ない。`client_id` が未登録か `tenant` が形式を満たさない場合はリンクを出さずポータルへのリンクだけにする。ポータルの各サービスへのリンクも同じ展開で導く。
+`tenant` はクエリで受け取った文字列をそのまま使わず、`tenants` を slug で引いた行の slug で展開する。展開元がサービスの登録テンプレートなので、リンク先はサービスのホスト以外になり得ない。`client_id` が未登録か `tenant` が tenants にない場合は `/api/logout` の `returnTo` を返さず、SPA は戻り先のリンクを出さない。ポータルの各サービスへのリンクも同じ展開で導き、`/api/portal` の `loginUrl` として返す。
 
 ### logout_token
 

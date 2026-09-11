@@ -17,6 +17,10 @@ const baseSchema = z.object({
   TOKEN_ENCRYPTION_KEY: z.string().min(1),
   SIGNING_KEY_PEM: z.string().optional(),
   REDIS_URL: z.string().url().optional(),
+  /** apps/auth-web の react-router build の成果物。未設定なら SPA_DEV_SERVER_URL へ中継する */
+  SPA_DIR: z.string().min(1).optional(),
+  /** apps/auth-web の react-router dev の URL。開発時のみ */
+  SPA_DEV_SERVER_URL: z.string().url().optional(),
 });
 
 /** COGNITO_ADAPTER で必要な変数が変わる。sdk のときだけ接続情報を必須にする */
@@ -55,6 +59,7 @@ const configSchema = z
       issues.push(["REDIS_URL", "is required when ISSUER is https"]);
     if (config.COGNITO_ADAPTER !== "sdk")
       issues.push(["COGNITO_ADAPTER", "must be sdk when ISSUER is https"]);
+    if (config.SPA_DIR === undefined) issues.push(["SPA_DIR", "is required when ISSUER is https"]);
     for (const [path, message] of issues) ctx.addIssue({ code: "custom", path: [path], message });
   });
 

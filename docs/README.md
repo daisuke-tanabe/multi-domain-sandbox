@@ -34,7 +34,7 @@ Sandbox 認証・マルチサービス・マルチテナントSSO基盤の設計
 
 ## 実装状況
 
-設計に対応する検証実装を `apps/` と `packages/` に置いている。`apps/` は auth-api / crm-web / crm-api / cms-web / cms-api。web は React Router v8 の SPA と薄い BFF で、BFF は `packages/web-core`、共通の React コードは `packages/web-ui` に共有し、crm-web / cms-web は `src/main.ts` で起動関数を呼び、`app/` にサービス固有の画面を持つ。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api が `definition.ts` で役割と権限を宣言し、エンドユーザーと投稿の routes と repository を持つ。管理アカウントの招待と権限編集の API はどのサービスにも api-core が付ける。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。`*-web` の画面はホーム、エンドユーザー、投稿、管理アカウントの招待と権限編集まで SPA で実装済み。判断事項D18。
+設計に対応する検証実装を `apps/` と `packages/` に置いている。`apps/` は auth-api / auth-web / crm-web / crm-api / cms-web / cms-api。web は React Router v8 の SPA と薄い BFF で、BFF は `packages/web-core`、共通の React コードは `packages/web-ui` に共有し、crm-web / cms-web は `src/main.ts` で起動関数を呼び、`app/` にサービス固有の画面を持つ。auth の画面も auth-web の SPA で、auth-api が同一オリジンで配り、SPA 向けの `/api/login` `/api/portal` `/api/logout` を持つ。資格情報は HTML フォームの POST で送る。判断事項D19。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api が `definition.ts` で役割と権限を宣言し、エンドユーザーと投稿の routes と repository を持つ。管理アカウントの招待と権限編集の API はどのサービスにも api-core が付ける。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。`*-web` の画面はホーム、エンドユーザー、投稿、管理アカウントの招待と権限編集まで SPA で実装済み。判断事項D18。
 サービスとテナントを分けたモデルとサービスごとの DB は `apps/` と `db/identity` `db/crm` `db/cms` に反映済み。AWS の Terraform 構成はテナントごとに Client を持ち単一の RDS を使う旧構成のままで、[deploy.md](./deploy.md) に記載のとおり別作業で移行する。
 
 ## 前提

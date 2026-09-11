@@ -90,3 +90,5 @@ export {
   RedisCounterStore,
   createRedisClient,
 } from "./redis-store.ts";
+export { spaOptionsFromEnv, spaCsp, inlineScriptHashes, mountSpa } from "./spa.ts";
+export type { SpaOptions, SpaCsp } from "./spa.ts";

@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Hono } from "hono";
+import type { Env, Hono } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
-import type { FetchLike } from "@sandbox/shared";
-import type { OidcEnv } from "@sandbox/oidc-client";
+import type { FetchLike } from "./fetch.ts";
 
 /**
- * SPA の配信方法。
+ * SPA の配信方法。web-core の BFF と auth-api で共通。
  *   static : react-router build の成果物 (build/client) を配る。本番と smoke 用
  *   proxy  : react-router dev の Vite サーバーへ中継する。HMR 付きの開発用
  *   none   : 最小の HTML だけ返す。テスト用
@@ -20,6 +19,18 @@ export type SpaOptions =
 export interface SpaCsp {
   readonly scriptSrc: ReadonlyArray<string>;
   readonly connectSrc: ReadonlyArray<string>;
+}
+
+/** 環境変数 SPA_DIR と SPA_DEV_SERVER_URL から配信方法を決める。SPA_DIR を優先する */
+export function spaOptionsFromEnv(
+  env: { readonly spaDir?: string | undefined; readonly spaDevServerUrl?: string | undefined },
+  fetch: FetchLike,
+): SpaOptions {
+  if (env.spaDir !== undefined) return { kind: "static", dir: env.spaDir };
+  if (env.spaDevServerUrl !== undefined) {
+    return { kind: "proxy", devServerUrl: env.spaDevServerUrl, fetch };
+  }
+  return { kind: "none" };
 }
 
 /**
@@ -60,10 +71,10 @@ export function inlineScriptHashes(indexHtml: string): ReadonlyArray<string> {
 }
 
 /**
- * /api /auth /session /healthz 以外を SPA に渡す。GET 以外は SPA が扱わないので 404。
- * tenantContext の後ろに mount し、未知のホストは SPA も返さない。
+ * サーバーの経路に当たらなかった GET を SPA に渡す。GET 以外は SPA が扱わないので notFound に落ちる。
+ * 最後に mount する。index.html はログイン状態で描画が変わるので no-store にする。
  */
-export function mountSpa(app: Hono<OidcEnv>, spa: SpaOptions): void {
+export function mountSpa<E extends Env>(app: Hono<E>, spa: SpaOptions): void {
   if (spa.kind === "static") {
     if (!existsSync(join(spa.dir, "index.html"))) {
       throw new Error(`SPA build not found at ${spa.dir}. Run react-router build first`);
@@ -78,7 +89,10 @@ export function mountSpa(app: Hono<OidcEnv>, spa: SpaOptions): void {
     );
     app.use("*", serveStatic({ root: spa.dir }));
     const indexHtml = readFileSync(join(spa.dir, "index.html"), "utf8");
-    app.get("*", (c) => c.html(indexHtml));
+    app.get("*", (c) => {
+      c.header("Cache-Control", "no-store");
+      return c.html(indexHtml);
+    });
     return;
   }
   if (spa.kind === "proxy") {
@@ -86,14 +100,17 @@ export function mountSpa(app: Hono<OidcEnv>, spa: SpaOptions): void {
     app.get("*", async (c) => {
       const target = new URL(c.req.path + new URL(c.req.url).search, base);
       const res = await spa.fetch(target, { headers: { accept: c.req.header("accept") ?? "*/*" } });
-      const headers = new Headers();
+      const headers = new Headers({ "Cache-Control": "no-store" });
       const contentType = res.headers.get("content-type");
       if (contentType !== null) headers.set("content-type", contentType);
       return new Response(res.body, { status: res.status, headers });
     });
     return;
   }
-  app.get("*", (c) =>
-    c.html('<!doctype html><html lang="ja"><head><title>SPA</title></head><body></body></html>'),
-  );
+  app.get("*", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.html(
+      '<!doctype html><html lang="ja"><head><title>SPA</title></head><body></body></html>',
+    );
+  });
 }

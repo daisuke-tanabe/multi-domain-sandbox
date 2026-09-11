@@ -10,12 +10,13 @@
 pnpm workspace のモノレポ。
 
 ```text
-apps/auth-api         auth.sandbox.com。OpenID Provider。ログイン画面とポータルも当面ここが返す
+apps/auth-api         auth.sandbox.com。OpenID Provider。/authorize /token /login /logout /admin と、auth-web の SPA の配信、SPA 向けの /api/login /api/portal /api/logout
+apps/auth-web         auth-api が同一オリジンで配る React Router の SPA。ログイン、ポータル、Global Logout の画面。サーバーは持たない
 apps/crm-web          <tenant>.crm.sandbox.com。CRM の Web。React Router の SPA と、それを配る薄い BFF。src/main.ts が BFF を起動し、app/ に画面
 apps/crm-api          api.crm.sandbox.com。CRM の Resource Server。definition.ts に役割と権限、end-users/ にエンドユーザーの routes と repository
 apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ構成
 apps/cms-api          api.cms.sandbox.com。CMS の Resource Server。definition.ts に役割と権限、posts/ に投稿の routes と repository
-packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限
+packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限、SPA の配信 (spa.ts)
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
 packages/web-core     apps/*-web の BFF 本体。/auth/* の受け口、/session、/api/* の中継、SPA の配信、エラー画面、設定スキーマ、起動関数を持つ
 packages/web-ui       apps/*-web が共有する React コード。BFF との通信、ルートの clientLoader、共通の枠、管理アカウント画面、スタイル
@@ -73,7 +74,7 @@ apps/crm-api / cms-api は `definition.ts` でサービスの役割と権限を 
 | api.crm.localhost | 3002 | crm-api |
 | tanaka.cms.localhost / suzuki.cms.localhost | 3003 | cms-web |
 | api.cms.localhost | 3004 | cms-api |
-| 127.0.0.1 | 5173 / 5174 | crm-web / cms-web の `react-router dev`。開発時だけ BFF が中継する |
+| 127.0.0.1 | 5173 / 5174 / 5175 | crm-web / cms-web / auth-web の `react-router dev`。開発時だけ BFF と auth-api が中継する |
 
 Auth への サーバー間通信は DNS に依存しないよう `127.0.0.1:3000` を内部 URL として設定し、公開 URL とは別に持つ。
 web から api への呼び出しは公開 URL をそのまま使う。api は aud を `API_BASE_URL` に固定し、Host がそのホストと違えば 404 にするため、ホスト名を変えて呼んではならない。
@@ -99,6 +100,26 @@ web から api への呼び出しは公開 URL をそのまま使う。api は a
 - Vite への中継は開発専用。`'unsafe-inline'` と Vite の origin および ws origin への `connect-src` を許すため、`PUBLIC_SCHEME=https` では `SPA_DIR` を必須にして中継モードで起動できないようにする
 - `SPA_DIR` も `SPA_DEV_SERVER_URL` もなければ最小の HTML だけを返し警告を出す。テストはこのモードで `/auth/*` `/session` `/api/*` を検証する
 - 不明なホストの 400 や未契約の 403 のように、SPA へ渡す前に起きるエラーは `packages/web-core/src/views` のサーバー側 HTML で返す。それ以外の画面をサーバー側で描かない
+- SPA の配信とそれに応じた CSP は `packages/shared/src/spa.ts` の `mountSpa` と `spaCsp` に集約する。web-core と auth-api で同じものを使う
+
+## auth-web と auth-api の契約
+
+auth の画面は `apps/auth-web` の React Router SPA で描き、auth-api が同一オリジンで配る。別ホストにしない。
+
+| 経路 | 内容 |
+| --- | --- |
+| `GET /api/login?rid=&error=` | ログイン画面の材料。CSRF Cookie を発行し `rid` `csrfToken` と、`error` があればその文言を返す。rid が期限切れなら 400 `expired_request` と文言。rid なしで SSO Session があれば `redirectTo: "/"` |
+| `POST /login` | 従来どおりフォーム POST。成功は `/authorize` の続きへ 303、rid なしはポータルへ。失敗は `/login?rid=..&error=<kind>` へ 303 |
+| `GET /api/portal` | ログイン中ユーザーのメールと、テナントごとに入れるサービスの一覧。SSO Session がなければ 401 |
+| `GET /api/logout?client_id=&tenant=` | SSO Session があれば CSRF を発行し `authenticated: true` と `csrfToken`。なければ Cookie を消し `authenticated: false`。どちらも戻り先 `returnTo` を含む |
+| `POST /logout` | 従来どおりフォーム POST。Global Logout 後に `/logout?client_id=&tenant=` へ 303 し、SPA が完了画面を出す |
+| それ以外の GET | SPA の配信。`/` ポータル、`/login`、`/logout` を SPA が描く |
+
+- 資格情報の送信は HTML フォームの POST を維持する。SPA は JSON で `rid` と CSRF を受け取ってフォームを描くだけで、パスワードを fetch で送らない。リダイレクト連鎖とレート制限を変えないため
+- ログイン失敗の理由はクエリの `error` に種類だけを載せ、文言は auth-api が `/api/login` で返す。ユーザー名やパスワードを URL に載せない
+- `/authorize` の不正な redirect_uri、CSRF 不一致、入力不正、404、500 は auth-api の `views/pages.ts` の最小 HTML で返す。SPA へリダイレクトして運ばない
+- SPA 向け JSON は `/api/` 配下に置き、`Cache-Control: no-store` を付ける。`/api/login` と `/api/logout` は `/login` `/logout` と同じレート制限にかける
+- 共通の React コードは `packages/web-ui` から `styles.css` と `Notice` だけを使う。BFF 向けの `api.ts` と `loadShell` は使わない
 
 ## レイヤー規約
 
@@ -160,8 +181,8 @@ src/
 - 起動時に zod で検証し、不足があれば起動を失敗させる。検証は `packages/shared` の `parseEnv` に zod スキーマを渡して行い、`envBoolean` `jsonArrayEnv` `publicSchemeEnv` を再利用する
 - 開発時の既定値はコード側に持たせず `.env.example` に書く
 - Cookie の Secure と `__Host-` は公開 scheme から導く。auth-api は `ISSUER`、`*-web` は `PUBLIC_SCHEME`。切り替え用の変数を追加しない
-- https のときは本番の値を必須にする。auth-api は `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk`、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR`。欠けたら起動を失敗させる
-- `*-web` の SPA の配り方は `SPA_DIR` と `SPA_DEV_SERVER_URL` で決める。`SPA_DIR` は `react-router build` の `build/client` で、設定があれば優先する。`SPA_DEV_SERVER_URL` は `react-router dev` の URL で開発専用。`.env.example` は `SPA_DEV_SERVER_URL` を有効にし、`SPA_DIR` をコメントで示す
+- https のときは本番の値を必須にする。auth-api は `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk` `SPA_DIR`、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR`。欠けたら起動を失敗させる
+- `*-web` と auth-api の SPA の配り方は `SPA_DIR` と `SPA_DEV_SERVER_URL` で決める。auth-api の https では `SPA_DIR` を必須にする。`SPA_DIR` は `react-router build` の `build/client` で、設定があれば優先する。`SPA_DEV_SERVER_URL` は `react-router dev` の URL で開発専用。`.env.example` は `SPA_DEV_SERVER_URL` を有効にし、`SPA_DIR` をコメントで示す
 
 ## 命名
 

@@ -52,7 +52,9 @@
 | Session Hijack | HttpOnly / Secure / `__Host-`。値はランダム 256bit |
 | 長期放置 | アイドルと絶対の二重タイムアウト |
 | Cookie のサブドメインからの上書き | `__Host-` により Domain 指定を不可能にする |
-| CSRF。ログイン POST / Logout POST | 同期トークン方式。Cookie 参照 ID とフォーム値の一致。比較は `timingSafeEqualString` |
+| CSRF。ログイン POST / Logout POST | 同期トークン方式。Cookie 参照 ID とフォーム値の一致。比較は `timingSafeEqualString`。トークンは auth-web の SPA が `/api/login` `/api/logout` で受け取り、hidden に入れてフォーム POST する |
+| auth の SPA からの資格情報送信 | パスワードは fetch で送らず、HTML フォームの POST で `/login` へ送る。SPA は `/api/login` で `rid` と CSRF を受け取ってフォームを描くだけ。失敗は `/login?error=<kind>` へ 303 で戻し、ユーザー名やパスワードを URL に載せない |
+| auth の `/api/*` の悪用 | `/api/login` `/api/portal` `/api/logout` は GET のみの JSON で `Cache-Control: no-store`。Token を返さず、`/api/portal` は SSO Session がなければ 401。`/api/login` と `/api/logout` は `/login` `/logout` と同じレート制限 |
 | CSRF。SPA から `/api/*` への書き込み | `/session` で渡した CSRF トークンを `X-CSRF-Token` ヘッダで要求し、GET / HEAD / OPTIONS 以外で不一致なら 403。body は JSON のみで、フォーム送信では通らない |
 | Login CSRF | ログインフォームの同期トークン。rid との紐付けと使用時の消費は未対応で、テナント側の state 検証が code の差し替えを止める |
 | lastSeenAt 更新による Token の巻き戻し | Tenant 側の `touchSession` は書く直前にセッションを読み直し、並行する Refresh が更新した Token を古い値で上書きしない |
@@ -108,7 +110,7 @@ Tenant 側の `ensureFreshAccessToken` はセッション単位のロック `<te
 | 脅威 | 対策 |
 | --- | --- |
 | パスワードスプレー / ブルートフォース | IP 単位と IP × ユーザー名でレート制限。本書のレート制限を参照。Cognito 側のロックアウトも併用 |
-| ユーザー列挙 | 失敗理由を統一メッセージにする。応答時間を揃える |
+| ユーザー列挙 | 失敗理由を統一メッセージにする。`invalid_credentials` と `user_disabled` は `/api/login` が同一文言を返す。応答時間を揃える |
 | 資格情報の平文送信 | USER_SRP_AUTH。USER_PASSWORD_AUTH を無効化 |
 | 巨大な body によるメモリ消費 | 全ルートで body を 16 KB に制限。フォームと Token リクエストは数 KB で足りる |
 | Basic 資格情報の不正なパーセントエンコード | デコード失敗を `invalid_client` にする。500 にしない |
@@ -159,9 +161,11 @@ Cache-Control: no-store   (認証関連レスポンス)
 
 中継は開発専用で、`PUBLIC_SCHEME=https` では `SPA_DIR` を必須にして中継で起動できないようにする。`style-src` は `'self' 'unsafe-inline'`、`img-src` は `'self' data:`、`base-uri` は `'self'`。
 
-auth.sandbox.com には `form-action` を付けない。Chrome はフォーム送信後のリダイレクト先にも `form-action` を適用するため、ログイン POST から各テナント × サービスの redirect_uri への 302 がブロックされる。redirect_uri はテンプレートとテナントの組み合わせで動的に増えるため列挙できない。ログインフォームの CSRF は同期トークンで防ぐ。
+auth.sandbox.com も auth-web の SPA を配るため同じ形の CSP になる。`script-src` と `connect-src` は `packages/shared/src/spa.ts` の `spaCsp` が決め、静的配信では `'self'` と `index.html` のインラインスクリプトの sha256 ハッシュ、開発時の中継では `'unsafe-inline'` と Vite の origin。`img-src` は `'self' data:`、`frame-ancestors` は `'none'`。https の `ISSUER` では `SPA_DIR` を必須にして中継で起動できないようにする。
 
-`/token` `/userinfo` `/revoke` の応答には `Cache-Control: no-store` と `Pragma: no-cache` を付ける。
+auth.sandbox.com には `form-action` を付けない。Chrome はフォーム送信後のリダイレクト先にも `form-action` を適用するため、ログイン POST から各テナント × サービスの redirect_uri への 303 がブロックされる。redirect_uri はテンプレートとテナントの組み合わせで動的に増えるため列挙できない。ログインフォームの CSRF は同期トークンで防ぐ。
+
+`/token` `/userinfo` `/revoke` の応答と、auth-web 向けの `/api/login` `/api/portal` `/api/logout` の応答には `Cache-Control: no-store` を付ける。`/api/*` は GET のみで、資格情報は受け取らない。
 
 ## ログとシークレット
 
@@ -188,7 +192,7 @@ Cookie の Secure と `__Host-` を外せる設定値を持たない。公開 sc
 
 | アプリ | 導出 | https のときの必須条件 |
 | --- | --- | --- |
-| auth-api | `cookieSecure = ISSUER が https:// で始まる` | `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk`。欠けると起動に失敗する |
+| auth-api | `cookieSecure = ISSUER が https:// で始まる` | `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk`、`SPA_DIR`。欠けると起動に失敗する |
 | crm-web / cms-web | `cookieSecure = PUBLIC_SCHEME === "https"` | `REDIS_URL` と `SPA_DIR` が設定され、`ISSUER` と `API_BASE_URL` が https。欠けると起動に失敗する |
 
 https で公開する構成で、起動ごとに生成される署名鍵、インメモリのセッション、モックの Cognito をそのまま使えないようにするための制約。ローカルの http では制約を課さない。
@@ -199,12 +203,12 @@ https で公開する構成で、起動ごとに生成される署名鍵、イ�
 
 | アプリ | エンドポイント | 制限 | 定義 |
 | --- | --- | --- | --- |
-| auth-api | `/login` 全メソッド | IP あたり 60 回/分 | `RATE_LIMITS.login` |
+| auth-api | `/login` 全メソッドと `GET /api/login` | IP あたり 60 回/分。同じカウンタ | `RATE_LIMITS.login` |
 | auth-api | `POST /login` | IP × ユーザー名あたり 10 回/分 | `RATE_LIMITS.loginPerUser` |
 | auth-api | `/authorize` | IP あたり 120 回/分 | `RATE_LIMITS.authorize` |
 | auth-api | `/token` | IP あたり 300 回/分 | `RATE_LIMITS.token` |
 | auth-api | `/admin/*` | IP あたり 300 回/分 | `RATE_LIMITS.token` を流用。サービスのサーバーから来るため `/token` と同じ |
-| auth-api | `/logout` | IP あたり 60 回/分 | `RATE_LIMITS.login` を流用 |
+| auth-api | `/logout` と `GET /api/logout` | IP あたり 60 回/分。同じカウンタ | `RATE_LIMITS.login` を流用 |
 | crm-web / cms-web | `/auth/*` | IP あたり 60 回/分 | `AUTH_ROUTE_RATE_LIMIT` |
 | crm-web / cms-web | `/auth/backchannel-logout` | IP あたり 60 回/分 | `AUTH_ROUTE_RATE_LIMIT` |
 

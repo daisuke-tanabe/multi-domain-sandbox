@@ -109,7 +109,7 @@ flowchart TB
     User -- "Cookie: tenant_session (suzuki.crm のみ)" --> WebCrmB
     User -- "Cookie: tenant_session (tanaka.cms のみ)" --> WebCmsA
     User -- "Cookie: session (another-service.net のみ)" --> WebC
-    User -- "Cookie: sso_session (auth のみ)<br/>認可リクエスト / ログイン画面" --> Auth
+    User -- "Cookie: sso_session (auth のみ)<br/>認可リクエスト / ログイン画面の SPA / フォーム POST" --> Auth
     Auth -- "InitiateAuth (USER_SRP_AUTH)" --> Cognito
     WebCrmA -- "Back Channel: /token /userinfo /revoke" --> Auth
     WebCrmB -- "Back Channel" --> Auth
@@ -188,15 +188,16 @@ Auth Server と既存サービスのコード変更は発生しない。
 | --- | --- | --- | --- |
 | GET | `/.well-known/openid-configuration` | Client、API | OIDC Discovery |
 | GET | `/jwks` | Client、API | Token 検証用の公開鍵 |
-| GET | `/` | ブラウザ | ポータル。SSO Session があればテナントごとに割り当てのあるサービス、なければ `/login` へ。役割は出さない |
 | GET | `/authorize` | ブラウザ | 認可エンドポイント |
-| GET | `/login` | ブラウザ | ログインフォーム。`rid` 付きは認可フローの途中、なしはポータル用 |
-| POST | `/login` | ブラウザ | 認証。Cognito InitiateAuth を呼ぶ |
+| GET | `/api/login` | ログイン画面の SPA | `rid` と `error` を受け取り、CSRF Cookie を発行して `rid` `csrfToken` と、`error` があればその文言を返す JSON。rid が期限切れなら 400 `expired_request` |
+| POST | `/login` | ブラウザ | 認証。フォーム POST で Cognito InitiateAuth を呼ぶ |
+| GET | `/api/portal` | ポータルの SPA | ログイン中ユーザーのメールと、テナントごとに割り当てのあるサービスの一覧。役割は出さない。SSO Session がなければ 401 |
 | POST | `/token` | Client のサーバー | code 交換、refresh_token grant |
 | GET | `/userinfo` | Client のサーバー | claims 取得 |
 | POST | `/revoke` | Client のサーバー | Refresh Token 失効。RFC 7009 |
-| GET | `/logout` | ブラウザ | Global Logout の確認画面 |
-| POST | `/logout` | ブラウザ | Global Logout の実行 |
+| GET | `/api/logout` | Global Logout の SPA | SSO Session があれば CSRF を発行して `authenticated: true` と `csrfToken`、なければ Cookie を消して `authenticated: false`。どちらも戻り先 `returnTo` |
+| POST | `/logout` | ブラウザ | Global Logout の実行。フォーム POST |
+| GET | `/*` | ブラウザ | 画面の SPA。`/` ポータル、`/login` ログイン、`/logout` Global Logout の確認と完了 |
 | GET | `/admin/service-members` | サービスの API | `tenant_id` で、そのテナントで呼び出し元のサービスに入れる人の一覧。`client_secret_basic` |
 | POST | `/admin/service-members` | サービスの API | 招待。`{tenant_id, email, name?}`。users にいなければメールで事前作成し、割り当てを upsert |
 | DELETE | `/admin/service-members` | サービスの API | 割り当ての解除。`{tenant_id, user_id}` |
@@ -288,9 +289,11 @@ Set-Cookie: __Host-sso_session=<id>; Path=/; Secure; HttpOnly; SameSite=Lax   (�
 
 `access_denied` でも SSO Session は残す。認証自体は成功しており、契約と割り当てのある別のテナント、別のサービスにはそのまま入れる。
 
-#### GET `/login?rid=<rid>`
+#### GET `/login?rid=<rid>` と GET `/api/login?rid=<rid>&error=<kind>`
 
 `rid` は `/authorize` が発行する認可リクエストの預かり番号。256bit 乱数、30 分で失効。ログイン画面を挟む間、`client_id` `redirect_uri` `scope` `state` `nonce` `code_challenge` をサーバー側に保持するためのキーで、OIDC 仕様のパラメータではない。Keycloak の `session_code`、Auth0 の `/u/login?state=` に相当する。`rid` なしで開いた場合はポータル用ログインになり、成功後に `/` へ戻る。
+
+`GET /login` は React Router の SPA の `index.html` を返す。SPA は `GET /api/login?rid=&error=` を読み、CSRF Cookie の発行とともに `{ rid, csrfToken, errorMessage? }` を受け取ってフォームを描く。rid が期限切れなら 400 `{ error: "expired_request", message }`。rid なしで SSO Session があれば `{ redirectTo: "/" }`。応答は `Cache-Control: no-store`。パスワードは SPA が fetch で送らず、HTML フォームの POST で `/login` に送る。
 
 #### POST `/login`
 
@@ -305,14 +308,14 @@ Set-Cookie: __Host-sso_session=<id>; Path=/; Secure; HttpOnly; SameSite=Lax   (�
 
 | 結果 | 応答 |
 | --- | --- |
-| 成功、契約と割り当てあり | `302 <redirect_uri>?code&state&iss` + `Set-Cookie: sso_session`。Cookie が指す旧 SSO Session があれば破棄してから新しい ID を書く |
-| 成功、契約か割り当てなし | `302 <redirect_uri>?error=access_denied&error_description=<reason>&state` + `Set-Cookie: sso_session`。認証自体は成功しているため SSO Session は作る |
-| 認証失敗 | 200 でフォーム再表示。パスワード誤り、ユーザー不在、ロック中は同一文言 |
-| CSRF 不一致 | 403 |
-| `rid` 期限切れ | 400 |
-| レート制限超過 | 429 と `Retry-After`。`/login` は IP あたり 60 回/分、`POST /login` は IP × ユーザー名あたり 10 回/分 |
+| 成功、契約と割り当てあり | `303 <redirect_uri>?code&state&iss` + `Set-Cookie: sso_session`。Cookie が指す旧 SSO Session があれば破棄してから新しい ID を書く。`rid` なしは `303 /` |
+| 成功、契約か割り当てなし | `303 <redirect_uri>?error=access_denied&error_description=<reason>&state` + `Set-Cookie: sso_session`。認証自体は成功しているため SSO Session は作る |
+| 認証失敗 | `303 /login?error=<kind>&rid=<rid>`。kind は `invalid_credentials` `user_disabled` `user_not_confirmed` `password_reset_required` `challenge_required` `unavailable`。ユーザー名は URL に載せない。SPA が `/api/login` から文言を受け取って表示し、パスワード誤り、ユーザー不在、ロック中は同一文言 |
+| CSRF 不一致 | 403 のサーバー HTML |
+| `rid` 期限切れ | 400 のサーバー HTML |
+| レート制限超過 | 429 と `Retry-After`。`/login` と `GET /api/login` は IP あたり 60 回/分、`POST /login` は IP × ユーザー名あたり 10 回/分 |
 
-Auth Server は全ルートで body を 16 KB に制限する。`/authorize` は IP あたり 120 回/分、`/token` と `/admin/*` は IP あたり 300 回/分、`/logout` は IP あたり 60 回/分に制限する。
+Auth Server は全ルートで body を 16 KB に制限する。`/authorize` は IP あたり 120 回/分、`/token` と `/admin/*` は IP あたり 300 回/分、`/logout` と `GET /api/logout` は IP あたり 60 回/分に制限する。
 
 #### POST `/token`
 
@@ -363,9 +366,9 @@ refresh_token grant では `/authorize` と同じ順序で user、tenant、契�
 
 `Authorization: Bearer <access_token>`。`{ sub, email, email_verified, name, tenant_id }` を scope に応じて返す。
 
-#### GET `/logout?client_id=<client_id>&tenant=<slug>` と POST `/logout`
+#### GET `/logout?client_id=<client_id>&tenant=<slug>`、GET `/api/logout` と POST `/logout`
 
-GET は確認画面で、`client_id` と `tenant` を hidden に持つ。POST は `csrf` と任意の `client_id` `tenant` を受け取り、SSO Session を破棄して、その SSO Session に code を発行した Client のうち active で `backchannel_logout_uri` を持つものに Back-Channel Logout を送る。送信は 1 件あたり 5 秒でタイムアウトする。完了画面には `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin へのリンクを「CRM (tanaka) に戻る」の形で出し、ポータルへのリンクも出す。戻り先を登録済みテンプレートの展開からしか導出しないため Open Redirect にならない。
+`GET /logout` は SPA の `index.html` を返す。SPA は `GET /api/logout?client_id=&tenant=` を読み、SSO Session があれば `{ authenticated: true, csrfToken, returnTo? }` を受けて確認画面を描く。確認フォームは `csrf` と `client_id` `tenant` を hidden に持ち、HTML フォームの POST で `POST /logout` に送る。POST は SSO Session を破棄して、その SSO Session に code を発行した Client のうち active で `backchannel_logout_uri` を持つものに Back-Channel Logout を送る。送信は 1 件あたり 5 秒でタイムアウトする。完了後は Cookie を消して `303 /logout?client_id=&tenant=` へ戻し、SPA が `/api/logout` から `{ authenticated: false, returnTo? }` を受けて完了画面を描く。`returnTo` は `{ label: "CRM (tanaka)", href }` で、`href` は `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin。SPA は「CRM (tanaka) に戻る」のリンクを出し、`returnTo` がなければリンクを出さない。戻り先を登録済みテンプレートの展開からしか導出しないため Open Redirect にならない。CSRF 不一致は 403 のサーバー HTML。
 
 #### POST `/auth/backchannel-logout`。サービス側
 
@@ -602,11 +605,14 @@ sequenceDiagram
     Auth-->>Browser: 302 /login?rid=R1
 
     Browser->>Auth: GET /login?rid=R1
+    Auth-->>Browser: 200 ログイン画面の SPA の index.html
+    Browser->>Auth: GET /api/login?rid=R1
     Auth->>Store: R1 の存在確認
     Auth->>Store: CSRF トークン保存 {id:X1, token:T1} TTL 30分
-    Auth-->>Browser: 200 ログインフォーム (hidden: rid=R1, csrf=T1)<br/>Set-Cookie: __Host-auth_csrf=X1
+    Auth-->>Browser: 200 {rid:R1, csrfToken:T1}<br/>Set-Cookie: __Host-auth_csrf=X1。Cache-Control: no-store
+    Note over Browser: SPA がフォームを描く (hidden: rid=R1, csrf=T1)
 
-    Browser->>Auth: POST /login  rid=R1&csrf=T1&username=alice&password=***<br/>Cookie: __Host-auth_csrf=X1
+    Browser->>Auth: POST /login  rid=R1&csrf=T1&username=alice&password=***<br/>HTML フォームの POST。Cookie: __Host-auth_csrf=X1
     Auth->>Store: X1 の token と T1 を比較
     Auth->>Store: R1 から認可リクエストを取得
     Auth->>Cognito: InitiateAuth AuthFlow=USER_SRP_AUTH<br/>{USERNAME, SRP_A, SECRET_HASH}
@@ -619,12 +625,12 @@ sequenceDiagram
     Auth->>Store: Cookie が指す旧 SSO Session があれば削除
     Auth->>IdDB: users.status → tenants.status (tanaka) → tenant_services (tanaka, crm) → tenant_service_members (tanaka, crm, user_id)
     alt 契約なし / crm への割り当てなし
-        Auth-->>Browser: 302 https://tanaka.crm.example.com/auth/callback?error=access_denied&error_description=no_membership&state=S1&iss=...<br/>Set-Cookie: __Host-sso_session=SS1
+        Auth-->>Browser: 303 https://tanaka.crm.example.com/auth/callback?error=access_denied&error_description=no_membership&state=S1&iss=...<br/>Set-Cookie: __Host-sso_session=SS1
         Note over CrmA: 403「アクセス権がありません」を表示。SSO Session は残る
     end
     Auth->>Store: Authorization Code 保存 {code:AC1, client_id:crm, redirect_uri, nonce:N1,<br/>code_challenge:C1, user_id, tenant_id:tanaka, sid:SID1, auth_time} TTL 60秒
     Auth->>Store: R1 を削除。SADD sso:clients:SS1 crm
-    Auth-->>Browser: 302 https://tanaka.crm.example.com/auth/callback?code=AC1&state=S1&iss=https://auth.example.com<br/>Set-Cookie: __Host-sso_session=SS1#59; Path=/#59; Secure#59; HttpOnly#59; SameSite=Lax
+    Auth-->>Browser: 303 https://tanaka.crm.example.com/auth/callback?code=AC1&state=S1&iss=https://auth.example.com<br/>Set-Cookie: __Host-sso_session=SS1#59; Path=/#59; Secure#59; HttpOnly#59; SameSite=Lax
 
     Browser->>CrmA: GET /auth/callback?code=AC1&state=S1&iss=...<br/>Cookie: __Secure-tenant_pre_auth=P1
     CrmA->>SessCrm: crm:tanaka:P1 から pre-auth を取得して削除
@@ -841,8 +847,11 @@ sequenceDiagram
     participant Cms as cms (cms.example.com/auth/backchannel-logout)
 
     Browser->>Auth: GET /logout?client_id=crm&tenant=tanaka (Cookie sso_session=SS1)
-    Auth-->>Browser: 200 確認画面 (hidden csrf)  Set-Cookie: __Host-auth_csrf
-    Browser->>Auth: POST /logout  csrf=...&client_id=crm&tenant=tanaka
+    Auth-->>Browser: 200 SPA の index.html
+    Browser->>Auth: GET /api/logout?client_id=crm&tenant=tanaka
+    Auth-->>Browser: 200 {authenticated:true, csrfToken, returnTo:{label:"CRM (tanaka)", href:"https://tanaka.crm.example.com/"}}<br/>Set-Cookie: __Host-auth_csrf
+    Note over Browser: SPA が確認画面を描く (hidden: csrf, client_id, tenant)
+    Browser->>Auth: POST /logout  csrf=...&client_id=crm&tenant=tanaka (HTML フォームの POST)
     Auth->>Store: SS1 を取得。sid=SID1、SMEMBERS sso:clients:SS1 → {crm, cms}
     Auth->>Store: SID1 に紐付く Refresh Token 系列 F1, F2, F3 を全失効
     Auth->>Cognito: RevokeToken {Token: Cognito RefreshToken, ClientId, ClientSecret}
@@ -857,8 +866,10 @@ sequenceDiagram
         Cms->>Cms: cms:sid:SID1 → [TS3] を削除
         Cms-->>Auth: 200
     end
-    Auth-->>Browser: 200 完了画面 (「CRM (tanaka) に戻る」 / ポータルへ)<br/>Set-Cookie: __Host-sso_session=#59; Max-Age=0
-    Note over Browser: 以降、tanaka.crm も suzuki.crm も tanaka.cms もパスワード入力が必要<br/>通知に失敗したサービスは Refresh 失敗により最大 15 分で失効
+    Auth-->>Browser: 303 /logout?client_id=crm&tenant=tanaka<br/>Set-Cookie: __Host-sso_session=#59; Max-Age=0
+    Browser->>Auth: GET /logout?client_id=crm&tenant=tanaka → SPA → GET /api/logout?client_id=crm&tenant=tanaka
+    Auth-->>Browser: 200 {authenticated:false, returnTo:{label:"CRM (tanaka)", href:"https://tanaka.crm.example.com/"}}
+    Note over Browser: SPA が完了画面を描く (「CRM (tanaka) に戻る」)<br/>以降、tanaka.crm も suzuki.crm も tanaka.cms もパスワード入力が必要<br/>通知に失敗したサービスは Refresh 失敗により最大 15 分で失効
 ```
 
 Back-Channel Logout URI はサービスに 1 つで、テナントごとには持たない。1 通の logout_token でそのサービスの全テナントのセッションを消す。
@@ -873,13 +884,18 @@ sequenceDiagram
     participant IdDB
     participant CmsA as CmsA (tanaka.cms.example.com)
 
-    Browser->>Auth: GET / (Cookie sso_session なし)
-    Auth-->>Browser: 302 /login (rid なし。ポータル用ログイン)
-    Browser->>Auth: POST /login rid=&csrf=...&username&password
-    Auth-->>Browser: 302 /  Set-Cookie: __Host-sso_session=SS1
-    Browser->>Auth: GET / (Cookie sso_session=SS1)
+    Browser->>Auth: GET / (Cookie sso_session なし) → SPA の index.html
+    Browser->>Auth: GET /api/portal
+    Auth-->>Browser: 401 {error:"unauthenticated"}
+    Note over Browser: SPA が /login へ遷移 (rid なし。ポータル用ログイン)
+    Browser->>Auth: GET /api/login → 200 {rid:"", csrfToken}
+    Browser->>Auth: POST /login rid=&csrf=...&username&password (HTML フォームの POST)
+    Auth-->>Browser: 303 /  Set-Cookie: __Host-sso_session=SS1
+    Browser->>Auth: GET / (Cookie sso_session=SS1) → SPA の index.html
+    Browser->>Auth: GET /api/portal
     Auth->>IdDB: tenant_service_members から割り当てのあるテナント × サービスを取得<br/>tenant_services と oidc_clients が active なものに絞り redirect_uri_template を取得
-    Auth-->>Browser: 200 一覧。tanaka: CRM、CMS。suzuki: CRM。役割は出さない<br/>各リンクは redirect_uri_template をテナント slug で展開した origin + /auth/login<br/>割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」
+    Auth-->>Browser: 200 {email, tenants:[{slug, name, services:[{name, clientId, loginUrl}]}]}<br/>tanaka: CRM、CMS。suzuki: CRM。役割は出さない<br/>loginUrl は redirect_uri_template をテナント slug で展開した origin + /auth/login
+    Note over Browser: SPA が一覧を描く。tenants が空なら「利用できるサービスがありません。管理者に招待を依頼してください。」
     Browser->>CmsA: GET /auth/login (リンクをクリック)
     Note over Browser,CmsA: 以降は 6.3 と同じ。Third-Party Initiated Login の形で通常のフローに合流する
 ```

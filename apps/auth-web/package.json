@@ -1,0 +1,26 @@
+{
+  "name": "@sandbox/auth-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "react-router dev",
+    "build": "react-router build",
+    "typegen": "react-router typegen",
+    "typecheck": "react-router typegen && tsc -p tsconfig.app.json"
+  },
+  "dependencies": {
+    "@sandbox/web-ui": "workspace:*",
+    "isbot": "^5",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-router": "catalog:"
+  },
+  "devDependencies": {
+    "@react-router/dev": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  }
+}

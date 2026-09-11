@@ -1,9 +1,14 @@
 import { serve } from "@hono/node-server";
 import { OidcProvider, type OidcClientDeps } from "@sandbox/oidc-client";
-import { createLogger, createStoreFactory, nodeFetch, systemClock } from "@sandbox/shared";
+import {
+  createLogger,
+  createStoreFactory,
+  nodeFetch,
+  spaOptionsFromEnv,
+  systemClock,
+} from "@sandbox/shared";
 import { createWebCoreApp } from "./app.ts";
 import { createClientResolvers, loadWebCoreConfig } from "./config.ts";
-import type { SpaOptions } from "./spa.ts";
 
 /**
  * サービスの Web を起動する。apps/<service>-web/src/main.ts はこれを呼ぶだけ。
@@ -34,12 +39,7 @@ export function startWebCore(component: string): void {
     fetch: nodeFetch,
   };
   const provider = new OidcProvider(deps.provider, deps.fetch, systemClock);
-  const spa: SpaOptions =
-    config.spaDir !== undefined
-      ? { kind: "static", dir: config.spaDir }
-      : config.spaDevServerUrl !== undefined
-        ? { kind: "proxy", devServerUrl: config.spaDevServerUrl, fetch: nodeFetch }
-        : { kind: "none" };
+  const spa = spaOptionsFromEnv(config, nodeFetch);
   if (spa.kind === "none") {
     logger.warn(
       "SPA_DIR and SPA_DEV_SERVER_URL are not set. Only /auth, /session and /api are served",

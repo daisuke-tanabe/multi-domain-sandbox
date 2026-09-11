@@ -225,11 +225,26 @@ export function basicAuth(clientId: string, secret: string = CLIENT_SECRET): str
   return `Basic ${Buffer.from(`${clientId}:${secret}`).toString("base64")}`;
 }
 
-/** フォーム HTML から hidden の csrf 値を取り出す */
-export function extractCsrf(htmlBody: string): string {
-  const match = /name="csrf" value="([^"]+)"/.exec(htmlBody);
-  if (match?.[1] === undefined) throw new Error("csrf token not found in login page");
-  return match[1];
+/**
+ * SPA がログインフォームを描くのと同じ経路で CSRF を受け取る。
+ * /api/login を呼び、フォームに入れる csrf と、Cookie ヘッダに足した cookie を返す。
+ */
+export async function readLoginContext(
+  harness: TestHarness,
+  rid: string,
+  existingCookie: string = "",
+): Promise<{ csrf: string; cookie: string; response: Response; body: Record<string, unknown> }> {
+  const query = rid === "" ? "" : `?rid=${encodeURIComponent(rid)}`;
+  const response = await harness.app.request(`${ISSUER}/api/login${query}`, {
+    headers: { Cookie: existingCookie },
+  });
+  const body = await readJson(response);
+  return {
+    csrf: typeof body.csrfToken === "string" ? body.csrfToken : "",
+    cookie: cookieHeaderFrom(response, existingCookie),
+    response,
+    body,
+  };
 }
 
 /**
@@ -252,10 +267,8 @@ export async function runLoginFlow(
     };
   }
 
-  const loginPageRes = await harness.app.request(`${ISSUER}${location}`);
-  const csrf = extractCsrf(await loginPageRes.text());
   const rid = new URL(`${ISSUER}${location}`).searchParams.get("rid") ?? "";
-  const loginCookie = cookieHeaderFrom(loginPageRes, existingCookie);
+  const { csrf, cookie: loginCookie } = await readLoginContext(harness, rid, existingCookie);
 
   const form = new URLSearchParams({
     rid,

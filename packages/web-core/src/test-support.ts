@@ -245,21 +245,6 @@ export class Browser {
   }
 }
 
-/** ログイン画面の hidden 値を取り出す */
-export function readLoginForm(body: string): { rid: string; csrf: string } {
-  const rid = /name="rid" value="([^"]+)"/.exec(body)?.[1];
-  const csrf = /name="csrf" value="([^"]+)"/.exec(body)?.[1];
-  if (rid === undefined || csrf === undefined) throw new Error("login form not found");
-  return { rid, csrf };
-}
-
-/** ページ内の Logout / 作成フォームの csrf を取り出す */
-export function readPageCsrf(body: string): string {
-  const csrf = /name="csrf" value="([^"]+)"/.exec(body)?.[1];
-  if (csrf === undefined) throw new Error("csrf not found in page");
-  return csrf;
-}
-
 /**
  * 対象テナントへアクセスし、ログイン画面が出たら資格情報を入力して完了させる。
  */
@@ -274,10 +259,15 @@ export async function loginThrough(
     `${start.origin}/auth/login?return_to=${encodeURIComponent(start.pathname)}`,
   );
   if (!first.finalUrl.pathname.startsWith("/login")) return first;
-  const form = readLoginForm(first.body);
+  // auth-web の SPA と同じく /api/login から rid と CSRF を受け取り、フォーム POST する
+  const rid = first.finalUrl.searchParams.get("rid") ?? "";
+  const context = await readJson(
+    browser,
+    `${AUTH_ORIGIN}/api/login?rid=${encodeURIComponent(rid)}`,
+  );
   return browser.submitForm(`${AUTH_ORIGIN}/login`, {
-    rid: form.rid,
-    csrf: form.csrf,
+    rid,
+    csrf: String(context.csrfToken),
     username: credentials.username,
     password: credentials.password,
   });

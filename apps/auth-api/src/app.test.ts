@@ -13,7 +13,7 @@ import {
   createHarness,
   exchangeCode,
   ISSUER,
-  extractCsrf,
+  readLoginContext,
   readJson,
   readTokenBody,
   refresh,
@@ -100,11 +100,9 @@ describe("first login via tenant-a", () => {
   test("SSO cookie has HttpOnly, SameSite=Lax, Path=/ and no Domain attribute", async () => {
     const { url } = authorizeUrl();
     const authorizeRes = await harness.app.request(url);
-    const loginRes = await harness.app.request(`${ISSUER}${authorizeRes.headers.get("Location")}`);
-    const csrf = extractCsrf(await loginRes.text());
     const rid =
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
-    const csrfCookie = loginRes.headers.getSetCookie()[0]?.split(";")[0] ?? "";
+    const { csrf, cookie: csrfCookie } = await readLoginContext(harness, rid);
 
     const res = await harness.app.request(`${ISSUER}/login`, {
       method: "POST",
@@ -124,24 +122,28 @@ describe("first login via tenant-a", () => {
     expect(ssoCookie).not.toMatch(/Domain=/i);
   });
 
-  test("re-displays login form with generic message on wrong password and issues no code", async () => {
+  test("sends the user back to the login screen with a generic message on wrong password and issues no code", async () => {
     const { url } = authorizeUrl();
     const authorizeRes = await harness.app.request(url);
-    const loginRes = await harness.app.request(`${ISSUER}${authorizeRes.headers.get("Location")}`);
-    const csrf = extractCsrf(await loginRes.text());
     const rid =
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
-    const csrfCookie = loginRes.headers.getSetCookie()[0]?.split(";")[0] ?? "";
+    const { csrf, cookie: csrfCookie } = await readLoginContext(harness, rid);
 
     const wrongPassword = await harness.app.request(`${ISSUER}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookie },
       body: new URLSearchParams({ rid, csrf, username: "alice", password: "wrong" }).toString(),
     });
-    const wrongPasswordBody = await wrongPassword.text();
+    const retryLocation = wrongPassword.headers.get("Location") ?? "";
+    const retry = await harness.app.request(
+      `${ISSUER}${retryLocation}`.replace("/login?", "/api/login?"),
+    );
 
-    expect(wrongPassword.status).toBe(200);
-    expect(wrongPasswordBody).toContain("ユーザー名またはパスワードが正しくありません");
+    expect(wrongPassword.status).toBe(303);
+    expect(retryLocation).toBe(`/login?error=invalid_credentials&rid=${encodeURIComponent(rid)}`);
+    expect((await readJson(retry)).errorMessage).toBe(
+      "ユーザー名またはパスワードが正しくありません",
+    );
     expect(wrongPassword.headers.getSetCookie().some((c) => c.startsWith("sso_session="))).toBe(
       false,
     );
@@ -151,9 +153,8 @@ describe("first login via tenant-a", () => {
     const { url } = authorizeUrl();
     const authorizeRes = await harness.app.request(url);
     const location = authorizeRes.headers.get("Location") ?? "";
-    const loginRes = await harness.app.request(`${ISSUER}${location}`);
     const rid = new URL(`${ISSUER}${location}`).searchParams.get("rid") ?? "";
-    const csrfCookie = loginRes.headers.getSetCookie()[0]?.split(";")[0] ?? "";
+    const { cookie: csrfCookie } = await readLoginContext(harness, rid);
 
     const res = await harness.app.request(`${ISSUER}/login`, {
       method: "POST",
@@ -493,15 +494,18 @@ describe("discovery and userinfo", () => {
 });
 
 describe("global logout", () => {
-  test("shows the completion page when no SSO session exists", async () => {
+  test("reports the logged-out state with a return link when no SSO session exists", async () => {
     const harness = await createHarness();
 
-    const res = await harness.app.request(`${ISSUER}/logout?client_id=crm&tenant=tanaka`);
-    const body = await res.text();
+    const res = await harness.app.request(`${ISSUER}/api/logout?client_id=crm&tenant=tanaka`);
+    const body = await readJson(res);
 
     expect(res.status).toBe(200);
-    expect(body).toContain("Sandbox からログアウトしました");
-    expect(body).toContain("http://tanaka.crm.localhost:3001/");
+    expect(body.authenticated).toBe(false);
+    expect(body.returnTo).toEqual({
+      label: "CRM (tanaka)",
+      href: "http://tanaka.crm.localhost:3001/",
+    });
   });
 
   test("destroys the SSO session, revokes refresh tokens and notifies every authorized client", async () => {
@@ -528,10 +532,11 @@ describe("global logout", () => {
       first.cookie,
     );
 
-    const confirm = await harness.app.request(`${ISSUER}/logout?client_id=crm&tenant=tanaka`, {
+    const confirm = await harness.app.request(`${ISSUER}/api/logout?client_id=crm&tenant=tanaka`, {
       headers: { Cookie: first.cookie },
     });
-    const csrf = extractCsrf(await confirm.text());
+    const confirmBody = await readJson(confirm);
+    const csrf = String(confirmBody.csrfToken);
     const cookie = cookieHeaderFrom(confirm, first.cookie);
 
     // Act
@@ -545,9 +550,17 @@ describe("global logout", () => {
     });
     const refreshAfterLogout = await refresh(harness, tokens.refresh_token);
 
+    const afterState = await readJson(
+      await harness.app.request(`${ISSUER}/api/logout?client_id=crm&tenant=tanaka`, {
+        headers: { Cookie: cookieHeaderFrom(done, cookie) },
+      }),
+    );
+
     // Assert
-    expect(done.status).toBe(200);
-    expect(await done.text()).toContain("Sandbox からログアウトしました");
+    expect(confirmBody.authenticated).toBe(true);
+    expect(done.status).toBe(303);
+    expect(done.headers.get("Location")).toBe("/logout?client_id=crm&tenant=tanaka");
+    expect(afterState.authenticated).toBe(false);
     expect(done.headers.getSetCookie().some((c) => c.startsWith("sso_session=;"))).toBe(true);
     expect(afterLogout.headers.get("Location")).toMatch(/^\/login\?rid=/);
     expect(refreshAfterLogout.status).toBe(400);
@@ -590,41 +603,51 @@ describe("global logout", () => {
 });
 
 describe("portal", () => {
-  test("shows the login form when /login is opened without rid", async () => {
+  test("gives the SPA an empty rid and a csrf token when /api/login is called without rid", async () => {
     const harness = await createHarness();
 
-    const res = await harness.app.request(`${ISSUER}/login`);
-    const body = await res.text();
+    const { response, body } = await readLoginContext(harness, "");
 
-    expect(res.status).toBe(200);
-    expect(body).toContain("Sandbox にログイン");
-    expect(body).toContain('name="rid" value=""');
+    expect(response.status).toBe(200);
+    expect(body.rid).toBe("");
+    expect(typeof body.csrfToken).toBe("string");
+    expect(response.headers.getSetCookie().some((c) => c.startsWith("auth_csrf="))).toBe(true);
   });
 
   test("reports an expired request when rid is unknown", async () => {
     const harness = await createHarness();
 
-    const res = await harness.app.request(`${ISSUER}/login?rid=unknown`);
+    const { response, body } = await readLoginContext(harness, "unknown");
 
-    expect(res.status).toBe(400);
-    expect(await res.text()).toContain("時間が経ちすぎた");
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("expired_request");
+    expect(String(body.message)).toContain("時間が経ちすぎた");
   });
 
-  test("redirects to the login form when the portal is opened without a session", async () => {
+  test("answers 401 to the portal API without a session so the SPA shows the login screen", async () => {
     const harness = await createHarness();
 
-    const res = await harness.app.request(`${ISSUER}/`);
+    const res = await harness.app.request(`${ISSUER}/api/portal`);
 
-    expect(res.status).toBe(302);
-    expect(res.headers.get("Location")).toBe("/login");
+    expect(res.status).toBe(401);
+  });
+
+  test("serves the SPA shell for the screen paths", async () => {
+    const harness = await createHarness();
+
+    const statuses = await Promise.all(
+      ["/", "/login", "/logout"].map(
+        async (path) => (await harness.app.request(`${ISSUER}${path}`)).status,
+      ),
+    );
+
+    expect(statuses).toEqual([200, 200, 200]);
   });
 
   test("logs in without rid and lists the assigned services per tenant", async () => {
     // Arrange
     const harness = await createHarness();
-    const loginPage = await harness.app.request(`${ISSUER}/login`);
-    const csrf = extractCsrf(await loginPage.text());
-    const csrfCookie = cookieHeaderFrom(loginPage);
+    const { csrf, cookie: csrfCookie } = await readLoginContext(harness, "");
 
     // Act
     const login = await harness.app.request(`${ISSUER}/login`, {
@@ -638,39 +661,48 @@ describe("portal", () => {
       }).toString(),
     });
     const cookie = cookieHeaderFrom(login, csrfCookie);
-    const portal = await harness.app.request(`${ISSUER}/`, { headers: { Cookie: cookie } });
-    const body = await portal.text();
+    const portal = await harness.app.request(`${ISSUER}/api/portal`, {
+      headers: { Cookie: cookie },
+    });
+    const body = await readJson(portal);
+    const tenants = body.tenants as Array<{
+      name: string;
+      services: Array<{ loginUrl: string }>;
+    }>;
+    const loginUrls = tenants.flatMap((t) => t.services.map((s) => s.loginUrl));
 
     // Assert
-    expect(login.status).toBe(302);
+    expect(login.status).toBe(303);
     expect(login.headers.get("Location")).toBe("/");
     expect(portal.status).toBe(200);
-    expect(body).toContain("alice@example.com");
-    expect(body).toContain("http://tanaka.crm.localhost:3001/auth/login");
-    expect(body).toContain("http://tanaka.cms.localhost:3003/auth/login");
-    expect(body).toContain("Tanaka Inc.");
-    expect(body).toContain("http://suzuki.crm.localhost:3001/auth/login");
-    expect(body).not.toContain("http://suzuki.cms.localhost:3003/auth/login");
-    expect(body).toContain("Suzuki Ltd.");
+    expect(body.email).toBe("alice@example.com");
+    expect(tenants.map((t) => t.name)).toEqual(["Tanaka Inc.", "Suzuki Ltd."]);
+    expect(loginUrls).toEqual([
+      "http://tanaka.crm.localhost:3001/auth/login",
+      "http://tanaka.cms.localhost:3003/auth/login",
+      "http://suzuki.crm.localhost:3001/auth/login",
+    ]);
   });
 
   test("tells a user without service assignments that nothing is available", async () => {
     const harness = await createHarness();
     const flow = await runLoginFlow(harness, { username: "carol", password: "carol-password" });
 
-    const portal = await harness.app.request(`${ISSUER}/`, { headers: { Cookie: flow.cookie } });
+    const portal = await harness.app.request(`${ISSUER}/api/portal`, {
+      headers: { Cookie: flow.cookie },
+    });
 
-    expect(await portal.text()).toContain("利用できるサービスがありません");
+    expect((await readJson(portal)).tenants).toEqual([]);
   });
 
   test("sends a logged-in user from /login straight to the portal", async () => {
     const harness = await createHarness();
     const flow = await runLoginFlow(harness, ALICE);
 
-    const res = await harness.app.request(`${ISSUER}/login`, { headers: { Cookie: flow.cookie } });
+    const { response, body } = await readLoginContext(harness, "", flow.cookie);
 
-    expect(res.status).toBe(302);
-    expect(res.headers.get("Location")).toBe("/");
+    expect(response.status).toBe(200);
+    expect(body.redirectTo).toBe("/");
   });
 });
 
@@ -802,7 +834,7 @@ describe("concurrency and abuse hardening", () => {
   test("rate limits repeated requests to the login page from one client", async () => {
     let last = 0;
     for (let i = 0; i < 61; i += 1) {
-      last = (await harness.app.request(`${ISSUER}/login`)).status;
+      last = (await harness.app.request(`${ISSUER}/api/login`)).status;
     }
     expect(last).toBe(429);
   });

@@ -6,7 +6,7 @@ import { issueCsrfToken, verifyCsrfToken } from "../usecases/csrf.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import { globalLogout } from "../usecases/global-logout.ts";
 import { loadSsoSession } from "../usecases/sso-session.ts";
-import { errorPage, logoutConfirmPage, logoutDonePage } from "../views/pages.ts";
+import { errorPage } from "../views/pages.ts";
 import {
   clearSsoCookie,
   noStore,
@@ -22,25 +22,27 @@ const logoutFormSchema = z.object({
 });
 
 /**
- * Global Logout。docs/design/10-logout-design.md に対応する。
- * GET は確認画面、POST で SSO Session を破棄し各 Client へ Back-Channel Logout を送る。
+ * Global Logout。docs/design/10-logout-design.md に対応する。画面は apps/auth-web の SPA が描く。
+ *   GET  /api/logout  SSO Session があれば確認フォームの材料、なければ完了の状態を返す
+ *   POST /logout      SSO Session を破棄し各 Client へ Back-Channel Logout を送り、/logout へ戻す
  * 戻り先は Client の redirect_uri テンプレートをテナントで展開した origin からのみ導出する。Open Redirect を防ぐ。
  */
 export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
 
-  app.get("/logout", async (c) => {
+  app.get("/api/logout", async (c) => {
     noStore(c);
     const clientId = c.req.query("client_id");
     const tenantSlug = c.req.query("tenant");
+    const returnTo = await returnTarget(deps, clientId, tenantSlug);
     const session = await loadSsoSession(deps, readSsoCookie(c, policy));
     if (session === undefined) {
       clearSsoCookie(c, policy);
-      return c.html(logoutDonePage({ returnTo: await returnTarget(deps, clientId, tenantSlug) }));
+      return c.json({ authenticated: false, returnTo });
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
-    return c.html(logoutConfirmPage({ csrfToken: csrf.formToken, clientId, tenantSlug }));
+    return c.json({ authenticated: true, csrfToken: csrf.formToken, returnTo });
   });
 
   app.post(
@@ -65,9 +67,11 @@ export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       const session = await loadSsoSession(deps, readSsoCookie(c, policy));
       if (session !== undefined) await globalLogout(deps, session);
       clearSsoCookie(c, policy);
-      return c.html(
-        logoutDonePage({ returnTo: await returnTarget(deps, form.client_id, form.tenant) }),
-      );
+      const params = new URLSearchParams();
+      if (form.client_id !== undefined) params.set("client_id", form.client_id);
+      if (form.tenant !== undefined) params.set("tenant", form.tenant);
+      const query = params.toString();
+      return c.redirect(query === "" ? "/logout" : `/logout?${query}`, 303);
     },
   );
 

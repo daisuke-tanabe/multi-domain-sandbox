@@ -7,7 +7,7 @@ import type { AuthDeps } from "../usecases/deps.ts";
 import { login, type LoginError } from "../usecases/login.ts";
 import { resumePendingAuthorization } from "../usecases/pending-authorization.ts";
 import { destroySsoSession, loadSsoSession } from "../usecases/sso-session.ts";
-import { errorPage, loginPage } from "../views/pages.ts";
+import { errorPage } from "../views/pages.ts";
 import {
   noStore,
   redirectForOutcome,
@@ -24,6 +24,15 @@ const loginFormSchema = z.object({
   password: z.string().min(1).max(256),
 });
 
+const LOGIN_ERROR_KINDS = [
+  "invalid_credentials",
+  "user_disabled",
+  "user_not_confirmed",
+  "password_reset_required",
+  "challenge_required",
+  "unavailable",
+] as const satisfies ReadonlyArray<LoginError["kind"]>;
+
 const GENERIC_FAILURE = "ユーザー名またはパスワードが正しくありません";
 const EXPIRED_REQUEST_MESSAGE =
   "ログイン画面を開いてから時間が経ちすぎたか、認証サーバーが再起動しました。利用したいサービスの URL をブラウザで開き直してログインしてください。";
@@ -31,8 +40,8 @@ const EXPIRED_REQUEST_MESSAGE =
 /**
  * 失敗理由をユーザー向け文言に写像する。ユーザー列挙を防ぐため認証失敗系は同一文言にする。
  */
-function loginErrorMessage(error: LoginError): string {
-  switch (error.kind) {
+function loginErrorMessage(kind: LoginError["kind"]): string {
+  switch (kind) {
     case "invalid_credentials":
     case "user_disabled":
       return GENERIC_FAILURE;
@@ -45,7 +54,7 @@ function loginErrorMessage(error: LoginError): string {
     case "unavailable":
       return "一時的なエラーです。しばらくしてから再試行してください";
     default:
-      return exhaustive(error);
+      return exhaustive(kind);
   }
 }
 
@@ -53,25 +62,46 @@ function exhaustive(value: never): never {
   throw new Error(`Unhandled login error: ${String(value)}`);
 }
 
+function isLoginErrorKind(value: string): value is LoginError["kind"] {
+  return (LOGIN_ERROR_KINDS as ReadonlyArray<string>).includes(value);
+}
+
+/** 失敗したら種類だけをクエリに載せて SPA のログイン画面へ戻す。文言は /api/login が返す */
+function loginRetryPath(rid: string, kind: LoginError["kind"]): string {
+  const params = new URLSearchParams({ error: kind });
+  if (rid !== "") params.set("rid", rid);
+  return `/login?${params.toString()}`;
+}
+
+/**
+ * ログイン。画面は apps/auth-web の SPA が描く。
+ *   GET  /api/login  SPA がフォームを描くための rid、CSRF、エラー文言
+ *   POST /login      フォーム POST。成功は /authorize の続きへ、失敗は /login?error= へ戻す
+ */
 export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
 
-  app.get("/login", async (c) => {
+  app.get("/api/login", async (c) => {
     noStore(c);
     const rid = c.req.query("rid") ?? "";
     if (rid !== "") {
       const request = await deps.stores.authorizationRequests.get(rid);
       if (request === undefined) {
-        return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
+        return c.json({ error: "expired_request", message: EXPIRED_REQUEST_MESSAGE }, 400);
       }
     } else {
       // rid なしはポータル用ログイン。既に SSO Session があればポータルへ
       const session = await loadSsoSession(deps, readSsoCookie(c, policy));
-      if (session !== undefined) return c.redirect("/");
+      if (session !== undefined) return c.json({ redirectTo: "/" });
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
-    return c.html(loginPage({ rid, csrfToken: csrf.formToken }));
+    const errorKind = c.req.query("error") ?? "";
+    return c.json({
+      rid,
+      csrfToken: csrf.formToken,
+      ...(isLoginErrorKind(errorKind) && { errorMessage: loginErrorMessage(errorKind) }),
+    });
   });
 
   app.post(
@@ -101,28 +131,16 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       }
 
       const result = await login(deps, { username: form.username, password: form.password });
-      if (!result.ok) {
-        const csrf = await issueCsrfToken(deps);
-        writeCsrfCookie(c, policy, csrf.cookieValue);
-        return c.html(
-          loginPage({
-            rid: form.rid,
-            csrfToken: csrf.formToken,
-            errorMessage: loginErrorMessage(result.error),
-            username: form.username,
-          }),
-          200,
-        );
-      }
+      if (!result.ok) return c.redirect(loginRetryPath(form.rid, result.error.kind), 303);
 
       // 古い SSO Session を残さない。Cookie を上書きするだけでは前のセッションが期限まで生き続ける
       const previous = await loadSsoSession(deps, readSsoCookie(c, policy));
       if (previous !== undefined) await destroySsoSession(deps, previous);
       writeSsoCookie(c, policy, result.value.session.id);
-      if (request === undefined) return c.redirect("/");
+      if (request === undefined) return c.redirect("/", 303);
       await deps.stores.authorizationRequests.delete(form.rid);
       const outcome = await resumePendingAuthorization(deps, request, result.value.session);
-      return c.redirect(redirectForOutcome(deps.issuer, request, outcome));
+      return c.redirect(redirectForOutcome(deps.issuer, request, outcome), 303);
     },
   );
 

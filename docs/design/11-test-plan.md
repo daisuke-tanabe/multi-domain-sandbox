@@ -5,7 +5,7 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 135 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。React の画面は `scripts/chrome-check.ts` が実 Chrome で描画して確認する。
+現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 136 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。auth-api のテストも SPA は配らず、auth-web と同じ経路で `/api/login` `/api/portal` `/api/logout` の JSON とフォーム POST の応答を検証する。React の画面は `*-web` も auth-web も `scripts/chrome-check.ts` が実 Chrome で描画して確認する。
 
 ## テストピラミッド
 
@@ -83,8 +83,9 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | A1-A4 | リダイレクトせず 400 を返し、Location ヘッダがないこと。A3 はテンプレート不一致、A3b はテンプレートに一致するが slug が tenants にないホスト |
 | A5-A10 | redirect_uri へ error と state 付きで 302 |
 | A11-A13, A17, A18 | access_denied と error_description の理由。SSO Session は維持される |
-| A14-A15 | ログイン画面へ遷移し Cookie が削除される |
-| L1-L12 | 各エラーの応答と文言。L3-L5 が同一文言 |
+| A14-A15 | `/login?rid=` へ遷移し Cookie が削除される |
+| L1-L12 | 各エラーの応答と文言。失敗は `/login?error=<kind>&rid=` への 303 で、文言は `/api/login?rid=&error=` の `errorMessage` で確認する。L3-L5 が同一文言。L1 は `/api/login` が 400 `expired_request` |
+| ログイン画面 | `/api/login?rid=` が CSRF Cookie を発行し `rid` と `csrfToken` を返す。`/api/login` に `Cache-Control: no-store` が付く。rid なしで SSO Session があれば `redirectTo: "/"` |
 | T1-T16 | 各エラーの OAuth エラーコード。T1 は誤った secret と revoked 済みの secret の両方で invalid_client。T4 で Refresh Token 系列が失効。T15 で契約解除後の Refresh が invalid_grant |
 | M2 | secret ローテーション。新 secret を active で追加した直後は新旧どちらの Basic 認証でも /token が 200。旧行を revoked にすると旧 secret だけ invalid_client |
 | 正常 | code 交換で id_token / access_token / refresh_token が返る。expires_in=900 |
@@ -93,13 +94,14 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | 正常 | refresh_token grant でローテーションされ、旧値が失効する |
 | 正常 | /revoke が冪等 |
 | 正常 | /.well-known/openid-configuration と /jwks の内容 |
-| ポータル | alice で「Tanaka Inc. (tanaka)」に CRM と CMS、「Suzuki Ltd. (suzuki)」に CRM のみ。suzuki.cms のリンクは出ない。リンクは `<tenant>.<service>` の /auth/login。役割は表示しない |
-| ポータル | どのサービスにも割り当てのない carol は「利用できるサービスがありません。管理者に招待を依頼してください。」 |
+| ポータル | `/api/portal` の JSON で確認する。alice で `tenants` に tanaka の CRM と CMS、suzuki の CRM のみ。suzuki.cms は出ない。各サービスの `loginUrl` は `<tenant>.<service>` の /auth/login。役割は含まない。`email` は alice のメール |
+| ポータル | どのサービスにも割り当てのない carol は `tenants` が空。SPA が「利用できるサービスがありません。管理者に招待を依頼してください。」を出す |
+| ポータル | SSO Session なしの `/api/portal` は 401 `unauthenticated` |
 | 管理 API | R1。Basic 認証なしで `/admin/service-members` を呼ぶと 401 |
 | 管理 API | 招待と初回ログインの紐付け。crm の secret で dave のメールを tanaka に招待すると 201 で `linked: false`。dave がログインすると code が発行され、一覧の `linked` が true になり、`findUserByCognitoSub` が招待時の user_id を返す |
 | 管理 API | R4。cms の secret で cms を契約していない suzuki に招待すると 403 |
 | 管理 API | 割り当ての解除。alice を tanaka × crm から DELETE で外すと 204 で、次の認可が `access_denied` `no_membership` になる |
-| Global Logout | `sso:clients` のサービスごとに1通の logout_token。aud がサービス。完了画面に「CRM (tanaka) に戻る」。リンク先は redirect_uri_template を tenant で展開した origin |
+| Global Logout | `/api/logout?client_id=crm&tenant=tanaka` が SSO Session ありで `authenticated: true` と `csrfToken`。`POST /logout` で `sso:clients` のサービスごとに1通の logout_token。aud がサービス。完了後は `/logout?client_id=crm&tenant=tanaka` へ 303 し、`/api/logout` が `authenticated: false` と `returnTo` `{label: "CRM (tanaka)", href}` を返す。href は redirect_uri_template を tenant で展開した origin |
 | 並行性と悪用 | 同じ Refresh Token を同時に 2 回提示すると成功は 1 つで、もう一方は invalid_grant。系列は失効せず、成功側の新 Token で次の Refresh が通る |
 | 並行性と悪用 | 別 Client の Basic 認証で Refresh Token を提示すると invalid_grant になり、その後の正規 Client からの提示も invalid_grant。系列全体が失効する |
 | 並行性と悪用 | ログイン済みの Cookie で再ログインすると旧 SSO Session がストアから消え、SSO Session は 1 件だけになる |
@@ -162,13 +164,13 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | E5 | 割り当てなし | どのサービスにも割り当てのない carol が tanaka.crm へアクセス → 403 アクセス権なし画面。ログイン画面は出ない。SSO Session は残る |
 | E6 | Tenant Session 期限切れ復帰 | tanaka.crm の Session を強制失効 → 再アクセスで無画面復帰 |
 | E7 | SSO Session 期限切れ | SSO Session を強制失効 → suzuki.crm へアクセスでログイン画面 |
-| E8 | 認証失敗 | パスワード誤りでフォーム再表示。SSO Cookie が発行されない |
+| E8 | 認証失敗 | パスワード誤りで `/login?error=invalid_credentials&rid=` へ戻り、SPA が「ユーザー名またはパスワードが正しくありません」を出す。SSO Cookie が発行されない |
 | E9 | 再訪 | E1 後に tanaka.crm を再読み込み → auth への通信が発生しない |
 | E10 | role の差 | 同じ alice が tanaka では owner で `end_users:create` が yes、suzuki では viewer で no だが、上書きで `end_users:unmask` が yes。各サービスの DB が決める |
-| E11 | Global Logout | auth の `/logout?client_id=crm&tenant=tanaka` でログアウト → tanaka.crm / suzuki.crm 両方が未ログイン。完了画面に「CRM (tanaka) に戻る」 |
+| E11 | Global Logout | auth の `/logout?client_id=crm&tenant=tanaka` で SPA の確認画面から「ログアウトする」→ tanaka.crm / suzuki.crm 両方が未ログイン。完了画面に「Sandbox からログアウトしました」と「CRM (tanaka) に戻る」 |
 | E12 | 別サービス SSO と契約判定 | E1 後に tanaka.cms へアクセス → ログイン画面なしで code を取得し cms 向け Token でログイン。suzuki.cms へアクセス → 403「テナント suzuki は CMS を契約していません」。crm から Global Logout → Back-Channel で tanaka.cms も未ログイン |
 | E13 | サービスごとの権限 | tanaka.cms では owner と表示されるが、cms 側の deny により `posts:create` が no で `posts:update` が yes。smoke と web のテストで確認する |
-| E14 | ポータル | alice のポータルに tanaka の CRM と CMS、suzuki の CRM が並び、suzuki.cms は出ない。役割は出ない。carol は「利用できるサービスがありません」 |
+| E14 | ポータル | alice のポータルに「Sandbox ポータル」と tanaka の CRM と CMS、suzuki の CRM が並び、suzuki.cms は出ない。役割は出ない。carol は「利用できるサービスがありません」 |
 | E15 | 招待と初回ログイン | alice が tanaka の crm に dave を招待 → identity に dave の users 行と割り当て、crm の DB に member 行。dave がログインすると同じ users 行に sub が紐付き tanaka.crm に入れる。auth-api のテストで確認する |
 
 各シナリオで以下を横断的に検証する。
@@ -217,7 +219,9 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | Session Store | インメモリ実装。TTL を進めるためのテスト用クロック |
 | Identity DB | テストはインメモリの `IdentityRepository`。RLS テストはローカル PostgreSQL 必須 |
 | サービスの DB | テストは `MemoryMemberRepository` と各サービスのインメモリ Repository。`MemoryAuthAdminClient` が auth-api の管理 API を代替する |
-| web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003。SPA は配らず、簡易ブラウザの `Browser.fetch` `readJson` `readSession` と、`/auth/login?return_to=<path>` から入る `loginThrough` で `/session` と `/api/*` を検証する |
+| auth インスタンス | `apps/auth-api/src/test-support.ts` が SPA を配らない `createAuthApp` を組み立てる。`readLoginContext(harness, rid, cookie)` が auth-web と同じく `/api/login?rid=` を呼び、フォームに入れる `csrf` と Cookie ヘッダと JSON の `body` を返す。`runLoginFlow` はこれで CSRF を受け取ってから `POST /login` する。HTML からトークンを抜き出す補助は持たない |
+| web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003。SPA は配らず、簡易ブラウザの `Browser.fetch` `readJson` `readSession` と、`/auth/login?return_to=<path>` から入る `loginThrough` で `/session` と `/api/*` を検証する。`loginThrough` は auth の `/login?rid=` に着いたら `/api/login?rid=` で rid と CSRF を受け取り、フォーム POST で `/login` に送る |
+| Chrome 確認 | `scripts/chrome-check.ts` は auth-web の SPA が `/api/login` を読んで「Sandbox にログイン」を描くまで待ってからフォームを埋める。ポータルは「Sandbox ポータル」、ログアウト確認は「ログアウトする」、完了は「Sandbox からログアウトしました」の文字列を待つ |
 | api インスタンス | サービスごとに別インスタンス。`apps/crm-api/src/test-support.ts` と `apps/cms-api/src/test-support.ts` が実物の定義と routes で組み立て、web-core の harness もこれを使う。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
 | テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |

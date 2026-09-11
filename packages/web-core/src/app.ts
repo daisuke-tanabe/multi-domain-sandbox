@@ -11,8 +11,7 @@ import {
   type OidcProvider,
   type RenderError,
 } from "@sandbox/oidc-client";
-import { timingSafeEqualString } from "@sandbox/shared";
-import { mountSpa, spaCsp, type SpaOptions } from "./spa.ts";
+import { mountSpa, spaCsp, timingSafeEqualString, type SpaOptions } from "@sandbox/shared";
 import { errorPage, type PageLabels } from "./views/pages.ts";
 
 export interface WebCoreAppOptions {

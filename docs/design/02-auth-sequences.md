@@ -62,8 +62,12 @@ sequenceDiagram
     Auth-->>Browser: 302 /login?rid=R1
 
     Browser->>Auth: GET /login?rid=R1
-    Auth-->>Browser: 200 ログインフォーム<br/>CSRFトークン埋め込み。Set-Cookie: auth_csrf
-    Browser->>Auth: POST /login {username, password, csrf, rid}
+    Auth-->>Browser: 200 auth-web の SPA の index.html
+    Browser->>Auth: GET /api/login?rid=R1
+    Auth->>SsoStore: R1 の存在確認
+    Auth-->>Browser: 200 {rid, csrfToken}<br/>Set-Cookie: auth_csrf。Cache-Control: no-store
+    Note over Browser: SPA が「Sandbox にログイン」のフォームを描く<br/>rid と csrf は hidden
+    Browser->>Auth: POST /login {username, password, csrf, rid}。HTML フォームの POST
     Auth->>Auth: CSRFトークン検証、rid の存在確認
     Auth->>Cognito: InitiateAuth AuthFlow=USER_SRP_AUTH<br/>SECRET_HASH付き。SRPハンドシェイク
     Cognito-->>Auth: AuthenticationResult<br/>{AccessToken, IdToken, RefreshToken}
@@ -79,7 +83,7 @@ sequenceDiagram
     end
     Auth->>SsoStore: Authorization Code発行<br/>{code, client_id:crm, redirect_uri, scope, nonce,<br/>code_challenge, user_id, tenant_id, sid, auth_time} TTL 60秒
     Auth->>SsoStore: sso:clients の集合に crm を追加
-    Auth-->>Browser: 302 https://tanaka.crm.sandbox.com/auth/callback?code=AC1&state=S1<br/>Set-Cookie: sso_session=X1#59; HttpOnly#59; Secure#59; SameSite=Lax#59; Path=/<br/>Domain属性なし。auth.sandbox.comのみに限定
+    Auth-->>Browser: 303 https://tanaka.crm.sandbox.com/auth/callback?code=AC1&state=S1<br/>Set-Cookie: sso_session=X1#59; HttpOnly#59; Secure#59; SameSite=Lax#59; Path=/<br/>Domain属性なし。auth.sandbox.comのみに限定
 
     Browser->>TanakaCrm: GET /auth/callback?code=AC1&state=S1<br/>Cookie: tenant_pre_auth=P1
     TanakaCrm->>Sess: pre-auth P1 を取得
@@ -114,6 +118,7 @@ sequenceDiagram
 - 認証は成功しているため SSO Session は作成する。アクセスできるテナントへ移動すればログイン画面なしで入れる
 - ブラウザに渡るのは Cookie のみ。access_token / refresh_token は TanakaCrm のサーバー側セッションに保存する。SPA は `/session` でログイン状態と CSRF トークンだけを受け取り、API は `/api/*` 経由で呼ぶ
 - ログイン成功時に Cookie が指す旧 SSO Session があれば破棄する。Cookie の上書きだけでは旧セッションが期限まで残る
+- ログイン画面は auth-web の SPA が描く。SPA は `/api/login` で rid と CSRF を受け取ってフォームを描くだけで、資格情報は HTML フォームの POST で `/login` へ送る。パスワードを fetch で送らない。判断事項D19
 
 ## 2. 別テナント・別サービスへのSSO
 
@@ -482,10 +487,16 @@ sequenceDiagram
     else ロック中
         Cognito-->>Auth: NotAuthorizedException (Password attempts exceeded)
     end
-    Note over Auth: 3ケースとも同一メッセージ。ユーザー列挙を防ぐ<br/>詳細は内部ログのみ
-    Auth-->>Browser: 200 ログインフォーム再表示<br/>「ユーザー名またはパスワードが正しくありません」
+    Note over Auth: 3ケースとも invalid_credentials。ユーザー列挙を防ぐ<br/>詳細は内部ログのみ
+    Auth-->>Browser: 303 /login?error=invalid_credentials&rid=R1<br/>ユーザー名は URL に載せない
+    Browser->>Auth: GET /login?error=invalid_credentials&rid=R1 → SPA
+    Browser->>Auth: GET /api/login?rid=R1&error=invalid_credentials
+    Auth-->>Browser: 200 {rid, csrfToken, errorMessage:"ユーザー名またはパスワードが正しくありません"}<br/>Set-Cookie: auth_csrf を発行し直す
+    Note over Browser: SPA がフォームとエラーの Notice を描く
     Note over Auth: SSO Session作成なし。code発行なし
 ```
+
+失敗の種類は `invalid_credentials` `user_disabled` `user_not_confirmed` `password_reset_required` `challenge_required` `unavailable`。クエリには種類だけを載せ、文言は `/api/login` が返す。`invalid_credentials` と `user_disabled` は同一文言。
 
 ## 9. MFAチャレンジ。フェーズ2
 
@@ -507,7 +518,7 @@ sequenceDiagram
     Note over Auth: 以降は「1. 初回ログイン」の Cognito IdToken検証以降と同一
 ```
 
-初期実装では ChallengeName が返った場合、ログインフォームに「この認証方式は未対応です」を表示して終了する。
+初期実装では ChallengeName が返った場合、`/login?error=challenge_required&rid=` へ戻し、SPA が `/api/login` から受け取った「この認証方式は現在未対応です」を表示して終了する。
 
 ## 10. Tenant Logout
 
@@ -546,8 +557,11 @@ sequenceDiagram
     participant WebCms as WebCms (cms.sandbox.com)
 
     Browser->>Auth: GET /logout?client_id=crm&tenant=tanaka (sso_session=X1)
-    Auth-->>Browser: 200 確認画面。CSRFトークンと client_id / tenant を hidden で埋め込む
-    Browser->>Auth: POST /logout {csrf, client_id=crm, tenant=tanaka}
+    Auth-->>Browser: 200 auth-web の SPA の index.html
+    Browser->>Auth: GET /api/logout?client_id=crm&tenant=tanaka
+    Auth-->>Browser: 200 {authenticated:true, csrfToken, returnTo:{label:"CRM (tanaka)", href:"https://tanaka.crm.sandbox.com/"}}<br/>Set-Cookie: auth_csrf
+    Note over Browser: SPA が「Sandbox 全体からログアウトしますか」と<br/>csrf / client_id / tenant を hidden に持つフォームを描く
+    Browser->>Auth: POST /logout {csrf, client_id=crm, tenant=tanaka}。HTML フォームの POST
     Auth->>SsoStore: X1 取得。sso:clients={crm, cms} と sid を特定
     Auth->>SsoStore: sid に紐付く Refresh Token を全失効
     Auth->>Cognito: RevokeToken(Cognito RefreshToken)
@@ -561,11 +575,15 @@ sequenceDiagram
         WebCms->>WebCms: cms:sid:<sid> から tanaka の Tenant Session を削除
         WebCms-->>Auth: 200
     end
-    Auth-->>Browser: 200 ログアウト完了ページ<br/>「CRM (tanaka) に戻る」→ https://tanaka.crm.sandbox.com/<br/>crm の redirect_uri_template を tenant=tanaka で展開した origin<br/>Set-Cookie: sso_session=#59; Max-Age=0
+    Auth-->>Browser: 303 /logout?client_id=crm&tenant=tanaka<br/>Set-Cookie: sso_session=#59; Max-Age=0
+    Browser->>Auth: GET /logout?client_id=crm&tenant=tanaka → SPA
+    Browser->>Auth: GET /api/logout?client_id=crm&tenant=tanaka
+    Auth-->>Browser: 200 {authenticated:false, returnTo:{label:"CRM (tanaka)", href:"https://tanaka.crm.sandbox.com/"}}
+    Note over Browser: SPA が「Sandbox からログアウトしました」と<br/>「CRM (tanaka) に戻る」のリンクを描く<br/>crm の redirect_uri_template を tenant=tanaka で展開した origin
 ```
 
 通知先は `sso:clients` の集合に含まれるサービスのうち、`oidc_clients.status` が `active` で `backchannel_logout_uri` を持つもの。サービスは logout_token の sid で、テナントを問わず自サービスの全セッションを削除する。
-戻り先のリンクは `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin から導く。`tenant` は確認画面の hidden フィールドで POST まで引き継ぐ。
+戻り先のリンクは `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin から `/api/logout` の `returnTo` として導く。`tenant` は SPA が描くフォームの hidden フィールドで POST まで引き継ぎ、POST 後の 303 で `/logout` のクエリに戻す。確認画面と完了画面は同じ `/logout` を SPA が `authenticated` で出し分ける。判断事項D19。
 各通知は `AbortSignal.timeout(5000)` を付けて送り、応答しないサービスがあっても 5 秒で打ち切る。通知に失敗したサービスの Tenant Session は、Access Token 期限切れ後の Refresh で `invalid_grant` となり自然に失効する。最大遅延は Access Token 寿命の15分。
 
 ## 12. 異常系。認可レスポンスの改ざんと再利用

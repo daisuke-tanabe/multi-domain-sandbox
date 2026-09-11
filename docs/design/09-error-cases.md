@@ -44,20 +44,22 @@
 
 | # | ケース | 検知 | 応答 | 表示 | 副作用 |
 | --- | --- | --- | --- | --- | --- |
-| L1 | rid が存在しない / 期限切れ | Auth | 400 | 「ログインをやり直してください」とテナントへの戻りリンクなし | |
-| L2 | CSRF トークン不一致 | Auth | 403 | 「ページを再読み込みしてください」 | 警告ログ |
-| L3 | パスワード誤り | Cognito → Auth | 200 フォーム再表示 | 「ユーザー名またはパスワードが正しくありません」 | 失敗カウント |
-| L4 | ユーザー不在 | Cognito → Auth | 200 フォーム再表示 | L3 と同一文言 | 失敗カウント |
-| L5 | Cognito アカウントロック | Cognito → Auth | 200 フォーム再表示 | L3 と同一文言 | 警告ログ |
-| L6 | UserNotConfirmed | Cognito → Auth | 200 フォーム再表示 | 「アカウントが確認されていません」 | |
-| L7 | PasswordResetRequired | Cognito → Auth | 200 フォーム再表示 | 「パスワードの再設定が必要です」 | フェーズ2で導線追加 |
-| L8 | MFA 等のチャレンジ応答 | Cognito → Auth | 200 フォーム再表示 | 「この認証方式は現在未対応です」。フェーズ2で /login/challenge へ | |
-| L9 | Cognito 通信障害 / スロットリング | Auth | 503 | 「一時的なエラーです」 | アラート |
-| L10 | Cognito IdToken 検証失敗 | Auth | 500 | 「一時的なエラーです」 | アラート。設定不整合の疑い |
-| L11 | users JIT 作成失敗 | Auth | 500 | 同上 | アラート |
-| L12 | レート制限超過 | Auth | 429 | 「しばらく待ってから再試行してください」 | |
-| L13 | users.status が disabled | Auth | 200 フォーム再表示 | L3 と同一文言 | 警告ログ。SSO Session を作らない |
-| L14 | 同じメールの users 行が既に別の cognito_sub に紐付いている | Auth | 200 フォーム再表示 | L3 と同一文言 | 警告ログ。既存行を書き換えず新規行も作らない。SSO Session を作らない |
+| L1 | rid が存在しない / 期限切れ | Auth | `GET /api/login` は 400 `expired_request` と文言。`POST /login` は 400 のサーバー HTML | 「ログイン画面を開いてから時間が経ちすぎたか、認証サーバーが再起動しました」と URL の開き直しを促す。テナントへの戻りリンクなし | |
+| L2 | CSRF トークン不一致 | Auth | 403 のサーバー HTML | 「ページを再読み込みしてください」 | 警告ログ |
+| L3 | パスワード誤り | Cognito → Auth | 303 `/login?error=invalid_credentials&rid=`。SPA が `/api/login` から文言を受け取って表示 | 「ユーザー名またはパスワードが正しくありません」 | 失敗カウント |
+| L4 | ユーザー不在 | Cognito → Auth | 303 `/login?error=invalid_credentials&rid=` | L3 と同一文言 | 失敗カウント |
+| L5 | Cognito アカウントロック | Cognito → Auth | 303 `/login?error=invalid_credentials&rid=` | L3 と同一文言 | 警告ログ |
+| L6 | UserNotConfirmed | Cognito → Auth | 303 `/login?error=user_not_confirmed&rid=` | 「アカウントが確認されていません」 | |
+| L7 | PasswordResetRequired | Cognito → Auth | 303 `/login?error=password_reset_required&rid=` | 「パスワードの再設定が必要です」 | フェーズ2で導線追加 |
+| L8 | MFA 等のチャレンジ応答 | Cognito → Auth | 303 `/login?error=challenge_required&rid=` | 「この認証方式は現在未対応です」。フェーズ2で /login/challenge へ | |
+| L9 | Cognito 通信障害 / スロットリング | Auth | 303 `/login?error=unavailable&rid=` | 「一時的なエラーです。しばらくしてから再試行してください」 | アラート |
+| L10 | Cognito IdToken 検証失敗 | Auth | 303 `/login?error=unavailable&rid=` | L9 と同一文言 | アラート。設定不整合の疑い |
+| L11 | users JIT 作成失敗 | Auth | 500 のサーバー HTML | 同上 | アラート |
+| L12 | レート制限超過 | Auth | 429。`/api/login` も同じ制限 | 「しばらく待ってから再試行してください」 | |
+| L13 | users.status が disabled | Auth | 303 `/login?error=user_disabled&rid=` | L3 と同一文言 | 警告ログ。SSO Session を作らない |
+| L14 | 同じメールの users 行が既に別の cognito_sub に紐付いている | Auth | 303 `/login?error=user_disabled&rid=` | L3 と同一文言 | 警告ログ。既存行を書き換えず新規行も作らない。SSO Session を作らない |
+
+失敗の種類は `invalid_credentials` `user_disabled` `user_not_confirmed` `password_reset_required` `challenge_required` `unavailable`。`POST /login` はクエリに種類だけを載せて SPA の `/login` へ戻し、ユーザー名やパスワードは URL に載せない。文言は SPA が `GET /api/login?rid=&error=` で受け取る。`/api/login` はクエリの `error` が上記以外なら文言を返さない。
 
 ## 3. コールバック。GET /auth/callback
 
@@ -156,10 +158,11 @@
 | O1 | Tenant Logout の CSRF 不一致 | Tenant | 403 | 警告ログ |
 | O2 | Tenant Logout でセッションなし | Tenant | 302 /。冪等 | |
 | O3 | /revoke 失敗 | Tenant | Tenant Session は削除して 302 | Refresh Token は期限で失効。ログ |
-| O4 | Global Logout の CSRF 不一致 | Auth | 403 | |
+| O4 | Global Logout の CSRF 不一致 | Auth | 403 のサーバー HTML | |
 | O5 | Back-Channel Logout 通知失敗 | Auth | 完了扱い | 対象サービスの全テナントの Session は Refresh 失敗で最大15分以内に失効。ログ |
 | O6 | logout_token 検証失敗 / aud が未知のサービス | Tenant | 400 | 警告ログ。セッションは削除しない |
-| O7 | Global Logout の client_id が未登録、または tenant が slug 形式でない | Auth | ログアウトは実行。完了画面はポータルへのリンクのみ。戻り先は redirect_uri_template の展開からしか作らない | |
+| O7 | Global Logout の client_id が未登録、または tenant が tenants にない | Auth | ログアウトは実行。`/api/logout` の `returnTo` が undefined になり、SPA の完了画面は戻り先のリンクを出さない。戻り先は redirect_uri_template の展開からしか作らない | |
+| O8 | `/api/portal` を SSO Session なしで呼ぶ | Auth | 401 `unauthenticated` | SPA が `/login` へ遷移する |
 
 ## 7. 運用系
 

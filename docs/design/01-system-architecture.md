@@ -20,7 +20,7 @@ flowchart TB
     end
 
     subgraph AuthLayer ["auth.sandbox.com  OpenID Provider"]
-        Auth["Auth Server<br/>/ /authorize /login /token /jwks /userinfo /logout<br/>/admin/service-members"]
+        Auth["Auth Server<br/>/authorize /login /token /jwks /userinfo /logout<br/>/admin/service-members<br/>auth-web の SPA と /api/login /api/portal /api/logout"]
         SsoStore[("SSO Session Store<br/>Auth Code Store<br/>Refresh Token Store")]
         Keys[("署名鍵 JWKS")]
         Auth --- SsoStore
@@ -47,7 +47,7 @@ flowchart TB
 
     User -- "tenant_session Cookie<br/>ホストごとに別<br/>SPA / /session / /api/*" --> WebCrm
     User -- "tenant_session Cookie<br/>ホストごとに別<br/>SPA / /session / /api/*" --> WebCms
-    User -- "sso_session Cookie<br/>認可リクエスト / ログインUI / ポータル" --> Auth
+    User -- "sso_session Cookie<br/>認可リクエスト / SPA / /api/* / フォーム POST" --> Auth
     Auth -- "InitiateAuth 等" --> Cognito
     Auth -- "読み書き" --> IdDB
     WebCrm -- "Back Channel<br/>/token /userinfo" --> Auth
@@ -63,6 +63,7 @@ flowchart TB
 ```
 
 サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。web は React Router v8 の SPA と薄い BFF で、BFF は `packages/web-core`、共通の React コードは `packages/web-ui` で共有する。crm-web / cms-web の `src/main.ts` は `startWebCore` を呼ぶだけで、`app/` にサービス固有の画面を持つ。判断事項D18。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api は `definition.ts` で役割と権限を宣言し、サービス固有の routes と repository を持って `startApiCore` に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
+auth の画面も `apps/auth-web` の React Router SPA で、auth-api が同一オリジンで配る。auth-web はサーバーを持たず、SPA は `/api/login` `/api/portal` `/api/logout` の JSON で材料を受け取り、資格情報と Global Logout は HTML フォームの POST で送る。SPA の配信と CSP は `packages/shared/src/spa.ts` の `mountSpa` と `spaCsp` で web-core と共有する。判断事項D19。
 DB もサービスごとに分かれる。ローカルは docker compose の `db-identity` 5432、`db-crm` 5433、`db-cms` 5434 の 3 コンテナで、初期化 SQL は `db/identity/init` `db/crm/init` `db/cms/init`。判断事項D17。
 
 ## サービスとテナント
@@ -112,7 +113,7 @@ suzuki.cms.localhost:3003 は redirect_uri が cms のテンプレートに一�
 | 経路 | 種別 | 通るもの | 保護 |
 | --- | --- | --- | --- |
 | ブラウザ → `<tenant>.<service>.sandbox.com` | Front Channel | SPA の静的ファイル、`/session` と `/api/*` の JSON、tenant_session Cookie | TLS、Cookie属性、`X-CSRF-Token`、CSP |
-| ブラウザ → auth.sandbox.com | Front Channel | 認可リクエスト、ログインUI、ポータル、sso_session Cookie、code、state | TLS、Cookie属性、CSRFトークン |
+| ブラウザ → auth.sandbox.com | Front Channel | 認可リクエスト、auth-web の SPA の静的ファイル、`/api/login` `/api/portal` `/api/logout` の JSON、`/login` `/logout` のフォーム POST、sso_session Cookie、code、state | TLS、Cookie属性、CSRFトークン、CSP |
 | Tenant Web App → auth.sandbox.com | Back Channel | code交換、Refresh、UserInfo | TLS、client_secret_basic、PKCE |
 | Tenant Web App → `api.<service>.sandbox.com` | Back Channel | Bearer Access Token | TLS、JWT署名検証、aud検証 |
 | auth.sandbox.com → Tenant Web App | Back Channel | Back-Channel Logout の logout_token | TLS、JWT署名検証 |
@@ -149,21 +150,24 @@ flowchart LR
 | --- | --- | --- | --- |
 | `/.well-known/openid-configuration` | GET | OIDC Discovery | Client、API Server |
 | `/jwks` | GET | ID Token / Access Token検証用公開鍵 | Client、API Server |
-| `/` | GET | ポータル。SSO Session があればテナントごとに割り当てのあるサービスの入口を表示。役割はサービスが持つため出さない。なければ `/login` へ | ブラウザ |
 | `/authorize` | GET | 認可エンドポイント。redirect_uri をテンプレートに当ててテナント解決、SSOセッション判定、契約とサービスへの割り当て判定、code発行 | ブラウザ |
-| `/login` | GET | ログインフォーム。rid なしはポータル用ログインで、成功後に `/` へ戻る | ブラウザ |
-| `/login` | POST | Cognito InitiateAuth による認証 | ブラウザ |
+| `/api/login` | GET | SPA のログイン画面の材料。`rid` と `error` を受け取り、CSRF Cookie を発行して `rid` `csrfToken` と、`error` があればその文言を返す。rid が期限切れなら 400 `expired_request` と文言。rid なしで SSO Session があれば `redirectTo: "/"`。`/login` と同じレート制限 | auth-web の SPA |
+| `/login` | POST | フォーム POST で Cognito InitiateAuth による認証。成功は `/authorize` の続きへ 303、rid なしは `/` へ。失敗は `/login?error=<kind>&rid=<rid>` へ 303 | ブラウザ |
 | `/login/challenge` | POST | MFA等のチャレンジ応答。フェーズ2 | ブラウザ |
+| `/api/portal` | GET | ポータルの材料。ログイン中ユーザーのメールと、テナントごとに割り当てのあるサービスの `name` `clientId` `loginUrl`。役割はサービスが持つため出さない。SSO Session がなければ 401 `unauthenticated` | auth-web の SPA |
 | `/token` | POST | code交換、refresh_token grant | Client。Back Channel |
 | `/userinfo` | GET | claims提供 | Client。Back Channel |
 | `/revoke` | POST | Refresh Token失効。RFC 7009 | Client。Back Channel |
-| `/logout` | GET/POST | Global Logout。`client_id` と `tenant` を受け取り、確認画面を経て完了後に元のサービスへ戻るリンクを表示。リンクは `redirect_uri_template` を `tenant` で展開して導く | ブラウザ |
+| `/api/logout` | GET | Global Logout 画面の材料。`client_id` と `tenant` を受け取り、SSO Session があれば CSRF を発行して `authenticated: true` と `csrfToken`、なければ Cookie を消して `authenticated: false`。どちらも戻り先 `returnTo` を含み、`redirect_uri_template` を `tenant` で展開して導く。`/logout` と同じレート制限 | auth-web の SPA |
+| `/logout` | POST | Global Logout の実行。フォーム POST で `csrf` と任意の `client_id` `tenant` を受け取り、完了後に `/logout?client_id=&tenant=` へ 303 | ブラウザ |
+| `/*` | GET | auth-web の SPA の配信。`/` ポータル、`/login`、`/logout` を SPA が描く。`SPA_DIR` の `index.html` と `/assets/*`、または開発時の `react-router dev` への中継 | ブラウザ |
 | `/admin/service-members` | GET | `tenant_id` を受け取り、そのテナントで呼び出し元のサービスに入れる人の一覧を返す。client_secret_basic | サービスの API。Back Channel |
 | `/admin/service-members` | POST | `{tenant_id, email, name?}`。users にいなければ cognito_sub なしでメールで作り、呼び出し元のサービスへの割り当てを upsert する。201 で `{user: {id, email, name, linked}}` | サービスの API。Back Channel |
 | `/admin/service-members` | DELETE | `{tenant_id, user_id}`。呼び出し元のサービスへの割り当てを消す。204 | サービスの API。Back Channel |
 | `/healthz` | GET | 死活監視 | 監視 |
 
-ポータルの表示例。alice でログインした場合、「Tanaka Inc. (tanaka)」に CRM と CMS、「Suzuki Ltd. (suzuki)」に CRM を表示する。役割はサービスの DB にあるためポータルには出ない。契約があっても割り当てのないサービスは出ず、どのサービスにも割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」と出る。各リンクは `https://<tenant>.<service>.sandbox.com/auth/login` で、サービスの `redirect_uri_template` をテナント slug で展開した origin から導く。Third-Party Initiated Login として通常の認可フローに合流する。
+ポータルの表示例。alice でログインした場合、SPA が `/api/portal` を読み、「Tanaka Inc. (tanaka)」に CRM と CMS、「Suzuki Ltd. (suzuki)」に CRM を表示する。役割はサービスの DB にあるためポータルには出ない。契約があっても割り当てのないサービスは出ず、どのサービスにも割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」と出る。各リンクは `https://<tenant>.<service>.sandbox.com/auth/login` で、サービスの `redirect_uri_template` をテナント slug で展開した origin から導く。Third-Party Initiated Login として通常の認可フローに合流する。`/api/portal` が 401 なら SPA は `/login` へ遷移する。
+`/authorize` の不正な redirect_uri、CSRF 不一致、入力不正、rid 期限切れの POST、GET 以外の 404、500 は auth-api の `views/pages.ts` の最小 HTML で返し、SPA へは運ばない。
 
 管理 API は Client 自身のサービスへの割り当てだけを操作できる。テナントがそのサービスを契約していなければ 403 `not_contracted`、テナントやユーザーがなければ 404、Client 認証に失敗すれば 401 `invalid_client`。`/token` と同じレート制限を通す。
 
@@ -201,7 +205,8 @@ flowchart LR
 | crm-web / cms-web | `BASE_HOST` `API_BASE_URL` | テナント slug を除いたホストと、呼び出す API の公開 URL。crm は `crm.localhost:3001` と `http://api.crm.localhost:3002`、cms は `cms.localhost:3003` と `http://api.cms.localhost:3004`。Host `<tenant>.<BASE_HOST>` からテナントを解決する |
 | crm-web / cms-web | `PORT` `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `REDIS_URL` | 待ち受けポート、redirect_uri の scheme、Auth Server の issuer、サーバー間通信先、Session Store。`REDIS_URL` 未設定はインメモリ。Cookie の Secure と `__Host-` は `PUBLIC_SCHEME` が `https` のときに付き、そのときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR` が必須 |
 | crm-web / cms-web | `SPA_DIR` `SPA_DEV_SERVER_URL` | SPA の配り方。`SPA_DIR=build/client` は `react-router build` の成果物を配る。`SPA_DEV_SERVER_URL=http://127.0.0.1:5173` は `react-router dev` への中継で開発専用。cms は 5174。両方なければ `/auth/*` `/session` `/api/*` だけを返す |
-| auth-api | `ISSUER` `DATABASE_URL` `COGNITO_ADAPTER` 等 | Client やテナントの設定は持たず、Identity DB から読む。`DATABASE_URL` は `postgres://sandbox_auth:sandbox_auth@127.0.0.1:5432/identity`。Cookie の Secure と `__Host-` は `ISSUER` が `https://` で始まるときに付き、そのときは `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk` が必須 |
+| auth-api | `ISSUER` `DATABASE_URL` `COGNITO_ADAPTER` 等 | Client やテナントの設定は持たず、Identity DB から読む。`DATABASE_URL` は `postgres://sandbox_auth:sandbox_auth@127.0.0.1:5432/identity`。Cookie の Secure と `__Host-` は `ISSUER` が `https://` で始まるときに付き、そのときは `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER=sdk` `SPA_DIR` が必須 |
+| auth-api | `SPA_DIR` `SPA_DEV_SERVER_URL` | auth-web の配り方。`SPA_DIR=../auth-web/build/client` は `react-router build` の成果物を配る。`SPA_DEV_SERVER_URL=http://127.0.0.1:5175` は auth-web の `react-router dev` への中継で開発専用。両方なければ画面を配らず警告を出す |
 | crm-api / cms-api | `API_BASE_URL` | この API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004`。この値がそのまま aud になり、Host が URL のホストと異なるリクエストは 404 |
 | crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:crm_app@127.0.0.1:5433/crm` / `postgres://cms_app:cms_app@127.0.0.1:5434/cms`。identity DB には接続しない |
 | crm-api / cms-api | `CLIENT_ID` `CLIENT_SECRET` | auth-api の管理 API を client_secret_basic で呼ぶための Client 認証。`*-web` と同じ値で、`CLIENT_SECRET` は 43 文字以上 |
@@ -231,7 +236,7 @@ client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-P
 | --- | --- | --- |
 | 言語 | TypeScript | リポジトリ標準 |
 | HTTPフレームワーク | Hono | 軽量。BFF / Auth / API を同一スタックで書ける |
-| 画面 | React Router v8 の SPA モード。ビルドは Vite | BFF は静的ファイルを配るだけで React の実行環境を持たない。他プロジェクトの SPA に持ち込める |
+| 画面 | React Router v8 の SPA モード。ビルドは Vite。`*-web` と auth-web で同じ | BFF と auth-api は静的ファイルを配るだけで React の実行環境を持たない。他プロジェクトの SPA に持ち込める |
 | モノレポ | pnpm workspace | 雛形標準 |
 | JWT / JWKS | jose | 標準準拠 |
 | Cognito連携 | アダプタで抽象化 | ローカルはモック、本番は @aws-sdk/client-cognito-identity-provider |

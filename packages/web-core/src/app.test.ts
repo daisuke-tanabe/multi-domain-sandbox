@@ -47,9 +47,13 @@ describe("E1 first login through tanaka.crm", () => {
   test("/auth/login redirects to the auth login page", async () => {
     const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/auth/login?return_to=${APP_PATH}`);
 
+    const rid = result.finalUrl.searchParams.get("rid") ?? "";
+    const context = await readJson(browser, `http://${AUTH_HOST}/api/login?rid=${rid}`);
+
     expect(result.finalUrl.host).toBe(AUTH_HOST);
     expect(result.finalUrl.pathname).toBe("/login");
-    expect(result.body).toContain("Sandbox にログイン");
+    expect(context.rid).toBe(rid);
+    expect(typeof context.csrfToken).toBe("string");
     expect(visitedPaths(result)).toEqual([
       `${TANAKA_CRM_HOST}/auth/login`,
       `${AUTH_HOST}/authorize`,
@@ -98,8 +102,16 @@ describe("E1 first login through tanaka.crm", () => {
       password: "wrong",
     });
 
+    // 失敗は種類だけをクエリに載せて /login に戻り、文言は SPA が /api/login から受け取る
+    const retry = await readJson(
+      browser,
+      `http://${AUTH_HOST}/api/login?${result.finalUrl.searchParams.toString()}`,
+    );
+
     expect(result.finalUrl.host).toBe(AUTH_HOST);
-    expect(result.body).toContain("ユーザー名またはパスワードが正しくありません");
+    expect(result.finalUrl.pathname).toBe("/login");
+    expect(result.finalUrl.searchParams.get("error")).toBe("invalid_credentials");
+    expect(retry.errorMessage).toBe("ユーザー名またはパスワードが正しくありません");
     expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(false);
     expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(false);
   });
@@ -307,11 +319,12 @@ describe("E12 services share the SSO session but contracts gate access", () => {
 
   test("global logout from crm also ends the cms session through back-channel logout", async () => {
     await browser.navigate(`${TANAKA_CMS_ORIGIN}/auth/login`);
-    const confirm = await browser.navigate(
-      `http://${AUTH_HOST}/logout?client_id=crm&tenant=tanaka`,
+    const confirm = await readJson(
+      browser,
+      `http://${AUTH_HOST}/api/logout?client_id=crm&tenant=tanaka`,
     );
     await browser.submitForm(`http://${AUTH_HOST}/logout`, {
-      csrf: readPageCsrf(confirm.body),
+      csrf: String(confirm.csrfToken),
       client_id: "crm",
       tenant: "tanaka",
     });
@@ -408,21 +421,27 @@ describe("E11 global logout via auth.localhost", () => {
   });
 
   test("logs out of every tenant at once and requires a password afterwards", async () => {
-    const confirm = await browser.navigate(
-      `http://${AUTH_HOST}/logout?client_id=crm&tenant=tanaka`,
+    const confirm = await readJson(
+      browser,
+      `http://${AUTH_HOST}/api/logout?client_id=crm&tenant=tanaka`,
     );
-    expect(confirm.body).toContain("Sandbox 全体からログアウトしますか");
+    expect(confirm.authenticated).toBe(true);
 
     const done = await browser.submitForm(`http://${AUTH_HOST}/logout`, {
-      csrf: readPageCsrf(confirm.body),
+      csrf: String(confirm.csrfToken),
       client_id: "crm",
       tenant: "tanaka",
     });
+    const after = await readJson(
+      browser,
+      `http://${AUTH_HOST}/api/logout?client_id=crm&tenant=tanaka`,
+    );
     const tenantA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/auth/login`);
     const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
 
-    expect(done.body).toContain("Sandbox からログアウトしました");
-    expect(done.body).toContain("CRM (tanaka) に戻る");
+    expect(done.finalUrl.pathname).toBe("/logout");
+    expect(after.authenticated).toBe(false);
+    expect(after.returnTo).toEqual({ label: "CRM (tanaka)", href: `${TANAKA_CRM_ORIGIN}/` });
     expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(false);
     // Back-Channel Logout でテナント側セッションが消えているため、Cookie があってもログイン画面になる
     expect(tenantA.finalUrl.host).toBe(AUTH_HOST);
@@ -443,9 +462,3 @@ describe("E11 global logout via auth.localhost", () => {
     expect(stillLoggedIn.authenticated).toBe(true);
   });
 });
-
-function readPageCsrf(body: string): string {
-  const csrf = /name="csrf" value="([^"]+)"/.exec(body)?.[1];
-  if (csrf === undefined) throw new Error("csrf not found in page");
-  return csrf;
-}

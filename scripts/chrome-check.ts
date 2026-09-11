@@ -168,6 +168,18 @@ try {
     loginUrl,
   );
 
+  // auth-web の SPA が /api/login を読んでフォームを描くまで待つ
+  await cdp.waitForText("Sandbox にログイン");
+  await cdp.evaluate(`document.querySelector('input[name=username]').value = 'alice'`);
+  await cdp.evaluate(`document.querySelector('input[name=password]').value = 'wrong'`);
+  await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
+  const retryBody = await cdp.waitForText("正しくありません");
+  const retryUrl = String(await cdp.evaluate("location.href"));
+  check(
+    "wrong password returns to the login screen with a generic message",
+    retryUrl.includes("error=invalid_credentials") && retryBody.includes("Sandbox にログイン"),
+    retryUrl,
+  );
   await cdp.evaluate(`document.querySelector('input[name=username]').value = 'alice'`);
   await cdp.evaluate(
     `document.querySelector('input[name=password]').value = ${JSON.stringify(SEED_USER_PASSWORD)}`,
@@ -238,7 +250,7 @@ try {
   );
 
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/` }));
-  const portalBody = String(await cdp.evaluate("document.body.innerText"));
+  const portalBody = await cdp.waitForText("Sandbox ポータル");
   check(
     "portal lists the tenants the user belongs to",
     portalBody.includes("Sandbox ポータル") &&
@@ -260,8 +272,9 @@ try {
   await cdp.navigateWith(() =>
     cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/logout?client_id=crm&tenant=suzuki` }),
   );
+  await cdp.waitForText("ログアウトする");
   await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
-  const afterGlobal = String(await cdp.evaluate("document.body.innerText"));
+  const afterGlobal = await cdp.waitForText("Sandbox からログアウトしました");
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CRM }));
   const tenantBAfterGlobal = await cdp.waitForUrl(LOGIN_URL_PREFIX);
   check(

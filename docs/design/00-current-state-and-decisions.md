@@ -11,6 +11,7 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 招待と役割はテナント単位ではなくサービス単位で持つ。契約は会社単位の tenant_services、割り当てはサービス単位の tenant_service_members に置く。判断事項D16。
 DB はサービスごとに分け、identity は「入れるか」だけを持つ。役割と権限はサービスの DB の members と permission_overrides に置き、Token には載せない。招待はサービスの画面から auth-api の管理 API を経由して行い、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。判断事項D17。
 Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF が `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担う。SPA は Token を見ない。判断事項D18。
+auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api が同一オリジンで配る。資格情報の送信は HTML フォーム POST を維持し、エラー画面はサーバー HTML のまま。判断事項D19。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -85,7 +86,8 @@ Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF 
 | D15 | Identity DB の主キーはサロゲート ID。redirect_uri はサービスごとの `redirect_uri_template`。client_secret は oidc_client_secrets に複数行持ちローテーション可能。ハッシュは SHA-256。2026-09-11 決定 |
 | D16 | 招待と役割はサービス単位。契約は会社単位の tenant_services、割り当ては tenant_service_members。tenant_members は会社横断の役割にだけ使う。Token に role も permission も載せない。2026-09-11 決定。役割の置き場所は D17 で見直し |
 | D17 | DB はサービスごとに分け、PostgreSQL のコンテナも分ける。identity は「入れるか」だけを持ち、役割と権限はサービスの DB の members と permission_overrides に置く。招待はサービスの画面から auth-api の管理 API を経由し、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。画面は当面プレースホルダにし、D18 で SPA にした。2026-09-11 決定 |
-| D18 | `*-web` の画面は React Router v8 の SPA モード。`packages/web-core` の BFF は `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担い、Token をブラウザへ出さない。共通の React コードは `packages/web-ui`。2026-09-11 決定 |
+| D18 | `*-web` の画面は React Router v8 の SPA モード。`packages/web-core` の BFF は `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担い、Token をブラウザへ出さない。共通の React コードは `packages/web-ui`。2026-09-11 決定。auth の画面は D19 で SPA にした |
+| D19 | auth の画面も React Router v8 の SPA。apps/auth-web を auth-api が同一オリジンで配る。資格情報の送信は HTML フォーム POST を維持。エラー画面はサーバー HTML のまま。2026-09-12 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -198,12 +200,12 @@ Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF 
 
 具体化。
 
-- `apps/auth-api` は OpenID Provider。旧 auth-server の改名で、ログイン画面、ポータル、ログアウト画面の HTML は当面ここで配信する
+- `apps/auth-api` は OpenID Provider。旧 auth-server の改名。ログイン画面、ポータル、ログアウト画面は当初ここがサーバー側の HTML で描いていたが、D19 で `apps/auth-web` の SPA に置き換え、auth-api は SPA の配信と SPA 向けの `/api/*` を持つ
 - `apps/crm-web` と `apps/cms-web` は Tenant Web Application。`packages/web-core` の Hono アプリを `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で起動する
 - `apps/crm-api` と `apps/cms-api` は API Server。`packages/api-core` の Hono アプリを `API_BASE_URL` で起動する。aud は `API_BASE_URL` の1つだけで、Host が URL のホストと異なるリクエストは 404
 - `tools/provision` は AWS 向けの一回限りタスクで、全サービスの `SERVICES` を引き続き受け取る
 - `*-web` はクライアントを意味するが、Token と Cookie をブラウザへ出さない BFF 方式のため薄いサーバーは残す。判断事項D1
-- `*-web` の画面は D18 で React Router v8 の SPA に置き換えた。auth-api から画面を `auth-web` として分離するのは次の段階
+- `*-web` の画面は D18 で React Router v8 の SPA に置き換えた。auth の画面は D19 で `apps/auth-web` に分離した。auth-web はサーバーを持たず、auth-api が配る
 
 ### D15. Identity DB の主キーと redirect_uri、client_secret の持ち方
 
@@ -342,6 +344,36 @@ Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF 
 - Tenant Logout は `/?logged_out=1` へ戻す。SPA のログアウト済み画面はログインへのリンクを持ち、全体からのログアウトはログイン中のヘッダに置く
 - `scripts/smoke.ts` は `/session` と `/api/v1/me` の JSON を叩き、`scripts/chrome-check.ts` は実 Chrome で SPA を描画して確認する
 
+D18 の時点では auth-api のログイン、ポータル、Global Logout の画面はサーバー側の HTML のままだった。D19 で `apps/auth-web` の SPA に置き換えた。
+
+### D19. auth の画面。apps/auth-web の SPA と auth-api による配信
+
+問題点。D18 で `*-web` を SPA にした後も、auth-api のログイン、ポータル、Global Logout の画面は `views/pages.ts` のサーバー側 HTML だった。画面の見た目と部品が `*-web` と揃わず、React の共通コードを auth に持ち込めない。一方で auth は資格情報を扱うため、SPA にしても `/login` のフォーム POST から `/authorize` の続きへ 303 で戻るリダイレクト連鎖と、`/login` のレート制限を変えたくない。SPA をどこから配るか、パスワードをどう送るか、SPA が読み込まれる前に起きるエラーをどう出すかを決める必要がある。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| 配信 | A. `apps/auth-web` を新設し、auth-api が同一オリジンで配る。web-core と同じ `mountSpa` を `packages/shared` に置いて共有する | Cookie と CSRF の扱いが同一オリジンで閉じる。CORS が要らない。配信と CSP の実装が `*-web` と同じになる | auth-api が静的配信と Vite への中継を持つ |
+| 配信 | B. auth-web を別ホストで配る | auth-api がサーバーだけになる | ログインフォームの POST と CSRF Cookie がオリジンをまたぐ。CORS と Cookie の SameSite の扱いが増える |
+| 資格情報の送信 | A. HTML フォームの POST を維持し、SPA は `/api/login` で `rid` と CSRF を受け取ってフォームを描くだけにする | パスワードを JS で扱わない。`/login` のリダイレクト連鎖とレート制限が変わらない。失敗は `/login?error=<kind>` へ戻し、文言は `/api/login` が返す | 失敗時にページ遷移が 1 回入る |
+| 資格情報の送信 | B. fetch で JSON を送り、SPA が結果を受けて遷移する | 画面遷移なしでエラーを出せる | パスワードが JS を通る。`/authorize` の続きへの 302 を SPA が再現する必要がある |
+| エラー画面 | A. `/authorize` の不正な redirect_uri、CSRF 不一致、入力不正、rid 期限切れの POST、404、500 は auth-api の最小 HTML で返す | SPA が信頼できない状態で起きるエラーを SPA へ運ばない。理由をクエリに載せない | `views/pages.ts` に `errorPage` が残る |
+| エラー画面 | B. すべて SPA へリダイレクトして描く | サーバー側 HTML をなくせる | エラーの理由をクエリで運ぶ。不正なリクエストの応答が 302 になる |
+
+決定はすべて A。理由は次のとおり。
+
+- 同一オリジンで配ることで、CSRF Cookie とフォーム POST の設計を変えずに済む
+- 資格情報を fetch で送らないことで、パスワードが JS を通らず、`/login` のリダイレクト連鎖とレート制限が D18 までと同じままになる
+- SPA に渡す前のエラーをサーバー HTML に留めることで、`*-web` の `packages/web-core/src/views` と同じ境界になる
+
+具体化。
+
+- `apps/auth-web` は `app/root.tsx` `app/routes.ts` `app/routes/login.tsx` `app/routes/portal.tsx` `app/routes/logout.tsx` `app/api.ts` を持つ。`react-router.config.ts` は `ssr: false`、`vite.config.ts` は 127.0.0.1:5175。`packages/web-ui` からは `styles.css` と `Notice` だけを使い、BFF 向けの `api.ts` と `loadShell` は使わない
+- auth-api は `packages/shared/src/spa.ts` の `mountSpa` で SPA を配る。`SPA_DIR` は `../auth-web/build/client`、`SPA_DEV_SERVER_URL` は `http://127.0.0.1:5175`。https の `ISSUER` では `SPA_DIR` を必須にする。CSP の `script-src` は静的配信でハッシュ、中継で `'unsafe-inline'`
+- SPA 向けの JSON は `GET /api/login?rid=&error=`、`GET /api/portal`、`GET /api/logout?client_id=&tenant=`。すべて GET で `Cache-Control: no-store`。`/api/login` と `/api/logout` は `/login` `/logout` と同じレート制限
+- `POST /login` は成功で `/authorize` の続きへ 303、rid なしは `/` へ。失敗は `/login?error=<kind>&rid=<rid>` へ 303。kind は `invalid_credentials` `user_disabled` `user_not_confirmed` `password_reset_required` `challenge_required` `unavailable`。ユーザー名は URL に載せない。文言は `/api/login` が返し、`invalid_credentials` と `user_disabled` は同一文言
+- `POST /logout` は Global Logout を実行して Cookie を消し、`/logout?client_id=&tenant=` へ 303。SPA が `/api/logout` の `authenticated: false` と `returnTo` で完了画面を描く
+- `views/pages.ts` には `errorPage` だけが残る
+
 ## 5. 移行計画
 
 グリーンフィールドのため、構築順序として記述する。
@@ -357,5 +389,6 @@ Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF 
 | 6 | MFA、Global Logout、Refresh Tokenローテーション | 拡張シーケンスが通る |
 | 7 | サービスごとの DB、管理 API による招待、サービス固有の API | 招待した人が初回ログインで紐付き、サービスの画面から役割と権限を変えられる |
 | 8 | React Router v8 の SPA と薄い BFF。エンドユーザー、投稿、招待、権限編集の画面。判断事項D18 | 画面から 7 の操作ができる |
+| 9 | auth の画面を `apps/auth-web` の SPA にし、auth-api が配る。判断事項D19 | ログイン、ポータル、Global Logout が SPA で通り、E8 と E11 が通る |
 
 既存システムがある適用先では、フェーズ2完了後に既存ログインを `/auth/login` へ差し替え、Cognito Tokenを直接使う箇所をAPI Server経由へ置き換える工程をフェーズ3と4の間に挟む。

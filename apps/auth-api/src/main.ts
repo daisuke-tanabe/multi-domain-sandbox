@@ -7,6 +7,7 @@ import {
   importSigningKeyFromPem,
   nodeFetch,
   parseEncryptionKey,
+  spaOptionsFromEnv,
   systemClock,
 } from "@sandbox/shared";
 import { SdkCognitoAuthenticator } from "./adapters/cognito-sdk.ts";
@@ -68,12 +69,22 @@ const deps: AuthDeps = {
   fetch: nodeFetch,
 };
 
-const app = createAuthApp({ deps, cookiePolicy: { secure: config.cookieSecure } });
+const spa = spaOptionsFromEnv(
+  { spaDir: config.SPA_DIR, spaDevServerUrl: config.SPA_DEV_SERVER_URL },
+  nodeFetch,
+);
+if (spa.kind === "none") {
+  logger.warn(
+    "SPA_DIR and SPA_DEV_SERVER_URL are not set. Login and portal screens are not served",
+  );
+}
+const app = createAuthApp({ deps, cookiePolicy: { secure: config.cookieSecure }, spa });
 
 serve({ fetch: app.fetch, port: config.PORT }, (info) => {
   logger.info("auth-api listening", {
     port: info.port,
     issuer: config.ISSUER,
     kid: signingKey.kid,
+    spa: spa.kind,
   });
 });
