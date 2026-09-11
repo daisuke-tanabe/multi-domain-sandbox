@@ -307,7 +307,7 @@ auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api �
 - `apps/crm-api` は owner / admin / member / viewer と `end_users:*` を宣言し、`/v1/end-users` の CRUD を持つ。`end_users:unmask` がなければメールと電話をマスクする。`apps/cms-api` は owner / editor / viewer と `posts:*` を宣言し、`/v1/posts` の CRUD を持つ
 - `*-api` の環境変数は `PORT` `API_BASE_URL` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` `CLIENT_ID` `CLIENT_SECRET`。`DATABASE_URL` は自サービスの DB、`CLIENT_ID` と `CLIENT_SECRET` は管理 API の Client 認証で `*-web` と同じ値
 - `packages/web-core` の `/dashboard` プレースホルダは D18 で SPA に置き換えた。E2E の harness は実物の crm-api / cms-api を接続する
-- provision は identity DB だけを扱い、`SEED_SERVICE_MEMBERSHIPS` は役割を持たない。crm / cms の DB の初期化は AWS では未整備
+- provision は identity DB に加えて `SERVICES[].databaseUrl` で各サービスの DB に接続し、`<clientId>_app` ロールと `db/<clientId>/init` の `002_schema.sql` `003_seed.sql` を冪等に適用する。`SEED_SERVICE_MEMBERSHIPS` は役割を持たず、サービス側の役割は `003_seed.sql` の値が入る。Terraform は identity / crm / cms の RDS 3 台に更新済みで、apply は未実施
 - シード。identity では alice が tanaka × crm、tanaka × cms、suzuki × crm に入れ、bob が suzuki × crm に入れる。crm の members は alice が tanaka で owner、suzuki で viewer、bob が suzuki で admin。suzuki の alice に `end_users:unmask` の allow。cms の members は alice が tanaka で owner で、`posts:create` の deny。crm の end_users は tanaka に 3 件、suzuki に 2 件。cms の posts は tanaka に 2 件。dave はモック Cognito にだけ存在し、招待と初回ログインの紐付けの確認に使う
 
 ### D18. 画面の実行形態。React Router v8 の SPA と薄い BFF

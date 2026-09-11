@@ -36,7 +36,7 @@ data "aws_iam_policy_document" "task_execution_secrets" {
     resources = [
       aws_secretsmanager_secret.db.arn,
       aws_secretsmanager_secret.auth.arn,
-      aws_secretsmanager_secret.tenant_clients.arn,
+      aws_secretsmanager_secret.services.arn,
       aws_secretsmanager_secret.seed.arn,
     ]
   }
@@ -48,7 +48,7 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
   policy = data.aws_iam_policy_document.task_execution_secrets.json
 }
 
-# アプリのタスクロール。auth-server が使う InitiateAuth / RevokeToken は IAM 不要のため権限なし
+# アプリのタスクロール。auth-api が使う InitiateAuth / RevokeToken は IAM 不要のため権限なし
 resource "aws_iam_role" "app_task" {
   name               = "${var.project}-app-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -92,67 +92,78 @@ locals {
     }
   }
 
-  container_definitions = {
-    "auth-server" = {
+  # 環境変数はローカルの .env.example と同じ名前。SPA_DIR はイメージの既定値 /app/spa を使う
+  # Cookie の Secure は auth-api が ISSUER、*-web が PUBLIC_SCHEME から導くため、切り替え用の変数はない
+  web_container_definitions = {
+    for id, service in var.services : "${id}-web" => {
       environment = {
-        PORT                    = "3000"
-        ISSUER                  = local.issuer
-        API_AUDIENCE            = local.api_url
-        COOKIE_SECURE           = "true"
-        TOKEN_ENCRYPTION_KEY_ID = "tf-1"
-        REDIS_URL               = local.redis_url
-        COGNITO_ADAPTER         = "sdk"
-        COGNITO_REGION          = var.region
-        COGNITO_USER_POOL_ID    = aws_cognito_user_pool.main.id
-        COGNITO_CLIENT_ID       = aws_cognito_user_pool_client.auth_server.id
+        PORT          = "3000"
+        PUBLIC_SCHEME = "https"
+        ISSUER        = local.issuer
+        REDIS_URL     = local.redis_url
+        CLIENT_ID     = id
+        SERVICE_NAME  = service.name
+        BASE_HOST     = local.service_hosts[id].base_host
+        API_BASE_URL  = local.service_hosts[id].api_url
       }
       secrets = {
-        DATABASE_URL          = "${aws_secretsmanager_secret.db.arn}:auth_url::"
-        TOKEN_ENCRYPTION_KEY  = "${aws_secretsmanager_secret.auth.arn}:token_encryption_key::"
-        SIGNING_KEY_PEM       = "${aws_secretsmanager_secret.auth.arn}:signing_key_pem::"
-        COGNITO_CLIENT_SECRET = "${aws_secretsmanager_secret.auth.arn}:cognito_client_secret::"
-      }
-    }
-    "tenant-web" = {
-      environment = {
-        PORT                = "3000"
-        PUBLIC_SCHEME       = "https"
-        PUBLIC_BASE_HOST    = var.domain
-        ISSUER              = local.issuer
-        API_BACKCHANNEL_URL = local.api_url
-        COOKIE_SECURE       = "true"
-        REDIS_URL           = local.redis_url
-      }
-      secrets = {
-        TENANT_CLIENTS = "${aws_secretsmanager_secret.tenant_clients.arn}:json::"
-      }
-    }
-    "api-server" = {
-      environment = {
-        PORT         = "3000"
-        API_AUDIENCE = local.api_url
-        ISSUER       = local.issuer
-      }
-      secrets = {
-        DATABASE_URL = "${aws_secretsmanager_secret.db.arn}:api_url::"
-      }
-    }
-    "provision" = {
-      environment = {
-        PUBLIC_SCHEME        = "https"
-        PUBLIC_BASE_HOST     = var.domain
-        COGNITO_REGION       = var.region
-        COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
-      }
-      secrets = {
-        DATABASE_URL       = "${aws_secretsmanager_secret.db.arn}:master_url::"
-        AUTH_DB_PASSWORD   = "${aws_secretsmanager_secret.db.arn}:auth_password::"
-        API_DB_PASSWORD    = "${aws_secretsmanager_secret.db.arn}:api_password::"
-        TENANT_CLIENTS     = "${aws_secretsmanager_secret.tenant_clients.arn}:json::"
-        SEED_USER_PASSWORD = "${aws_secretsmanager_secret.seed.arn}:user_password::"
+        CLIENT_SECRET = "${aws_secretsmanager_secret.services.arn}:${id}_client_secret::"
       }
     }
   }
+
+  api_container_definitions = {
+    for id, service in var.services : "${id}-api" => {
+      environment = {
+        PORT         = "3000"
+        API_BASE_URL = local.service_hosts[id].api_url
+        ISSUER       = local.issuer
+        CLIENT_ID    = id
+      }
+      secrets = {
+        CLIENT_SECRET = "${aws_secretsmanager_secret.services.arn}:${id}_client_secret::"
+        DATABASE_URL  = "${aws_secretsmanager_secret.db.arn}:${id}_app_url::"
+      }
+    }
+  }
+
+  container_definitions = merge(
+    {
+      "auth-api" = {
+        environment = {
+          PORT                    = "3000"
+          ISSUER                  = local.issuer
+          TOKEN_ENCRYPTION_KEY_ID = "tf-1"
+          REDIS_URL               = local.redis_url
+          COGNITO_ADAPTER         = "sdk"
+          COGNITO_REGION          = var.region
+          COGNITO_USER_POOL_ID    = aws_cognito_user_pool.main.id
+          COGNITO_CLIENT_ID       = aws_cognito_user_pool_client.auth_api.id
+        }
+        secrets = {
+          DATABASE_URL          = "${aws_secretsmanager_secret.db.arn}:identity_app_url::"
+          TOKEN_ENCRYPTION_KEY  = "${aws_secretsmanager_secret.auth.arn}:token_encryption_key::"
+          SIGNING_KEY_PEM       = "${aws_secretsmanager_secret.auth.arn}:signing_key_pem::"
+          COGNITO_CLIENT_SECRET = "${aws_secretsmanager_secret.auth.arn}:cognito_client_secret::"
+        }
+      }
+      "provision" = {
+        environment = {
+          PUBLIC_SCHEME        = "https"
+          COGNITO_REGION       = var.region
+          COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
+        }
+        secrets = {
+          DATABASE_URL       = "${aws_secretsmanager_secret.db.arn}:identity_master_url::"
+          AUTH_DB_PASSWORD   = "${aws_secretsmanager_secret.db.arn}:identity_app_password::"
+          SERVICES           = "${aws_secretsmanager_secret.services.arn}:json::"
+          SEED_USER_PASSWORD = "${aws_secretsmanager_secret.seed.arn}:user_password::"
+        }
+      }
+    },
+    local.web_container_definitions,
+    local.api_container_definitions,
+  )
 }
 
 resource "aws_ecs_task_definition" "app" {
@@ -187,7 +198,7 @@ resource "aws_ecs_task_definition" "app" {
 }
 
 resource "aws_ecs_service" "app" {
-  for_each = toset(["auth-server", "tenant-web", "api-server"])
+  for_each = toset(local.service_apps)
 
   name            = each.key
   cluster         = aws_ecs_cluster.main.id

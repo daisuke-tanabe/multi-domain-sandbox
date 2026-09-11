@@ -10,15 +10,24 @@ variable "region" {
 }
 
 variable "domain" {
-  description = "公開ドメイン。auth.<domain> / api.<domain> / <tenant>.<domain> を切る"
+  description = "公開ドメイン。auth.<domain> / <tenant>.<service>.<domain> / api.<service>.<domain> を切る"
   type        = string
   default     = "sandbox.daisuke-tanabe.dev"
 }
 
+variable "services" {
+  description = "サービス (OIDC Client) の一覧。キーが client_id でホスト名と DB 名にもなる。tools/provision の seed-data と一致させる"
+  type        = map(object({ name = string }))
+  default = {
+    crm = { name = "CRM" }
+    cms = { name = "CMS" }
+  }
+}
+
 variable "tenants" {
-  description = "テナント slug の一覧。Client と client_secret をテナントごとに作る"
+  description = "provision がシードするテナント slug。出力の URL にだけ使い、リソースは作らない"
   type        = list(string)
-  default     = ["tenant-a", "tenant-b"]
+  default     = ["tanaka", "suzuki"]
 }
 
 variable "image_tag" {

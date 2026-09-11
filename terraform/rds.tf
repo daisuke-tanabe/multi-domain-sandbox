@@ -3,8 +3,11 @@ resource "aws_db_subnet_group" "main" {
   subnet_ids = aws_subnet.private[*].id
 }
 
+# DB はサービスごとに RDS を分ける。identity / crm / cms の 3 台。データベース名はインスタンス名と同じ
 resource "aws_db_instance" "main" {
-  identifier = var.project
+  for_each = local.databases
+
+  identifier = "${var.project}-${each.key}"
 
   engine         = "postgres"
   engine_version = "16"
@@ -14,9 +17,9 @@ resource "aws_db_instance" "main" {
   storage_type      = "gp3"
   storage_encrypted = true
 
-  db_name  = "sandbox"
+  db_name  = each.key
   username = "postgres"
-  password = random_password.db_master.result
+  password = random_password.db_master[each.key].result
 
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.db.id]

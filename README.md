@@ -36,7 +36,7 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | `packages/oidc-client` | Tenant Web Application 向け OIDC Client 共通モジュール | |
 | `db/identity` | identity DB の初期化 SQL。ロール `sandbox_auth`、`identity` スキーマ、シード | |
 | `db/crm` `db/cms` | サービスごとの DB の初期化 SQL。ロール `crm_app` / `cms_app`、`members` `permission_overrides` と業務テーブル、RLS、シード | |
-| `tools/provision` | RDS の identity スキーマ作成、Cognito テストユーザー作成、シード投入。ECS の一回限りタスク。サービスの DB は扱わない | |
+| `tools/provision` | RDS の identity / crm / cms のロール、スキーマ、シードの投入と Cognito テストユーザー作成。ECS の一回限りタスクで冪等。SQL は `db/<name>/init` を共用する | |
 | `terraform` | AWS 構成。ECS Fargate + ALB、RDS、ElastiCache、Cognito、Route 53、ACM | |
 | `scripts/smoke.ts` | 起動中のサーバーに対する実 HTTP の疎通確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービスへの SSO、サービスごとの役割と権限、未契約サービスの拒否まで確認する | |
 | `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。サービスと auth の SPA を実際に描画し、画面の文字列が出るまで待って確認する | |
@@ -61,8 +61,8 @@ pnpm db:up
 | コンテナ | ポート | データベース | アプリのロール | 初期化 SQL | 接続するアプリ |
 | --- | --- | --- | --- | --- | --- |
 | `db-identity` | 5432 | `identity` | `sandbox_auth` | `db/identity/init/001_roles.sql` `002_identity.sql` `003_seed.sql` | auth-api |
-| `db-crm` | 5433 | `crm` | `crm_app` | `db/crm/init/001_schema.sql` `002_seed.sql` | crm-api |
-| `db-cms` | 5434 | `cms` | `cms_app` | `db/cms/init/001_schema.sql` `002_seed.sql` | cms-api |
+| `db-crm` | 5433 | `crm` | `crm_app` | `db/crm/init/001_roles.sql` `002_schema.sql` `003_seed.sql` | crm-api |
+| `db-cms` | 5434 | `cms` | `cms_app` | `db/cms/init/001_roles.sql` `002_schema.sql` `003_seed.sql` | cms-api |
 
 各アプリの `.env.example` をコピーして `.env` を作る。ローカル検証用の値がそのまま入っている。
 
@@ -87,7 +87,7 @@ cp apps/cms-api/.env.example apps/cms-api/.env
 | crm-api / cms-api | `API_BASE_URL` | この API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004`。この値がそのまま aud になり、oidc_clients.audience と一致させる。Host が URL のホストと異なるリクエストは 404。`*-api` は `PUBLIC_SCHEME` を持たない |
 | crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:crm_app@127.0.0.1:5433/crm` / `postgres://cms_app:cms_app@127.0.0.1:5434/cms`。identity DB には接続しない |
 | crm-api / cms-api | `CLIENT_ID` `CLIENT_SECRET` `AUTH_BACKCHANNEL_URL` | auth-api の管理 API を client_secret_basic で呼ぶための Client 認証。`*-web` と同じ値で、`CLIENT_SECRET` は 43 文字以上。`AUTH_BACKCHANNEL_URL` は JWKS 取得と管理 API の呼び出し先 |
-| provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` の JSON 配列。本番ホストで oidc_clients、`<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets を投入する |
+| provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` `databaseUrl` `dbPassword` の JSON 配列。本番ホストで oidc_clients、`<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets を投入する。`databaseUrl` はそのサービスの DB のマスター接続で、`<clientId>_app` ロールを `dbPassword` で作り `db/<clientId>/init` の `002_schema.sql` と `003_seed.sql` を適用する |
 
 ## 起動
 
@@ -145,7 +145,7 @@ Cognito はモックアダプタで代替している。`apps/auth-api/.env.exam
 identity の `tenant_service_members` は「入れるか」だけを持つ。carol と dave はモック Cognito にだけ存在し、初回ログインで users に JIT 作成される。dave はサービスの画面から招待して初回ログインでメールにより紐付ける確認用で、シードの users にはいない。
 ログイン時の users の解決は cognito_sub → 同じメールで cognito_sub が未設定の行 → JIT 作成の順。同じメールが別の Cognito ユーザーに既に紐付いている場合はログインを拒否し、既存行を書き換えない。
 
-役割と権限はサービスの DB にある。CRM の役割は `db/crm/init/002_seed.sql`、CMS の役割は `db/cms/init/002_seed.sql`。
+役割と権限はサービスの DB にある。CRM の役割は `db/crm/init/003_seed.sql`、CMS の役割は `db/cms/init/003_seed.sql`。
 
 | ユーザー | crm.members | crm.permission_overrides | cms.members | cms.permission_overrides |
 | --- | --- | --- | --- | --- |
@@ -310,7 +310,7 @@ pnpm chrome-check
 ## AWS へのデプロイ
 
 `terraform/` と `scripts/deploy.sh` で ECS Fargate に載せる。手順と構成は [docs/deploy.md](./docs/deploy.md) を参照する。ローカルとの差分は環境変数で切り替える。
-AWS 側はまだテナントごとに Client を持ち単一の RDS を使う旧構成のままで、サービス × テナントのホスト構成とサービスごとの DB への移行は別作業とする。
+Terraform は auth-api / crm-web / crm-api / cms-web / cms-api / provision の 6 アプリ、`<tenant>.<service>.<domain>` と `api.<service>.<domain>` のホスト、identity / crm / cms の RDS 3 台という現在の構成に合わせてある。費用削減のための撤去以降は apply しておらず、AWS にはホストゾーンと state バケットだけが残っている。
 
 | 項目 | ローカル | AWS |
 | --- | --- | --- |
@@ -321,7 +321,7 @@ AWS 側はまだテナントごとに Client を持ち単一の RDS を使う旧
 | SPA の配信 | `SPA_DEV_SERVER_URL` で `react-router dev` の Vite へ中継。auth-api も auth-web の Vite へ中継 | `pnpm build` の `build/client` を `SPA_DIR` で配る。auth-api は `../auth-web/build/client`。Vite への中継は使えない |
 | client_secret | `CLIENT_SECRET` のローカル固定値。`crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` / `cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA` | Terraform が 32 バイト以上の乱数を生成し Secrets Manager に保存。provision が oidc_client_secrets に active で upsert する。どちらも 43 文字以上 |
 | API の aud | `API_BASE_URL` の `http://api.crm.localhost:3002` / `http://api.cms.localhost:3004` | 同じ仕組みで `https://api.<service>.<domain>` |
-| DB | docker compose の 3 コンテナが初期化 SQL を適用 | identity は provision タスクがスキーマとシードを投入。crm / cms の DB は未整備で、`db/<service>/init` を別途適用する必要がある |
+| DB | docker compose の 3 コンテナが `db/<name>/init` の SQL をすべて適用 | RDS が identity / crm / cms の 3 台。provision タスクがロールを Secrets Manager のパスワードで作り、`002_*.sql` のスキーマと `003_seed.sql` を冪等に適用する。`001_roles.sql` はローカル専用 |
 
 ## フェーズ2
 

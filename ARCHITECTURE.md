@@ -21,7 +21,7 @@ packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* �
 packages/web-core     apps/*-web の BFF 本体。/auth/* の受け口、/session、/api/* の中継、SPA の配信、エラー画面、設定スキーマ、起動関数を持つ
 packages/web-ui       apps/*-web が共有する React コード。BFF との通信、ルートの clientLoader、共通の枠、管理アカウント画面、スタイル
 packages/api-core     apps/*-api のフレームワーク。auth-api は使わない。ServiceDefinition、Token 検証、member 解決と権限の確定、/v1/me と /v1/members、MemberRepository、AuthAdminClient、withTenant、設定スキーマ、起動関数を持つ
-tools/provision       AWS 専用。identity DB のスキーマ作成、Cognito テストユーザー作成、シード投入。サービスの DB は扱わない
+tools/provision       AWS 専用。identity と各サービスの DB のロール、スキーマ、シードを冪等に適用し、Cognito テストユーザーを作る。SQL は db/<name>/init を共用する
 db/identity, db/crm, db/cms  各 DB の初期化 SQL とシード。DB はサービスごとに分かれ、コンテナも分かれる
 docs/                 仕様と設計
 ```

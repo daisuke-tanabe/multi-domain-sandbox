@@ -211,7 +211,7 @@ flowchart LR
 | crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:crm_app@127.0.0.1:5433/crm` / `postgres://cms_app:cms_app@127.0.0.1:5434/cms`。identity DB には接続しない |
 | crm-api / cms-api | `CLIENT_ID` `CLIENT_SECRET` | auth-api の管理 API を client_secret_basic で呼ぶための Client 認証。`*-web` と同じ値で、`CLIENT_SECRET` は 43 文字以上 |
 | crm-api / cms-api | `PORT` `ISSUER` `AUTH_BACKCHANNEL_URL` | aud は `API_BASE_URL` と同じ値。provision が oidc_clients.audience に書く `apiBaseUrl` と一致させる。`AUTH_BACKCHANNEL_URL` は JWKS と管理 API の内部 URL。`PUBLIC_SCHEME` は持たない |
-| provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` の JSON 配列。oidc_clients、redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`redirect_uri_template` は `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` |
+| provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` `databaseUrl` `dbPassword` の JSON 配列。oidc_clients、redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入と、各サービスの DB のロール、スキーマ、シードの適用に使う。`redirect_uri_template` は `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` |
 
 client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-PE7VU` と `cms-D-t4BfncXGWLx6FnGD0DW1gJroNFYm1GDm8QSgOYNLA` の固定値。本番は 32 バイト以上の乱数を Secret Store から各 web の `CLIENT_SECRET` と provision の `SERVICES` に注入する。どちらも 43 文字以上をスキーマで要求する。provision はサービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする。
 環境変数の検証は `packages/shared` の `parseEnv` で行い、不足があれば起動を失敗させる。Cookie の Secure を外す変数は持たず、公開 scheme から導く。

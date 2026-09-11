@@ -1177,7 +1177,7 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `docs/design/00` 〜 `11` | 判断事項、構成、シーケンス、Cookie、Token、DB、Client、API 認可、セキュリティ、エラー一覧、Logout、テスト計画 |
 | `docs/deploy.md` | AWS 構成と手順 |
 | `db/identity/init/002_identity.sql` `003_seed.sql` | Identity DB。サービス、client_secret、テナント、契約、サービスごとの割り当て、会社横断の役割のスキーマとシード。redirect_uri はサービスの `redirect_uri_template` 列。割り当てに役割はない |
-| `db/crm/init/001_schema.sql` `db/cms/init/001_schema.sql` | サービスごとの DB。`members` と `permission_overrides` と業務テーブル、FORCE ROW LEVEL SECURITY、所有者と分けた NOBYPASSRLS のアプリロール |
+| `db/crm/init/002_schema.sql` `003_seed.sql` `db/cms/init/002_schema.sql` `003_seed.sql` | サービスごとの DB。`members` と `permission_overrides` と業務テーブル、FORCE ROW LEVEL SECURITY、所有者と分けた NOBYPASSRLS のアプリロール。`001_roles.sql` はローカル専用で、AWS では `tools/provision` がロールを作って同じ SQL を適用する |
 | `apps/auth-api/src/routes/admin.ts` `apps/auth-api/src/usecases/service-members.ts` | サービス向けの管理 API。client_secret_basic で認証し、自サービスへの割り当てだけを操作させる。メールでの事前作成 |
 | `apps/auth-api/src/usecases/login.ts` | ログイン時の users の解決。cognito_sub → メールでの紐付け → JIT 作成 |
 | `packages/shared/src/redirect-template.ts` `packages/shared/src/secret-hash.ts` | redirect_uri テンプレートの照合と展開、client_secret の SHA-256 ハッシュと複数 secret の照合 |

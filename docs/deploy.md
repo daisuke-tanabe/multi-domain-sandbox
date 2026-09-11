@@ -1,14 +1,9 @@
 # AWS へのデプロイ
 
-## 未移行の注意
+## 状態
 
-AWS / Terraform 側はまだ旧構成のままである。旧構成ではテナントごとに OIDC Client を持ち、ホストは `tenant-a.<domain>` / `tenant-b.<domain>`、環境変数は `TENANT_CLIENTS` と `API_AUDIENCE` だった。
-アプリと `db/` はサービス × テナントのモデルに移行済みで、ホストは `<tenant>.crm.<domain>` / `<tenant>.cms.<domain>` に変わっている。
-さらにアプリはサービスごとに web と api を分けた構成に変わっている。旧構成の auth-server / tenant-web / api-server / provision は auth-api / crm-web / crm-api / cms-web / cms-api / provision になった。`scripts/deploy.sh` と `Dockerfile` は新しいアプリ名でビルドするが、Terraform の ECR リポジトリ名、ECS サービス名、タスク定義、CloudWatch Logs のロググループ名は旧名のままで一致しない。
-環境変数も `*-web` の `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` と `*-api` の `API_BASE_URL` `DATABASE_URL` `CLIENT_ID` `CLIENT_SECRET` に変わっており、旧構成の `TENANT_CLIENTS` と `API_AUDIENCE` はどのアプリも読まない。
-DB もサービスごとに分かれた。auth-api は identity DB、crm-api は crm DB、cms-api は cms DB にしか接続せず、3 つのデータベースが必要になる。Terraform は単一の RDS インスタンスに 1 つのデータベースを作る構成のままで、provision タスクは identity DB しか初期化しない。crm / cms の DB は `db/crm/init` と `db/cms/init` の SQL を別途適用する必要があり、その仕組みは未整備。RDS で 3 つのデータベースを作るか、インスタンスを分けるかは移行時に決める。
-`*-web` の画面は React Router の SPA になり、本番は `react-router build` の成果物 `build/client` を `SPA_DIR` で BFF に配らせる。auth の画面も `apps/auth-web` の SPA になり、auth-api が配る。`Dockerfile` は crm-web / cms-web では自分の SPA、auth-api では auth-web を `react-router build` して `/app/spa` に同梱し、`ENV SPA_DIR=/app/spa` を設定済みのため、タスク定義で `SPA_DIR` を渡す必要はない。`*-api` と provision のイメージにも同じ `SPA_DIR` が入るが、これらは読まない。`PUBLIC_SCHEME=https` の `*-web` と https の `ISSUER` の auth-api では `SPA_DIR` が必須で、欠けると起動に失敗する。
-Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名、タスク定義の環境変数、Secrets Manager の client_secret と各 DB ロールのパスワード、3 つのデータベースを現在の構成へ移行する作業は別途行う。それまでこの手順で apply しても現在のアプリは起動しない。以下の Terraform に関する記述は旧構成のものをそのまま残している。
+Terraform は現在のアプリ構成と一致しているが、費用削減のための撤去以降は apply していない。AWS に残っているのは Route 53 ホストゾーンと state バケットだけで、`terraform validate` は通る。
+apply すると auth-api / crm-web / crm-api / cms-web / cms-api / provision の ECR リポジトリとタスク定義、常駐 5 アプリの ECS サービスとターゲットグループ、サービスごとのホストを振り分ける ALB、identity / crm / cms の RDS 3 台、Redis、Cognito、Secrets Manager、ACM 証明書、Route 53 レコードが作られる。
 
 ## 結論
 
@@ -21,35 +16,31 @@ Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名
 | 要素 | 内容 |
 | --- | --- |
 | ネットワーク | VPC 10.20.0.0/16。public subnet 2 つに ALB と Fargate タスク、private subnet 2 つに RDS と Redis。NAT なし |
-| 実行基盤 | ECS Fargate ARM64。旧構成の auth-server / tenant-web / api-server を各 1 タスク。provision は一回限りのタスク。移行後は auth-api / crm-web / crm-api / cms-web / cms-api を各 1 タスク |
-| ルーティング | ALB のホストベース。旧構成は `auth.<domain>` → auth-server、`api.<domain>` → api-server、`*.<domain>` → tenant-web。移行後は `auth.<domain>` → auth-api、`api.crm.<domain>` → crm-api、`*.crm.<domain>` → crm-web、`api.cms.<domain>` → cms-api、`*.cms.<domain>` → cms-web |
-| 証明書 | ACM。`*.<domain>` と `<domain>` を DNS 検証。移行後は `*.crm.<domain>` / `*.cms.<domain>` も必要 |
-| DB | RDS PostgreSQL 16、db.t4g.micro、単一 AZ。`rds.force_ssl=1` のため接続 URL に `sslmode=no-verify` を付ける。identity のロールとスキーマは provision タスクが作る。移行後は identity / crm / cms の 3 データベースが必要で、crm / cms の初期化は未整備 |
-| Session Store | ElastiCache Redis 7、cache.t4g.micro、単一ノード、VPC 内のみ |
-| 認証 | Cognito User Pool。Hosted UI なし。App Client は secret 付きで USER_SRP_AUTH のみ許可 |
-| 秘密値 | Secrets Manager。DB パスワード、署名鍵、Token 暗号化鍵、client_secret、テストユーザーのパスワード |
+| 実行基盤 | ECS Fargate ARM64。auth-api / crm-web / crm-api / cms-web / cms-api を各 1 タスク。provision は一回限りのタスクでサービスを持たない。サービス一覧は `var.services`、テナント一覧は `var.tenants` で、テナントはリソースを作らず出力の URL にだけ使う |
+| ルーティング | ALB のホストベース。`auth.<domain>` → auth-api、`api.<svc>.<domain>` → `<svc>-api`、`*.<svc>.<domain>` → `<svc>-web`。auth を先に、サービスごとに api を web より先に評価する。Route 53 は `auth.<domain>` とサービスごとの `*.<svc>.<domain>` の A エイリアス。`api.<svc>.<domain>` はワイルドカードで解決する |
+| 証明書 | ACM。`*.<domain>` に `<domain>` とサービスごとの `*.<svc>.<domain>` を SAN で足し、DNS 検証する。ワイルドカードは 1 階層しか覆わないため |
+| DB | RDS PostgreSQL 16、db.t4g.micro、単一 AZ を identity / crm / cms の 3 台。識別子は `multi-domain-sandbox-<name>`、データベース名は `<name>`、マスターは `postgres`。サブネットグループと SG は共有。`rds.force_ssl=1` のため接続 URL に `sslmode=no-verify` を付ける。ロール、スキーマ、シードは provision タスクが 3 台すべてに入れる |
+| Session Store | ElastiCache Redis 7、cache.t4g.micro、単一ノード、VPC 内のみ。転送暗号化なしのため `redis://` |
+| 認証 | Cognito User Pool。Hosted UI なし。App Client `multi-domain-sandbox-auth-api` は secret 付きで USER_SRP_AUTH のみ許可 |
+| 秘密値 | Secrets Manager。`multi-domain-sandbox/db` に `<name>_master_url` `<name>_app_url` `<name>_app_password`、`multi-domain-sandbox/auth-api` に `token_encryption_key` `signing_key_pem` `cognito_client_secret`、`multi-domain-sandbox/services` に provision 用の `json` とサービスごとの `<svc>_client_secret`、`multi-domain-sandbox/seed` に `user_password`。client_secret は記号なし 48 文字の乱数 |
 | ログ | CloudWatch Logs。`/ecs/multi-domain-sandbox/<app>` |
 
 ローカルとの差分は環境変数だけで吸収する。Cookie の Secure と `__Host-` プレフィックスは auth-api が `ISSUER` の scheme、`*-web` が `PUBLIC_SCHEME` から導き、切り替え用の変数はない。https にすると本番の値が揃っていることを起動時に検証する。auth-api は `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk`、`SPA_DIR` が必須で、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR` が必須。欠けると起動に失敗する。
-アプリ側で必要な環境変数は次のとおり。Terraform のタスク定義はまだこれらを渡していない。
-crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶだけで、crm-api / cms-api の `main.ts` はサービスの定義と routes を `packages/api-core` の起動関数に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。`*-api` は `PUBLIC_SCHEME` を読まず、aud は `API_BASE_URL` そのものになる。
+タスク定義が渡す環境変数は次のとおり。名前はローカルの `.env.example` と同じで、定義は `terraform/ecs.tf` にある。`SPA_DIR` はタスク定義では渡さない。`Dockerfile` が crm-web / cms-web は自分の SPA、auth-api は auth-web を `react-router build` して `/app/spa` に同梱し、`ENV SPA_DIR=/app/spa` を設定する。`*-api` と provision のイメージにも同じ値が入るが読まない。
+crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶだけで、crm-api / cms-api の `main.ts` はサービスの定義と routes を `packages/api-core` の起動関数に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。`*-api` は `PUBLIC_SCHEME` を読まず、aud は `API_BASE_URL` そのものになる。`AUTH_BACKCHANNEL_URL` は AWS では渡さず、公開の `ISSUER` に向けて JWKS と管理 API を呼ぶ。
 
-| アプリ | 変数 | 本番の値の例 |
+| アプリ | 変数 | 値 |
 | --- | --- | --- |
-| auth-api | `ISSUER` `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER` | `https://auth.<domain>` / Secrets Manager の値 / `rediss://...` / `sdk`。`ISSUER` が https のため 4 つとも必須 |
-| auth-api | `DATABASE_URL` | identity DB。`postgres://sandbox_auth:<password>@<rds>/identity?sslmode=no-verify` |
-| auth-api | `SPA_DIR` | イメージでは `/app/spa` が既定。auth-web の `react-router build` の成果物を auth-api が配る。`ISSUER` が https のため必須で、`SPA_DEV_SERVER_URL` は使わない |
-| crm-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `crm` / Secrets Manager の値。43 文字以上 / `CRM` / `crm.<domain>` / `https://api.crm.<domain>` |
-| cms-web | 同上 | `cms` / Secrets Manager の値。43 文字以上 / `CMS` / `cms.<domain>` / `https://api.cms.<domain>` |
-| crm-web / cms-web | `ISSUER` `REDIS_URL` | `https://auth.<domain>` / `rediss://...`。`PUBLIC_SCHEME` が https のため両方必須 |
-| crm-web / cms-web | `SPA_DIR` | イメージでは `/app/spa` が既定。`react-router build` の成果物を BFF が配る。`PUBLIC_SCHEME` が https のため必須で、`SPA_DEV_SERVER_URL` は使わない |
-| crm-api | `API_BASE_URL` | `https://api.crm.<domain>`。そのまま aud になり、provision が oidc_clients.audience に書く `apiBaseUrl` と同じ値にする |
-| cms-api | `API_BASE_URL` | `https://api.cms.<domain>` |
-| crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:<password>@<rds>/crm?sslmode=no-verify` / `postgres://cms_app:<password>@<rds>/cms?sslmode=no-verify`。identity DB には接続しない |
-| crm-api / cms-api | `CLIENT_ID` `CLIENT_SECRET` `ISSUER` `AUTH_BACKCHANNEL_URL` | auth-api の管理 API を client_secret_basic で呼ぶための Client 認証。`*-web` と同じ値。`AUTH_BACKCHANNEL_URL` は JWKS と管理 API の内部 URL |
-| crm-web / cms-web / provision | `PUBLIC_SCHEME` | `https` |
-| provision | `DATABASE_URL` `AUTH_DB_PASSWORD` | identity DB のマスター接続と、`sandbox_auth` ロールに設定するパスワード。auth-api の `DATABASE_URL` と対応させる |
-| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、`https://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`clientSecret` は 32 バイト以上の乱数で 43 文字以上をスキーマで要求する。サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする。シードはテナント、契約、会社横断の役割 tenant_members、サービスごとの割り当て tenant_service_members を `tools/provision/src/seed-data.ts` から投入する。役割、権限の上書き、業務データは各サービスの DB にあり provision は扱わない |
+| auth-api | `PORT` `ISSUER` `TOKEN_ENCRYPTION_KEY_ID` `REDIS_URL` `COGNITO_ADAPTER` `COGNITO_REGION` `COGNITO_USER_POOL_ID` `COGNITO_CLIENT_ID` | `3000` / `https://auth.<domain>` / `tf-1` / `redis://<elasticache>:6379` / `sdk` / Terraform のリージョン、User Pool、App Client の値 |
+| auth-api | `DATABASE_URL` `TOKEN_ENCRYPTION_KEY` `SIGNING_KEY_PEM` `COGNITO_CLIENT_SECRET` | Secrets Manager から注入。`DATABASE_URL` は `identity_app_url` で `postgres://sandbox_auth:<password>@<rds>:5432/identity?sslmode=no-verify` |
+| crm-web / cms-web | `PORT` `PUBLIC_SCHEME` `ISSUER` `REDIS_URL` `CLIENT_ID` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `3000` / `https` / `https://auth.<domain>` / `redis://<elasticache>:6379` / `crm` または `cms` / `CRM` または `CMS` / `<svc>.<domain>` / `https://api.<svc>.<domain>` |
+| crm-web / cms-web | `CLIENT_SECRET` | Secrets Manager の `<svc>_client_secret`。43 文字以上を起動時に検証する |
+| crm-api / cms-api | `PORT` `API_BASE_URL` `ISSUER` `CLIENT_ID` | `3000` / `https://api.<svc>.<domain>` / `https://auth.<domain>` / `crm` または `cms`。`API_BASE_URL` がそのまま aud になり、provision が oidc_clients.audience に書く `apiBaseUrl` と同じ値 |
+| crm-api / cms-api | `CLIENT_SECRET` `DATABASE_URL` | Secrets Manager から注入。`DATABASE_URL` は `<svc>_app_url` で `postgres://crm_app:<password>@<rds>:5432/crm?sslmode=no-verify` の形。identity DB には接続しない |
+| provision | `PUBLIC_SCHEME` `COGNITO_REGION` `COGNITO_USER_POOL_ID` | `https` / Terraform のリージョンと User Pool |
+| provision | `DATABASE_URL` `AUTH_DB_PASSWORD` `SERVICES` `SEED_USER_PASSWORD` | Secrets Manager から注入。`DATABASE_URL` は `identity_master_url`、`AUTH_DB_PASSWORD` は `identity_app_password`、`SERVICES` は `multi-domain-sandbox/services` の `json`、`SEED_USER_PASSWORD` は `multi-domain-sandbox/seed` の `user_password` |
+
+`SERVICES` は全サービスの JSON 配列で、Terraform が `locals.tf` で組み立てる。要素は `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` に加えて、そのサービスの DB のマスター接続 `databaseUrl` と `<clientId>_app` ロールのパスワード `dbPassword` を持つ。`clientSecret` は各 `*-web` / `*-api` の `CLIENT_SECRET`、`dbPassword` は `*-api` の `DATABASE_URL` と同じ値になる。
 
 ## 事前準備
 
@@ -64,26 +55,29 @@ crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶ
 scripts/tf-bootstrap.sh
 cd terraform && terraform init -backend-config=backend.hcl && cd ..
 
-# 2. ECR を作ってイメージを push し、全リソースを apply
+# 2. ECR を作って 6 つのイメージを push し、全リソースを apply
 scripts/deploy.sh --init
 
-# 3. 親ゾーンに NS 委任。ACM の DNS 検証はこの後に通る
+# 3. 親ゾーンに NS 委任。ACM の DNS 検証はこの後に通る。委任済みなら不要
 PARENT_PROFILE=daisuke-tanabe scripts/delegate-dns.sh
 
 # 4. 委任が伝播したら証明書の検証待ちを含めてもう一度 apply
 cd terraform && terraform apply -var image_tag=$(git rev-parse --short HEAD)
 
-# 5. RDS の identity スキーマ、Cognito テストユーザー、シードを投入
+# 5. 3 つの RDS のロール、スキーマ、シードと Cognito テストユーザーを投入
 scripts/run-provision.sh
 ```
 
-provision が扱うのは identity DB だけ。crm / cms の DB は `db/crm/init` と `db/cms/init` の SQL を RDS の別データベースに適用する手順が必要で、未整備。
+ホストゾーンは撤去後も残しているため、手順 3 は初めてのときだけ実行する。手順 2 では ACM の検証待ちで apply が止まることがある。その場合は手順 3 を先に実行してから手順 2 を再実行する。
 
-手順 2 では ACM の検証待ちで apply が止まることがある。その場合は手順 3 を先に実行してから手順 2 を再実行する。
+provision は冪等で、`scripts/run-provision.sh` は ECS で一回限りのタスクとして実行し、終了までログを待つ。処理内容は次のとおり。
+
+- identity DB。`sandbox_auth` ロールを `AUTH_DB_PASSWORD` で作るか合わせ、`identity.users` がなければ `db/identity/init/002_identity.sql` を適用する。Cognito にテストユーザーを作り、実際の sub で users を投入し、tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / tenant_service_members を `tools/provision/src/seed-data.ts` から入れる。oidc_clients の redirect_uri_template は `https://{tenant}.<baseHost>/auth/callback`。サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする
+- サービスの DB。`SERVICES` の要素ごとに `databaseUrl` へ接続し、`<clientId>_app` ロールを `dbPassword` の NOBYPASSRLS ログインロールとして作るか合わせる。`<clientId>.members` がなければ `db/<clientId>/init/002_schema.sql` を適用し、members が空のときだけ `003_seed.sql` を入れる。`001_roles.sql` はローカル専用の固定パスワードで、RDS では使わない
 
 ## テストユーザー
 
-ローカルと同じ alice / bob / carol を Cognito に作る。パスワードは Terraform が生成し Secrets Manager に置く。
+ローカルと同じ alice / bob / carol を Cognito に作る。パスワードは Terraform が生成し Secrets Manager に置く。alice は tanaka の CRM と CMS、suzuki の CRM に入れる。bob は suzuki の CRM に入れる。carol は割り当てなし。サービスごとの役割と権限の上書きは `db/crm/init/003_seed.sql` と `db/cms/init/003_seed.sql` の値がそのまま入る。
 
 ```bash
 aws secretsmanager get-secret-value --secret-id multi-domain-sandbox/seed \
@@ -96,7 +90,7 @@ aws secretsmanager get-secret-value --secret-id multi-domain-sandbox/seed \
 scripts/deploy.sh
 ```
 
-git の短縮 SHA をイメージタグにして push し、タスク定義を更新する。
+git の短縮 SHA をイメージタグにして 6 つのイメージを push し、タスク定義を更新する。
 
 ## 確認
 
@@ -104,8 +98,9 @@ git の短縮 SHA をイメージタグにして push し、タスク定義を�
 cd terraform && terraform output urls
 ```
 
-移行後はブラウザで `https://tanaka.crm.sandbox.daisuke-tanabe.dev/` を開き、alice でログインする。
-`SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。両スクリプトは `<tenant>.<service>.<SANDBOX_DOMAIN>` のホストを前提にするため、Terraform の移行が終わるまで AWS に対しては通らない。
+`urls` は `portal` に `https://auth.<domain>`、`web` にサービスごとテナントごとの URL、`api` にサービスごとの API の URL、`alb_dns` を返す。web の URL は `https://tanaka.crm.<domain>` のように `var.tenants` の slug で組み立てる。
+ブラウザで `https://tanaka.crm.sandbox.daisuke-tanabe.dev/` を開き、alice でログインする。`https://tanaka.cms.sandbox.daisuke-tanabe.dev/` へは SSO で入れる。suzuki は CMS を契約していないため `https://suzuki.cms.sandbox.daisuke-tanabe.dev/` は拒否される。
+`SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。両スクリプトは `<tenant>.<service>.<SANDBOX_DOMAIN>` のホストを前提にする。
 
 ```bash
 export SANDBOX_DOMAIN=sandbox.daisuke-tanabe.dev
@@ -141,13 +136,13 @@ ap-northeast-1 で常時起動した場合の概算。
 
 | 項目 | 月額の目安 |
 | --- | --- |
-| Fargate 0.25 vCPU / 0.5 GB × 3。移行後は × 5 で約 4,200 円 | 約 2,500 円 |
+| Fargate 0.25 vCPU / 0.5 GB × 5 | 約 4,200 円 |
 | ALB | 約 3,500 円 + 転送量 |
-| RDS db.t4g.micro + 20 GB。移行後は 1 インスタンスに 3 データベースなら同額 | 約 2,500 円 |
+| RDS db.t4g.micro + 20 GB × 3 | 約 7,500 円 |
 | ElastiCache cache.t4g.micro | 約 2,000 円 |
 | Route 53 ホストゾーン、Secrets Manager、CloudWatch | 数百円 |
 
-合計で月 1 万円強。検証が終わったら destroy する。
+合計で月 2 万円弱。検証が終わったら destroy する。
 
 ## 本番へ持ち出すときの差分
 

@@ -4,7 +4,6 @@
 -- ロール cms_app は所有者ではなく利用者。FORCE ROW LEVEL SECURITY が所有者に効かないため、
 -- テーブルは postgres が所有し、cms_app には必要な権限だけ与える
 
-CREATE ROLE cms_app LOGIN PASSWORD 'cms_app' NOBYPASSRLS;
 CREATE SCHEMA cms;
 GRANT USAGE ON SCHEMA cms TO cms_app;
 

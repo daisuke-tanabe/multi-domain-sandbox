@@ -52,9 +52,9 @@ resource "aws_cognito_user_pool" "main" {
   }
 }
 
-# auth-server が USER_SRP_AUTH で使う App Client。secret 付きで SECRET_HASH を要求する
-resource "aws_cognito_user_pool_client" "auth_server" {
-  name         = "${var.project}-auth-server"
+# auth-api が USER_SRP_AUTH で使う App Client。secret 付きで SECRET_HASH を要求する
+resource "aws_cognito_user_pool_client" "auth_api" {
+  name         = "${var.project}-auth-api"
   user_pool_id = aws_cognito_user_pool.main.id
 
   generate_secret = true

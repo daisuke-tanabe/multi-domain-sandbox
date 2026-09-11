@@ -80,7 +80,7 @@ CRM だけ契約する会社なら tenants 1 行、tenant_services 1 行、最�
 8. そのサービスの web と api のプロセスを追加し、web に CLIENT_ID / CLIENT_SECRET / BASE_HOST / API_BASE_URL、api に API_BASE_URL / DATABASE_URL / CLIENT_ID / CLIENT_SECRET を与える。api は definition.ts で役割と権限の語彙を宣言する
 ```
 
-サンドボックスでは provision が `SERVICES` の JSON から 1〜4 を投入し、`SEED_SERVICE_MEMBERSHIPS` で 5 のシードを投入する。`redirect_uri_template` は `SERVICES[].baseHost` から `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` として組み立て、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret は revoked にする。7 のサービスの DB は provision の対象外で、ローカルでは `db/<service>/init` を docker compose が適用する。
+サンドボックスでは provision が `SERVICES` の JSON から 1〜4 を投入し、`SEED_SERVICE_MEMBERSHIPS` で 5 のシードを投入する。`redirect_uri_template` は `SERVICES[].baseHost` から `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` として組み立て、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret は revoked にする。7 のサービスの DB も provision が `SERVICES[].databaseUrl` に接続して `<service>_app` ロールを作り、`db/<service>/init` の `002_schema.sql` と `003_seed.sql` を適用する。ローカルでは同じ SQL を `001_roles.sql` と合わせて docker compose が適用する。
 
 ### client_secret のローテーション
 

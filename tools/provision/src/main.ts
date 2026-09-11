@@ -1,11 +1,10 @@
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { ulid } from "ulid";
 import { createLogger, createPool, hashSecret } from "@sandbox/shared";
 import { ensureCognitoUsers } from "./cognito-users.ts";
 import { loadConfig } from "./config.ts";
+import { ensureRole, provisionServiceDb, resolveInitDir, tableExists } from "./db-init.ts";
 import {
   SEED_CONTRACTS,
   SEED_MEMBERSHIPS,
@@ -16,29 +15,20 @@ import {
 } from "./seed-data.ts";
 
 /**
- * identity DB 向けの初期化タスク。ローカルの docker-entrypoint-initdb.d の代わりに ECS の一回限りタスクとして実行する。
- * サービスの DB (crm / cms) はここでは扱わない。各サービスの db/<service>/init を同様に適用する
+ * DB の初期化タスク。ローカルの docker-entrypoint-initdb.d の代わりに ECS の一回限りタスクとして実行する。冪等。
  *
- * 1. ロールとスキーマを作る。db/identity/init の 001 と 002 を適用する。冪等になるよう存在確認を挟む
+ * identity DB
+ * 1. ロールとスキーマを作る。db/identity/init の 001 と 002 に相当する。存在確認を挟む
  * 2. ロールのパスワードを Secrets Manager 由来の値に合わせる
  * 3. Cognito にテストユーザーを作り、実際の sub で users を投入する
  * 4. tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / tenant_service_members を投入する
+ *
+ * サービスの DB (crm / cms)
+ * 5. SERVICES の databaseUrl ごとに db/<service>/init の 002_schema.sql と 003_seed.sql を適用する
  */
 const logger = createLogger("provision");
 const config = loadConfig();
-const here = dirname(fileURLToPath(import.meta.url));
-const initDir = resolveInitDir();
-
-/** コンテナでは /app/db/identity/init、リポジトリでは <root>/db/identity/init */
-function resolveInitDir(): string {
-  const candidates = [
-    join(here, "..", "db", "identity", "init"),
-    join(here, "..", "..", "..", "db", "identity", "init"),
-  ];
-  const found = candidates.find((candidate) => existsSync(candidate));
-  if (found === undefined) throw new Error("db/identity/init directory not found");
-  return found;
-}
+const initDir = resolveInitDir("identity");
 
 const pool = createPool(config.DATABASE_URL, logger, { max: 2 });
 const tenantBySlug = new Map(SEED_TENANTS.map((tenant) => [tenant.slug, tenant]));
@@ -47,31 +37,18 @@ const serviceByClientId = new Map(SEED_SERVICES.map((service) => [service.client
 async function applySchema(): Promise<void> {
   const client = await pool.connect();
   try {
-    // 001_roles.sql 相当。RDS のマスターは superuser ではないため、ロール作成 → 自分をメンバーに →
-    // スキーマ作成の順にする。CREATE SCHEMA AUTHORIZATION はそのロールのメンバーである必要がある
-    const exists = await client.query("SELECT 1 FROM pg_roles WHERE rolname = 'sandbox_auth'");
-    const statement = exists.rowCount === 0 ? "CREATE ROLE" : "ALTER ROLE";
-    await client.query(
-      `${statement} sandbox_auth LOGIN PASSWORD '${escapeLiteral(config.AUTH_DB_PASSWORD)}'`,
-    );
-    await client.query("GRANT sandbox_auth TO CURRENT_USER");
+    // 001_roles.sql 相当。CREATE SCHEMA AUTHORIZATION はそのロールのメンバーである必要がある
+    await ensureRole(client, "sandbox_auth", config.AUTH_DB_PASSWORD, { bypassRls: true });
     await client.query("CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION sandbox_auth");
     logger.info("roles and schemas ensured");
 
-    const identityExists = await client.query(
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'identity' AND table_name = 'users'",
-    );
-    if (identityExists.rowCount === 0) {
+    if (!(await tableExists(client, "identity", "users"))) {
       await client.query(await readFile(join(initDir, "002_identity.sql"), "utf8"));
       logger.info("identity schema created");
     }
   } finally {
     client.release();
   }
-}
-
-function escapeLiteral(value: string): string {
-  return value.replace(/'/g, "''");
 }
 
 async function resolveSubs(): Promise<Map<string, string>> {
@@ -188,10 +165,22 @@ async function seedIdentity(subs: Map<string, string>): Promise<void> {
   }
 }
 
+async function provisionServices(): Promise<void> {
+  for (const service of config.SERVICES) {
+    const servicePool = createPool(service.databaseUrl, logger, { max: 1 });
+    try {
+      await provisionServiceDb(servicePool, service, logger);
+    } finally {
+      await servicePool.end();
+    }
+  }
+}
+
 try {
   await applySchema();
   const subs = await resolveSubs();
   await seedIdentity(subs);
+  await provisionServices();
   logger.info("provision completed");
 } finally {
   await pool.end();

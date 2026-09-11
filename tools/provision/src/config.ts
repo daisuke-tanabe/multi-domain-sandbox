@@ -9,10 +9,15 @@ const serviceSchema = z.object({
   /** テナントのサブドメインを除いたホスト。例 crm.example.com */
   baseHost: z.string().min(1),
   apiBaseUrl: z.string().url(),
+  /** このサービスの DB へのマスター接続。スキーマ作成とシードに使う */
+  databaseUrl: z.string().min(1),
+  /** <clientId>_app ロールのパスワード。RDS では Secrets Manager の値 */
+  dbPassword: z.string().min(1),
 });
 
 const envSchema = z
   .object({
+    /** identity DB へのマスター接続 */
     DATABASE_URL: z.string().min(1),
     AUTH_DB_PASSWORD: z.string().min(1),
     PUBLIC_SCHEME: publicSchemeEnv.default("https"),
@@ -37,6 +42,7 @@ const envSchema = z
   }));
 
 export type ProvisionConfig = z.infer<typeof envSchema>;
+export type ServiceConfig = z.infer<typeof serviceSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProvisionConfig {
   return parseEnv("provision", envSchema, env);

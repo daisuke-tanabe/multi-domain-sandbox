@@ -386,7 +386,7 @@ members と permission_overrides にも同じポリシーを掛ける。API Serv
 
 ### 初期データ
 
-CRM。`db/crm/init/002_seed.sql`。
+CRM。`db/crm/init/003_seed.sql`。
 
 | 表 | 内容 |
 | --- | --- |
@@ -394,7 +394,7 @@ CRM。`db/crm/init/002_seed.sql`。
 | permission_overrides | suzuki の alice に `end_users:unmask` を allow。viewer でもマスクなしで読める例 |
 | end_users | tanaka に 3 件、suzuki に 2 件。名前、メール、電話、メモ |
 
-CMS。`db/cms/init/002_seed.sql`。
+CMS。`db/cms/init/003_seed.sql`。
 
 | 表 | 内容 |
 | --- | --- |

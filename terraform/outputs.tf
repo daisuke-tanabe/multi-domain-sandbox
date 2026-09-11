@@ -9,9 +9,13 @@ output "name_servers" {
 
 output "urls" {
   value = {
-    portal  = local.issuer
-    tenants = { for slug in var.tenants : slug => "https://${slug}.${var.domain}" }
-    api     = local.api_url
+    portal = local.issuer
+    web = {
+      for id in keys(var.services) : id => {
+        for slug in var.tenants : slug => "https://${slug}.${local.service_hosts[id].base_host}"
+      }
+    }
+    api     = { for id in keys(var.services) : id => local.service_hosts[id].api_url }
     alb_dns = aws_lb.main.dns_name
   }
 }
@@ -33,7 +37,7 @@ output "ecs" {
 output "cognito" {
   value = {
     user_pool_id = aws_cognito_user_pool.main.id
-    client_id    = aws_cognito_user_pool_client.auth_server.id
+    client_id    = aws_cognito_user_pool_client.auth_api.id
   }
 }
 

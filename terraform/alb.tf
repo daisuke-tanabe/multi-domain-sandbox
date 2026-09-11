@@ -6,7 +6,7 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "app" {
-  for_each = toset(["auth-server", "tenant-web", "api-server"])
+  for_each = toset(local.service_apps)
 
   name        = "${var.project}-${each.key}"
   port        = 3000
@@ -58,14 +58,14 @@ resource "aws_lb_listener" "https" {
   }
 }
 
-# ホストベースルーティング。auth と api を先に評価し、残りのサブドメインを tenant-web へ
+# ホストベースルーティング。auth を先に評価し、サービスごとに api.<service> を *.<service> より先に評価する
 resource "aws_lb_listener_rule" "auth" {
   listener_arn = aws_lb_listener.https.arn
   priority     = 10
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app["auth-server"].arn
+    target_group_arn = aws_lb_target_group.app["auth-api"].arn
   }
 
   condition {
@@ -75,34 +75,42 @@ resource "aws_lb_listener_rule" "auth" {
   }
 }
 
+locals {
+  service_rule_priority = { for index, id in sort(keys(var.services)) : id => index }
+}
+
 resource "aws_lb_listener_rule" "api" {
+  for_each = var.services
+
   listener_arn = aws_lb_listener.https.arn
-  priority     = 20
+  priority     = 100 + local.service_rule_priority[each.key]
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app["api-server"].arn
+    target_group_arn = aws_lb_target_group.app["${each.key}-api"].arn
   }
 
   condition {
     host_header {
-      values = [local.api_host]
+      values = [local.service_hosts[each.key].api_host]
     }
   }
 }
 
-resource "aws_lb_listener_rule" "tenants" {
+resource "aws_lb_listener_rule" "web" {
+  for_each = var.services
+
   listener_arn = aws_lb_listener.https.arn
-  priority     = 30
+  priority     = 200 + local.service_rule_priority[each.key]
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app["tenant-web"].arn
+    target_group_arn = aws_lb_target_group.app["${each.key}-web"].arn
   }
 
   condition {
     host_header {
-      values = ["*.${var.domain}"]
+      values = ["*.${local.service_hosts[each.key].base_host}"]
     }
   }
 }

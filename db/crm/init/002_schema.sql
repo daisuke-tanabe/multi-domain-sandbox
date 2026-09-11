@@ -4,7 +4,6 @@
 -- ロール crm_app は所有者ではなく利用者。FORCE ROW LEVEL SECURITY が所有者に効かないため、
 -- テーブルは postgres が所有し、crm_app には必要な権限だけ与える
 
-CREATE ROLE crm_app LOGIN PASSWORD 'crm_app' NOBYPASSRLS;
 CREATE SCHEMA crm;
 GRANT USAGE ON SCHEMA crm TO crm_app;
 

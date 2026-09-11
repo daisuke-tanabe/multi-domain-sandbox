@@ -5,11 +5,14 @@ resource "aws_route53_zone" "sandbox" {
   name = var.domain
 }
 
-# ワイルドカードで auth / api / 各テナントをまとめて覆う
+# ワイルドカードは 1 階層しか覆わないため、auth 用の *.<domain> に加えてサービスごとに *.<service>.<domain> を SAN に入れる
 resource "aws_acm_certificate" "main" {
-  domain_name               = "*.${var.domain}"
-  subject_alternative_names = [var.domain]
-  validation_method         = "DNS"
+  domain_name = "*.${var.domain}"
+  subject_alternative_names = concat(
+    [var.domain],
+    [for id in keys(var.services) : "*.${id}.${var.domain}"],
+  )
+  validation_method = "DNS"
 
   lifecycle {
     create_before_destroy = true
@@ -50,22 +53,12 @@ resource "aws_route53_record" "auth" {
   }
 }
 
-resource "aws_route53_record" "api" {
-  zone_id = aws_route53_zone.sandbox.zone_id
-  name    = local.api_host
-  type    = "A"
+# テナントは増減するため個別レコードにせず、サービスごとのワイルドカードで受ける。api.<service>.<domain> も同じレコードで解決する
+resource "aws_route53_record" "service_wildcard" {
+  for_each = var.services
 
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = false
-  }
-}
-
-# テナントは増減するため、個別レコードではなくワイルドカードで受ける
-resource "aws_route53_record" "tenants_wildcard" {
   zone_id = aws_route53_zone.sandbox.zone_id
-  name    = "*.${var.domain}"
+  name    = "*.${each.key}.${var.domain}"
   type    = "A"
 
   alias {
