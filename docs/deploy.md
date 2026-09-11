@@ -7,7 +7,7 @@ AWS / Terraform 側はまだ旧構成のままである。旧構成ではテナ�
 さらにアプリはサービスごとに web と api を分けた構成に変わっている。旧構成の auth-server / tenant-web / api-server / provision は auth-api / crm-web / crm-api / cms-web / cms-api / provision になった。`scripts/deploy.sh` と `Dockerfile` は新しいアプリ名でビルドするが、Terraform の ECR リポジトリ名、ECS サービス名、タスク定義、CloudWatch Logs のロググループ名は旧名のままで一致しない。
 環境変数も `*-web` の `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` と `*-api` の `API_BASE_URL` `DATABASE_URL` `CLIENT_ID` `CLIENT_SECRET` に変わっており、旧構成の `TENANT_CLIENTS` と `API_AUDIENCE` はどのアプリも読まない。
 DB もサービスごとに分かれた。auth-api は identity DB、crm-api は crm DB、cms-api は cms DB にしか接続せず、3 つのデータベースが必要になる。Terraform は単一の RDS インスタンスに 1 つのデータベースを作る構成のままで、provision タスクは identity DB しか初期化しない。crm / cms の DB は `db/crm/init` と `db/cms/init` の SQL を別途適用する必要があり、その仕組みは未整備。RDS で 3 つのデータベースを作るか、インスタンスを分けるかは移行時に決める。
-`*-web` の画面は React Router の SPA になり、本番は `react-router build` の成果物 `build/client` を `SPA_DIR` で BFF に配らせる。auth の画面も `apps/auth-web` の SPA になり、auth-api が `SPA_DIR=../auth-web/build/client` で配る。`Dockerfile` はまだ `react-router build` を実行せず、`pnpm deploy` で展開した `src/main.ts` を起動するだけのため、`*-web` のイメージに SPA が入らず、auth-api のイメージにも auth-web が入らない。auth-api のイメージは `*-web` と同じく auth-web をビルドして成果物を同梱し、`SPA_DIR` を渡す必要がある。`PUBLIC_SCHEME=https` の `*-web` と https の `ISSUER` の auth-api では `SPA_DIR` が必須で、欠けると起動に失敗する。イメージのビルドに SPA のビルドを含める作業も移行に含める。
+`*-web` の画面は React Router の SPA になり、本番は `react-router build` の成果物 `build/client` を `SPA_DIR` で BFF に配らせる。auth の画面も `apps/auth-web` の SPA になり、auth-api が配る。`Dockerfile` は crm-web / cms-web では自分の SPA、auth-api では auth-web を `react-router build` して `/app/spa` に同梱し、`ENV SPA_DIR=/app/spa` を設定済みのため、タスク定義で `SPA_DIR` を渡す必要はない。`*-api` と provision のイメージにも同じ `SPA_DIR` が入るが、これらは読まない。`PUBLIC_SCHEME=https` の `*-web` と https の `ISSUER` の auth-api では `SPA_DIR` が必須で、欠けると起動に失敗する。
 Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名、タスク定義の環境変数、Secrets Manager の client_secret と各 DB ロールのパスワード、3 つのデータベースを現在の構成へ移行する作業は別途行う。それまでこの手順で apply しても現在のアプリは起動しない。以下の Terraform に関する記述は旧構成のものをそのまま残している。
 
 ## 結論
@@ -38,11 +38,11 @@ crm-web / cms-web の `main.ts` は `packages/web-core` の起動関数を呼ぶ
 | --- | --- | --- |
 | auth-api | `ISSUER` `SIGNING_KEY_PEM` `REDIS_URL` `COGNITO_ADAPTER` | `https://auth.<domain>` / Secrets Manager の値 / `rediss://...` / `sdk`。`ISSUER` が https のため 4 つとも必須 |
 | auth-api | `DATABASE_URL` | identity DB。`postgres://sandbox_auth:<password>@<rds>/identity?sslmode=no-verify` |
-| auth-api | `SPA_DIR` | `../auth-web/build/client`。auth-web の `react-router build` の成果物を auth-api が配る。`ISSUER` が https のため必須で、`SPA_DEV_SERVER_URL` は使わない |
+| auth-api | `SPA_DIR` | イメージでは `/app/spa` が既定。auth-web の `react-router build` の成果物を auth-api が配る。`ISSUER` が https のため必須で、`SPA_DEV_SERVER_URL` は使わない |
 | crm-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `crm` / Secrets Manager の値。43 文字以上 / `CRM` / `crm.<domain>` / `https://api.crm.<domain>` |
 | cms-web | 同上 | `cms` / Secrets Manager の値。43 文字以上 / `CMS` / `cms.<domain>` / `https://api.cms.<domain>` |
 | crm-web / cms-web | `ISSUER` `REDIS_URL` | `https://auth.<domain>` / `rediss://...`。`PUBLIC_SCHEME` が https のため両方必須 |
-| crm-web / cms-web | `SPA_DIR` | `build/client`。`react-router build` の成果物を BFF が配る。`PUBLIC_SCHEME` が https のため必須で、`SPA_DEV_SERVER_URL` は使わない |
+| crm-web / cms-web | `SPA_DIR` | イメージでは `/app/spa` が既定。`react-router build` の成果物を BFF が配る。`PUBLIC_SCHEME` が https のため必須で、`SPA_DEV_SERVER_URL` は使わない |
 | crm-api | `API_BASE_URL` | `https://api.crm.<domain>`。そのまま aud になり、provision が oidc_clients.audience に書く `apiBaseUrl` と同じ値にする |
 | cms-api | `API_BASE_URL` | `https://api.cms.<domain>` |
 | crm-api / cms-api | `DATABASE_URL` | 自サービスの DB。`postgres://crm_app:<password>@<rds>/crm?sslmode=no-verify` / `postgres://cms_app:<password>@<rds>/cms?sslmode=no-verify`。identity DB には接続しない |
