@@ -2,14 +2,15 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Pool } from "pg";
-import { createLogger, hashSecret } from "@sandbox/shared";
+import { ulid } from "ulid";
+import { createLogger, createPool, hashSecret } from "@sandbox/shared";
 import { ensureCognitoUsers } from "./cognito-users.ts";
 import { loadConfig } from "./config.ts";
 import {
   SEED_CONTRACTS,
   SEED_MEMBERSHIPS,
   SEED_PROJECTS,
+  SEED_SERVICES,
   SEED_TENANTS,
   SEED_USERS,
 } from "./seed-data.ts";
@@ -20,7 +21,7 @@ import {
  * 1. ロールとスキーマを作る。db/init の 001 から 003 を順に適用する。冪等になるよう存在確認を挟む
  * 2. ロールのパスワードを Secrets Manager 由来の値に合わせる
  * 3. Cognito にテストユーザーを作り、実際の sub で users を投入する
- * 4. tenants / tenant_members / oidc_clients / tenant_services / projects を投入する
+ * 4. tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / projects を投入する
  */
 const logger = createLogger("provision");
 const config = loadConfig();
@@ -35,8 +36,9 @@ function resolveInitDir(): string {
   return found;
 }
 
-const pool = new Pool({ connectionString: config.DATABASE_URL, max: 2 });
-pool.on("error", (error) => logger.error("pool error", { message: error.message }));
+const pool = createPool(config.DATABASE_URL, logger, { max: 2 });
+const tenantBySlug = new Map(SEED_TENANTS.map((tenant) => [tenant.slug, tenant]));
+const serviceByClientId = new Map(SEED_SERVICES.map((service) => [service.clientId, service]));
 
 async function applySchema(): Promise<void> {
   const client = await pool.connect();
@@ -85,23 +87,11 @@ function escapeLiteral(value: string): string {
 }
 
 async function resolveSubs(): Promise<Map<string, string>> {
-  if (
-    config.COGNITO_REGION === undefined ||
-    config.COGNITO_USER_POOL_ID === undefined ||
-    config.SEED_USER_PASSWORD === undefined
-  ) {
+  if (config.COGNITO === undefined) {
     logger.warn("COGNITO_* is not set. Seeding users with fixed cognito_sub for mock adapter");
     return new Map(SEED_USERS.map((user) => [user.username, user.fallbackSub]));
   }
-  return ensureCognitoUsers(
-    SEED_USERS,
-    {
-      region: config.COGNITO_REGION,
-      userPoolId: config.COGNITO_USER_POOL_ID,
-      password: config.SEED_USER_PASSWORD,
-    },
-    logger,
-  );
+  return ensureCognitoUsers(SEED_USERS, config.COGNITO, logger);
 }
 
 async function seedIdentity(subs: Map<string, string>): Promise<Map<string, string>> {
@@ -118,7 +108,7 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (cognito_sub) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name
          RETURNING id`,
-        [fixedUserId(user.username), sub, user.email, user.name],
+        [user.id, sub, user.email, user.name],
       );
       userIds.set(user.username, String(result.rows[0].id));
     }
@@ -130,7 +120,7 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
       );
     }
     for (const membership of SEED_MEMBERSHIPS) {
-      const tenant = SEED_TENANTS.find((t) => t.slug === membership.tenantSlug);
+      const tenant = tenantBySlug.get(membership.tenantSlug);
       const userId = userIds.get(membership.username);
       if (tenant === undefined || userId === undefined)
         throw new Error("seed membership refs invalid");
@@ -141,42 +131,48 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
       );
     }
     for (const service of config.SERVICES) {
-      // Back-Channel Logout はテナントに依らずサービスのベースホストで受ける
-      const serviceOrigin = `${config.PUBLIC_SCHEME}://${service.baseHost}`;
+      const seed = serviceByClientId.get(service.clientId);
+      if (seed === undefined) throw new Error(`unknown service ${service.clientId}`);
+      // redirect_uri はテナントごとに登録せず、テンプレートをテナント slug で展開して完全一致させる
+      const template = `${config.PUBLIC_SCHEME}://{tenant}.${service.baseHost}/auth/callback`;
+      const backchannel = `${config.PUBLIC_SCHEME}://${service.baseHost}/auth/backchannel-logout`;
       await client.query(
-        `INSERT INTO identity.oidc_clients (client_id, client_secret_hash, name, audience, backchannel_logout_uri)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO identity.oidc_clients (id, client_id, name, audience, redirect_uri_template, backchannel_logout_uri)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (client_id) DO UPDATE
-           SET client_secret_hash = EXCLUDED.client_secret_hash,
-               name = EXCLUDED.name,
+           SET name = EXCLUDED.name,
                audience = EXCLUDED.audience,
+               redirect_uri_template = EXCLUDED.redirect_uri_template,
                backchannel_logout_uri = EXCLUDED.backchannel_logout_uri,
                status = 'active'`,
-        [
-          service.clientId,
-          hashSecret(service.clientSecret),
-          service.name,
-          service.apiBaseUrl,
-          `${serviceOrigin}/auth/backchannel-logout`,
-        ],
+        [seed.id, service.clientId, service.name, service.apiBaseUrl, template, backchannel],
       );
-      for (const tenant of SEED_TENANTS) {
-        const origin = `${config.PUBLIC_SCHEME}://${tenant.slug}.${service.baseHost}`;
-        await client.query(
-          `INSERT INTO identity.oidc_client_redirect_uris (client_id, redirect_uri, tenant_id)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (client_id, redirect_uri) DO UPDATE SET tenant_id = EXCLUDED.tenant_id`,
-          [service.clientId, `${origin}/auth/callback`, tenant.id],
-        );
-      }
+      // 渡された secret だけを有効にする。以前の secret は revoked にしてローテーションを完了させる
+      const hash = hashSecret(service.clientSecret);
+      await client.query(
+        `UPDATE identity.oidc_client_secrets
+            SET status = 'revoked', revoked_at = now()
+          WHERE oidc_client_id = $1 AND status = 'active' AND secret_hash <> $2`,
+        [seed.id, hash],
+      );
+      await client.query(
+        `INSERT INTO identity.oidc_client_secrets (id, oidc_client_id, secret_hash)
+         SELECT $1, $2, $3
+          WHERE NOT EXISTS (
+            SELECT 1 FROM identity.oidc_client_secrets
+             WHERE oidc_client_id = $2 AND secret_hash = $3 AND status = 'active')`,
+        [ulid(), seed.id, hash],
+      );
     }
     for (const contract of SEED_CONTRACTS) {
-      const tenant = SEED_TENANTS.find((t) => t.slug === contract.tenantSlug);
-      if (tenant === undefined) throw new Error(`unknown tenant ${contract.tenantSlug}`);
+      const tenant = tenantBySlug.get(contract.tenantSlug);
+      const service = serviceByClientId.get(contract.clientId);
+      if (tenant === undefined || service === undefined)
+        throw new Error(`unknown contract ${contract.tenantSlug}/${contract.clientId}`);
       await client.query(
-        `INSERT INTO identity.tenant_services (tenant_id, client_id) VALUES ($1, $2)
-         ON CONFLICT (tenant_id, client_id) DO UPDATE SET status = 'active'`,
-        [tenant.id, contract.clientId],
+        `INSERT INTO identity.tenant_services (tenant_id, oidc_client_id) VALUES ($1, $2)
+         ON CONFLICT (tenant_id, oidc_client_id) DO UPDATE SET status = 'active'`,
+        [tenant.id, service.id],
       );
     }
     await client.query("COMMIT");
@@ -190,23 +186,13 @@ async function seedIdentity(subs: Map<string, string>): Promise<Map<string, stri
   }
 }
 
-function fixedUserId(username: string): string {
-  // ローカルシードと同じ固定 ID。ULID 形式の 26 文字
-  const ids: Record<string, string> = {
-    alice: "01J0000000000000000000ALICE",
-    bob: "01J00000000000000000000BOB0",
-    carol: "01J0000000000000000000CAROL",
-  };
-  return ids[username] ?? `01J${username.toUpperCase().padStart(23, "0")}`;
-}
-
 async function seedProjects(userIds: Map<string, string>): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL ROLE sandbox_api");
     for (const project of SEED_PROJECTS) {
-      const tenant = SEED_TENANTS.find((t) => t.slug === project.tenantSlug);
+      const tenant = tenantBySlug.get(project.tenantSlug);
       const createdBy = userIds.get(project.createdBy);
       if (tenant === undefined || createdBy === undefined)
         throw new Error("seed project refs invalid");

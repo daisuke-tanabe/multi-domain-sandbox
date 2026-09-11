@@ -5,7 +5,7 @@
 AWS / Terraform 側はまだ旧構成のままである。旧構成ではテナントごとに OIDC Client を持ち、ホストは `tenant-a.<domain>` / `tenant-b.<domain>`、環境変数は `TENANT_CLIENTS` と `API_AUDIENCE` だった。
 アプリと `db/init` はサービス × テナントのモデルに移行済みで、ホストは `<tenant>.crm.<domain>` / `<tenant>.cms.<domain>` に変わっている。
 さらにアプリはサービスごとに web と api を分けた構成に変わっている。旧構成の auth-server / tenant-web / api-server / provision は auth-api / crm-web / crm-api / cms-web / cms-api / provision になった。`scripts/deploy.sh` と `Dockerfile` は新しいアプリ名でビルドするが、Terraform の ECR リポジトリ名、ECS サービス名、タスク定義、CloudWatch Logs のロググループ名は旧名のままで一致しない。
-環境変数も `*-web` の `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` と `*-api` の `API_HOST` に変わっており、旧構成の `TENANT_CLIENTS` と `API_AUDIENCE` はどのアプリも読まない。
+環境変数も `*-web` の `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` と `*-api` の `API_BASE_URL` に変わっており、旧構成の `TENANT_CLIENTS` と `API_AUDIENCE` はどのアプリも読まない。
 Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名、タスク定義の環境変数、Secrets Manager の client_secret を現在の構成へ移行する作業は別途行う。それまでこの手順で apply しても現在のアプリは起動しない。以下の Terraform に関する記述は旧構成のものをそのまま残している。
 
 ## 結論
@@ -30,15 +30,16 @@ Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名
 
 ローカルとの差分は環境変数だけで吸収する。`COOKIE_SECURE=true` で `__Host-` プレフィックス、`COGNITO_ADAPTER=sdk` で実 Cognito、`REDIS_URL` で Redis を使う。
 アプリ側で必要な環境変数は次のとおり。Terraform のタスク定義はまだこれらを渡していない。
+crm-web / cms-web / crm-api / cms-api の `main.ts` は `packages/service-web` と `packages/service-api` の起動関数を呼ぶだけで、環境変数のスキーマは `packages/service-web/src/config.ts` と `packages/service-api/src/config.ts` にある。`*-api` は `PUBLIC_SCHEME` を読まず、aud は `API_BASE_URL` そのものになる。
 
 | アプリ | 変数 | 本番の値の例 |
 | --- | --- | --- |
 | crm-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `crm` / Secrets Manager の値 / `CRM` / `crm.<domain>` / `https://api.crm.<domain>` |
 | cms-web | 同上 | `cms` / Secrets Manager の値 / `CMS` / `cms.<domain>` / `https://api.cms.<domain>` |
-| crm-api | `API_HOST` | `api.crm.<domain>` |
-| cms-api | `API_HOST` | `api.cms.<domain>` |
-| crm-web / cms-web / crm-api / cms-api / provision | `PUBLIC_SCHEME` | `https` |
-| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、redirect_uri、backchannel_logout_uri の投入に使う |
+| crm-api | `API_BASE_URL` | `https://api.crm.<domain>`。そのまま aud になり、provision が oidc_clients.audience に書く `apiBaseUrl` と同じ値にする |
+| cms-api | `API_BASE_URL` | `https://api.cms.<domain>` |
+| crm-web / cms-web / provision | `PUBLIC_SCHEME` | `https` |
+| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、`https://{tenant}.<baseHost>/auth/callback` の redirect_uri_template、oidc_client_secrets、backchannel_logout_uri の投入に使う。`clientSecret` は 32 バイト以上の乱数で、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする |
 
 ## 事前準備
 

@@ -1,5 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
-import { randomToken } from "@sandbox/shared";
+import { randomToken, timingSafeEqualString } from "@sandbox/shared";
 import { CSRF_TOKEN_TTL_SECONDS } from "../policy.ts";
 import type { AuthDeps } from "./deps.ts";
 
@@ -28,7 +27,5 @@ export async function verifyCsrfToken(
   if (cookieValue === undefined || formToken === undefined) return false;
   const stored = await deps.stores.csrfTokens.get(cookieValue);
   if (stored === undefined) return false;
-  const expected = Buffer.from(stored.token);
-  const actual = Buffer.from(formToken);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  return timingSafeEqualString(stored.token, formToken);
 }

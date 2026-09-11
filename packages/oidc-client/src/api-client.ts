@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "@sandbox/shared";
+import { err, isExpiredTokenChallenge, ok, type Result } from "@sandbox/shared";
 import type { OidcProvider } from "./provider.ts";
 import { destroySession, saveSession } from "./session.ts";
 import {
@@ -60,7 +60,10 @@ export async function apiFetch(
   if (!fresh.ok) return fresh;
 
   const response = await deps.fetch(url, withBearer(init, fresh.value.accessToken));
-  if (response.status !== 401 || !isExpiredTokenResponse(response)) {
+  if (
+    response.status !== 401 ||
+    !isExpiredTokenChallenge(response.headers.get("WWW-Authenticate"))
+  ) {
     return ok({ response, session: fresh.value });
   }
 
@@ -77,9 +80,4 @@ function withBearer(init: RequestInit, accessToken: string): RequestInit {
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${accessToken}`);
   return { ...init, headers };
-}
-
-function isExpiredTokenResponse(response: Response): boolean {
-  const challenge = response.headers.get("WWW-Authenticate") ?? "";
-  return challenge.includes("expired");
 }

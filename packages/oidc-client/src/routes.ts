@@ -1,100 +1,77 @@
 import { Hono, type Context } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
   computeCodeChallenge,
-  cookieName,
   generateCodeVerifier,
+  isAccessDeniedReason,
   randomToken,
   sanitizeReturnTo,
-  sessionCookieAttributes,
-  shortLivedCookieAttributes,
+  type AccessDeniedReason,
 } from "@sandbox/shared";
-import type { OidcProvider } from "./provider.ts";
-import { createSession, destroySession, destroySessionsBySid, loadSession } from "./session.ts";
 import {
-  COOKIE_PRE_AUTH,
-  COOKIE_SESSION,
-  PRE_AUTH_TTL_SECONDS,
-  type OidcClientConfig,
-  type OidcClientDeps,
-} from "./types.ts";
+  clearPreAuthCookie,
+  clearSessionCookie,
+  readPreAuthCookie,
+  readSessionCookie,
+  writePreAuthCookie,
+  writeSessionCookie,
+} from "./cookies.ts";
+import type { OidcEnv } from "./middleware.ts";
+import type { OidcProvider, ProviderError } from "./provider.ts";
+import { createSession, destroySession, destroySessionsBySid, loadSession } from "./session.ts";
+import { PRE_AUTH_TTL_SECONDS, type OidcClientConfig, type OidcClientDeps } from "./types.ts";
 
-export interface OidcRouteHooks {
-  /** アクセス権なし等のエラー画面。Tenant 側の見た目に合わせるため注入する */
-  readonly renderError: (
-    c: Context,
-    title: string,
-    message: string,
-    status: 400 | 401 | 403 | 500 | 503,
-  ) => Response | Promise<Response>;
-}
+export type ErrorStatus = 400 | 401 | 403 | 500 | 503;
 
-const PRE_AUTH_PATH = "/auth";
-
-function sessionCookieName(deps: OidcClientDeps): string {
-  return cookieName(COOKIE_SESSION, "host", deps.cookiePolicy);
-}
-
-function preAuthCookieName(deps: OidcClientDeps): string {
-  return cookieName(COOKIE_PRE_AUTH, "path", deps.cookiePolicy);
-}
-
-export function readSessionCookie(c: Context, deps: OidcClientDeps): string | undefined {
-  return getCookie(c, sessionCookieName(deps));
-}
-
-export function clearSessionCookie(c: Context, deps: OidcClientDeps): void {
-  deleteCookie(c, sessionCookieName(deps), { path: "/", secure: deps.cookiePolicy.secure });
-}
+/** アクセス権なし等のエラー画面。サービス側の見た目に合わせるため注入する */
+export type RenderError = (
+  c: Context,
+  title: string,
+  message: string,
+  status: ErrorStatus,
+) => Response | Promise<Response>;
 
 function preAuthKey(client: OidcClientConfig, id: string): string {
-  return `${client.clientId}:${client.tenantSlug}:${id}`;
+  return `${client.tenantSlug}:${id}`;
 }
 
 /**
  * /auth/login, /auth/callback, /auth/logout。docs/design/06-oidc-client-design.md に対応する。
+ * tenantContext の後に mount し、Client は c.get("tenantClient") から受け取る。
  */
 export function oidcRoutes(
   deps: OidcClientDeps,
   provider: OidcProvider,
-  hooks: OidcRouteHooks,
-): Hono {
-  const app = new Hono();
+  renderError: RenderError,
+): Hono<OidcEnv> {
+  const app = new Hono<OidcEnv>();
+  const retryLogin = (c: Context, message: string, status: 400 | 401 = 400) =>
+    renderError(c, "ログインをやり直してください", message, status);
+  const temporaryError = (c: Context, status: 500 | 503 = 503) =>
+    renderError(c, "一時的なエラーです", "しばらくしてから再試行してください。", status);
+
+  app.use(async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
 
   app.get("/auth/login", async (c) => {
-    const client = deps.resolveClient(c.req.header("host"));
-    if (client === undefined)
-      return hooks.renderError(c, "不明なテナントです", "このホストは登録されていません。", 400);
-
+    const client = c.get("tenantClient");
     const discovery = await provider.getDiscovery();
     if (!discovery.ok) {
       deps.logger.error("discovery failed", { reason: discovery.error.kind });
-      return hooks.renderError(
-        c,
-        "一時的なエラーです",
-        "しばらくしてから再試行してください。",
-        503,
-      );
+      return temporaryError(c);
     }
 
+    const preAuthId = randomToken();
     const codeVerifier = generateCodeVerifier();
     const preAuth = {
-      id: randomToken(),
-      clientId: client.clientId,
-      tenantSlug: client.tenantSlug,
       state: randomToken(),
       nonce: randomToken(),
       codeVerifier,
       returnTo: sanitizeReturnTo(c.req.query("return_to")),
-      createdAt: deps.clock.nowSeconds(),
     };
-    await deps.preAuth.set(preAuthKey(client, preAuth.id), preAuth, PRE_AUTH_TTL_SECONDS);
-    setCookie(
-      c,
-      preAuthCookieName(deps),
-      preAuth.id,
-      shortLivedCookieAttributes(deps.cookiePolicy, PRE_AUTH_PATH, PRE_AUTH_TTL_SECONDS),
-    );
+    await deps.preAuth.set(preAuthKey(client, preAuthId), preAuth, PRE_AUTH_TTL_SECONDS);
+    writePreAuthCookie(c, deps, preAuthId);
 
     const url = new URL(discovery.value.authorization_endpoint);
     url.searchParams.set("response_type", "code");
@@ -105,59 +82,36 @@ export function oidcRoutes(
     url.searchParams.set("nonce", preAuth.nonce);
     url.searchParams.set("code_challenge", computeCodeChallenge(codeVerifier));
     url.searchParams.set("code_challenge_method", "S256");
-    c.header("Cache-Control", "no-store");
     return c.redirect(url.toString());
   });
 
   app.get("/auth/callback", async (c) => {
-    c.header("Cache-Control", "no-store");
-    const client = deps.resolveClient(c.req.header("host"));
-    if (client === undefined)
-      return hooks.renderError(c, "不明なテナントです", "このホストは登録されていません。", 400);
-
-    const preAuthId = getCookie(c, preAuthCookieName(deps));
+    const client = c.get("tenantClient");
+    const preAuthId = readPreAuthCookie(c, deps);
+    // 一回限り。取得と同時に消す
     const preAuth =
-      preAuthId === undefined ? undefined : await deps.preAuth.get(preAuthKey(client, preAuthId));
-    deleteCookie(c, preAuthCookieName(deps), {
-      path: PRE_AUTH_PATH,
-      secure: deps.cookiePolicy.secure,
-    });
-    if (preAuthId === undefined || preAuth === undefined) {
-      return hooks.renderError(
-        c,
-        "ログインをやり直してください",
-        "ログイン要求の有効期限が切れています。",
-        400,
-      );
-    }
-    await deps.preAuth.delete(preAuthKey(client, preAuthId));
+      preAuthId === undefined
+        ? undefined
+        : await deps.preAuth.getAndDelete(preAuthKey(client, preAuthId));
+    clearPreAuthCookie(c, deps);
+    if (preAuth === undefined) return retryLogin(c, "ログイン要求の有効期限が切れています。");
 
     // state は code の有無に関わらず最初に検証する。CSRF とレスポンス差し替えを防ぐ
     if (c.req.query("state") !== preAuth.state) {
       deps.logger.warn("state mismatch on callback", { tenantSlug: client.tenantSlug });
-      return hooks.renderError(
-        c,
-        "ログインをやり直してください",
-        "ログイン要求が一致しません。",
-        400,
-      );
+      return retryLogin(c, "ログイン要求が一致しません。");
     }
     const issParam = c.req.query("iss");
     if (issParam !== undefined && issParam !== provider.issuer) {
       deps.logger.warn("iss mismatch on callback", { tenantSlug: client.tenantSlug });
-      return hooks.renderError(
-        c,
-        "ログインをやり直してください",
-        "ログイン要求が一致しません。",
-        400,
-      );
+      return retryLogin(c, "ログイン要求が一致しません。");
     }
 
     const errorParam = c.req.query("error");
     if (errorParam !== undefined) {
       return renderAuthorizationError(
         c,
-        hooks,
+        renderError,
         client,
         errorParam,
         c.req.query("error_description"),
@@ -165,15 +119,11 @@ export function oidcRoutes(
     }
 
     const code = c.req.query("code");
-    if (code === undefined || code === "") {
-      return hooks.renderError(c, "ログインをやり直してください", "認可コードがありません。", 400);
-    }
+    if (code === undefined || code === "") return retryLogin(c, "認可コードがありません。");
 
     const tokens = await provider.exchangeCode(client, code, preAuth.codeVerifier);
-    if (!tokens.ok) return renderTokenError(c, deps, hooks, tokens.error.kind);
-    if (tokens.value.id_token === undefined) {
-      return hooks.renderError(c, "ログインをやり直してください", "ID Token がありません。", 401);
-    }
+    if (!tokens.ok) return renderTokenError(c, tokens.error);
+    if (tokens.value.id_token === undefined) return retryLogin(c, "ID Token がありません。", 401);
 
     const claims = await provider.verifyIdToken(tokens.value.id_token, client, preAuth.nonce);
     if (!claims.ok) {
@@ -181,16 +131,15 @@ export function oidcRoutes(
         tenantSlug: client.tenantSlug,
         reason: claims.error.kind,
       });
-      return hooks.renderError(
-        c,
-        "ログインをやり直してください",
-        "認証結果を検証できませんでした。",
-        401,
-      );
+      return retryLogin(c, "認証結果を検証できませんでした。", 401);
     }
     const payload = claims.value;
-    if (typeof payload.sub !== "string" || typeof payload.sid !== "string") {
-      return hooks.renderError(c, "ログインをやり直してください", "認証結果が不完全です。", 401);
+    if (
+      typeof payload.sub !== "string" ||
+      typeof payload.sid !== "string" ||
+      typeof payload.tenant_id !== "string"
+    ) {
+      return retryLogin(c, "認証結果が不完全です。", 401);
     }
     // 発行されたテナントがこのホストのテナントと一致することを確かめる。code は redirect_uri に紐付くが二重に見る
     if (payload.tenant_slug !== client.tenantSlug) {
@@ -198,7 +147,7 @@ export function oidcRoutes(
         clientId: client.clientId,
         tenantSlug: client.tenantSlug,
       });
-      return hooks.renderError(c, "ログインをやり直してください", "テナントが一致しません。", 401);
+      return retryLogin(c, "テナントが一致しません。", 401);
     }
 
     // セッション固定攻撃対策。既存セッションは破棄して新しい ID を発行する
@@ -208,13 +157,13 @@ export function oidcRoutes(
     const session = await createSession(deps, {
       client,
       userId: payload.sub,
-      tenantId: typeof payload.tenant_id === "string" ? payload.tenant_id : null,
+      tenantId: payload.tenant_id,
       sid: payload.sid,
       email: typeof payload.email === "string" ? payload.email : null,
       name: typeof payload.name === "string" ? payload.name : null,
       tokens: tokens.value,
     });
-    setCookie(c, sessionCookieName(deps), session.id, sessionCookieAttributes(deps.cookiePolicy));
+    writeSessionCookie(c, deps, session.id);
     deps.logger.info("tenant session created", {
       tenantSlug: client.tenantSlug,
       userId: session.userId,
@@ -223,12 +172,8 @@ export function oidcRoutes(
   });
 
   app.post("/auth/logout", async (c) => {
-    c.header("Cache-Control", "no-store");
-    const client = deps.resolveClient(c.req.header("host"));
-    if (client === undefined)
-      return hooks.renderError(c, "不明なテナントです", "このホストは登録されていません。", 400);
-
-    const session = await loadSession(deps, client, readSessionCookie(c, deps));
+    const client = c.get("tenantClient");
+    const session = c.get("tenantSession");
     if (session === undefined) {
       clearSessionCookie(c, deps);
       return c.redirect("/");
@@ -236,7 +181,7 @@ export function oidcRoutes(
     const form = await c.req.parseBody();
     if (form.csrf !== session.csrfToken) {
       deps.logger.warn("logout csrf mismatch", { tenantSlug: client.tenantSlug });
-      return hooks.renderError(
+      return renderError(
         c,
         "ページを再読み込みしてください",
         "フォームの有効期限が切れています。",
@@ -259,9 +204,29 @@ export function oidcRoutes(
     return c.redirect("/?logged_out=1");
   });
 
-  /**
-   * OIDC Back-Channel Logout。Auth Server からのサーバー間 POST。Host ヘッダに依存せず aud で Client を決める。
-   */
+  function renderTokenError(c: Context, error: ProviderError): Response | Promise<Response> {
+    switch (error.kind) {
+      case "invalid_grant":
+        return retryLogin(c, "認可コードが無効です。", 401);
+      case "invalid_client":
+        deps.logger.error("client authentication failed. check client secret configuration");
+        return temporaryError(c, 500);
+      default:
+        deps.logger.error("token request failed", { reason: error.kind });
+        return temporaryError(c);
+    }
+  }
+
+  return app;
+}
+
+/**
+ * OIDC Back-Channel Logout。Auth Server からのサーバー間 POST。
+ * Host ヘッダに依存せず aud で Client を決めるため、tenantContext の前に mount する。
+ */
+export function backchannelRoutes(deps: OidcClientDeps, provider: OidcProvider): Hono {
+  const app = new Hono();
+
   app.post("/auth/backchannel-logout", async (c) => {
     c.header("Cache-Control", "no-store");
     const form = await c.req.parseBody();
@@ -277,7 +242,7 @@ export function oidcRoutes(
     const client = deps.resolveClientById(verified.value.audience);
     if (client === undefined) return c.json({ error: "invalid_request" }, 400);
 
-    const removed = await destroySessionsBySid(deps, client.clientId, verified.value.sid);
+    const removed = await destroySessionsBySid(deps, verified.value.sid);
     deps.logger.info("backchannel logout applied", { clientId: client.clientId, removed });
     return c.body(null, 200);
   });
@@ -287,58 +252,33 @@ export function oidcRoutes(
 
 function renderAuthorizationError(
   c: Context,
-  hooks: OidcRouteHooks,
+  renderError: RenderError,
   client: OidcClientConfig,
   errorParam: string,
   description: string | undefined,
 ): Response | Promise<Response> {
   if (errorParam !== "access_denied") {
-    return hooks.renderError(c, "ログインに失敗しました", "サービスからやり直してください。", 400);
+    return renderError(c, "ログインに失敗しました", "サービスからやり直してください。", 400);
   }
-  switch (description) {
+  const reason: AccessDeniedReason | undefined = isAccessDeniedReason(description)
+    ? description
+    : undefined;
+  switch (reason) {
     case "not_contracted":
-      return hooks.renderError(
+      return renderError(
         c,
         "このサービスは契約されていません",
         `テナント ${client.tenantSlug} は ${client.name} を契約していません。契約状況を確認してください。`,
         403,
       );
     case "tenant_suspended":
-      return hooks.renderError(c, "テナントは利用停止中です", "管理者に確認してください。", 403);
+      return renderError(c, "テナントは利用停止中です", "管理者に確認してください。", 403);
     default:
-      return hooks.renderError(
+      return renderError(
         c,
         "アクセス権がありません",
         `テナント ${client.tenantSlug} へのアクセス権がありません。管理者に招待を依頼してください。`,
         403,
-      );
-  }
-}
-
-function renderTokenError(
-  c: Context,
-  deps: OidcClientDeps,
-  hooks: OidcRouteHooks,
-  kind: string,
-): Response | Promise<Response> {
-  switch (kind) {
-    case "invalid_grant":
-      return hooks.renderError(c, "ログインをやり直してください", "認可コードが無効です。", 401);
-    case "invalid_client":
-      deps.logger.error("client authentication failed. check client secret configuration");
-      return hooks.renderError(
-        c,
-        "一時的なエラーです",
-        "しばらくしてから再試行してください。",
-        500,
-      );
-    default:
-      deps.logger.error("token request failed", { reason: kind });
-      return hooks.renderError(
-        c,
-        "一時的なエラーです",
-        "しばらくしてから再試行してください。",
-        503,
       );
   }
 }

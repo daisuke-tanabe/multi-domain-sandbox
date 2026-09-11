@@ -2,13 +2,13 @@ import type { KeyValueStore } from "@sandbox/shared";
 
 /**
  * 揮発ストアの型。docs/design/05-data-model.md の Session Store に対応する。
+ * 寿命はストアの TTL で管理し、値には持たない。
  */
 export interface SsoSession {
   readonly id: string;
   /** ID Token に載せる公開識別子。id とは別値 */
   readonly sid: string;
   readonly userId: string;
-  readonly cognitoSub: string;
   /** 暗号化済み */
   readonly encryptedCognitoTokens: string;
   readonly authTime: number;
@@ -17,15 +17,15 @@ export interface SsoSession {
   readonly authorizedClients: ReadonlyArray<string>;
 }
 
+/** /authorize で検証済みのリクエスト。ログイン後に再検証せずそのまま code 発行に使う */
 export interface AuthorizationRequest {
-  readonly rid: string;
   readonly clientId: string;
+  readonly tenantId: string;
   readonly redirectUri: string;
   readonly scope: string;
   readonly state: string;
   readonly nonce: string;
   readonly codeChallenge: string;
-  readonly createdAt: number;
 }
 
 export type AuthorizationCode =
@@ -38,11 +38,10 @@ export type AuthorizationCode =
       readonly nonce: string;
       readonly codeChallenge: string;
       readonly userId: string;
-      readonly tenantId: string | null;
+      readonly tenantId: string;
       readonly sid: string;
       readonly ssoSessionId: string;
       readonly authTime: number;
-      readonly createdAt: number;
     }
   | {
       /** 再利用検知用。交換時に発行した Refresh Token の系列を保持する */
@@ -58,19 +57,12 @@ export interface RefreshToken {
   readonly familyId: string;
   readonly clientId: string;
   readonly userId: string;
-  readonly tenantId: string | null;
+  readonly tenantId: string;
   readonly sid: string;
   readonly ssoSessionId: string;
   readonly scope: string;
   readonly authTime: number;
   readonly status: RefreshTokenStatus;
-  readonly createdAt: number;
-}
-
-export interface RefreshTokenFamily {
-  readonly familyId: string;
-  readonly tokens: ReadonlyArray<string>;
-  readonly revoked: boolean;
 }
 
 export interface CsrfToken {
@@ -84,7 +76,8 @@ export interface AuthStores {
   readonly authorizationRequests: KeyValueStore<AuthorizationRequest>;
   readonly authorizationCodes: KeyValueStore<AuthorizationCode>;
   readonly refreshTokens: KeyValueStore<RefreshToken>;
-  readonly refreshTokenFamilies: KeyValueStore<RefreshTokenFamily>;
+  /** familyId → その系列で発行した Refresh Token の一覧。一括失効に使う */
+  readonly refreshTokenFamilies: KeyValueStore<ReadonlyArray<string>>;
   readonly csrfTokens: KeyValueStore<CsrfToken>;
   /** sid → Refresh Token 系列 ID の一覧。Global Logout で一括失効する */
   readonly sidRefreshFamilies: KeyValueStore<ReadonlyArray<string>>;

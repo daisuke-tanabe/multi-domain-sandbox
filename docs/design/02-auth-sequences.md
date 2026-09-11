@@ -17,9 +17,9 @@ Front Channel を通るのは code と state のみ。Cognito Token、ID Token�
 | SuzukiCms | suzuki.cms.sandbox.com。契約がないテナント × サービス |
 | Auth | auth.sandbox.com。Auth Server |
 | Cognito | Amazon Cognito User Pool |
-| IdDB | Identity DB。users / tenants / tenant_members / oidc_clients / oidc_client_redirect_uris / tenant_services |
+| IdDB | Identity DB。users / tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services |
 | SsoStore | SSO Session Store、Auth Code Store、Refresh Token Store |
-| Sess | Tenant Session Store。キーは `<clientId>:<tenantSlug>:<sessionId>` |
+| Sess | Tenant Session Store。サービスごとに `<clientId>:sess` のプレフィックスで作り、キーは `<tenantSlug>:<sessionId>`。図中の `crm:tanaka:T1` や `crm:sid:<sid>` はプレフィックスとキーを続けて書いた略記 |
 | ApiCrm | api.crm.sandbox.com |
 
 ユーザーは alice。tanaka の owner かつ suzuki の viewer。
@@ -48,7 +48,8 @@ sequenceDiagram
     Browser->>Auth: GET /authorize?...
     Note over Auth: sso_session Cookieなし
     Auth->>IdDB: oidc_clients から client_id=crm を取得
-    Auth->>IdDB: oidc_client_redirect_uris で (crm, redirect_uri) を完全一致検索<br/>tenant_id → tenants から tanaka を解決
+    Auth->>Auth: redirect_uri を crm の redirect_uri_template に当てて slug=tanaka を取り出す<br/>前後の完全一致と slug 形式を検証
+    Auth->>IdDB: tenants を slug=tanaka で検索 → tenant_id
     Auth->>Auth: response_type=code / scope / PKCE必須 を検証
     Auth->>SsoStore: 認可リクエスト保存<br/>{rid, client_id, redirect_uri, tenant_id, scope, state, nonce, code_challenge} TTL 30分
     Auth-->>Browser: 302 /login?rid=R1
@@ -61,7 +62,7 @@ sequenceDiagram
     Cognito-->>Auth: AuthenticationResult<br/>{AccessToken, IdToken, RefreshToken}
     Auth->>Auth: Cognito IdToken 検証<br/>署名(Cognito JWKS) / iss / aud / exp / token_use
     Auth->>IdDB: users を cognito_sub で検索。なければJIT作成
-    Auth->>SsoStore: SSO Session作成<br/>{sso_session_id, sid, user_id, cognito_sub,<br/>cognito_tokens(暗号化), auth_time, authorized_clients:[]}
+    Auth->>SsoStore: SSO Session作成<br/>{sso_session_id, sid, user_id,<br/>cognito_tokens(暗号化), auth_time, authorized_clients:[]}
     Note over Auth: Cognito Tokenはここから外に出さない
     Auth->>IdDB: アクセス判定。users.status → tenants.status<br/>→ tenant_services (tanaka, crm) → tenant_members (tanaka, user_id)
     alt 判定失敗
@@ -76,7 +77,7 @@ sequenceDiagram
     TanakaCrm->>Sess: pre-auth P1 を取得
     TanakaCrm->>TanakaCrm: state == S1 を検証
     TanakaCrm->>Auth: POST /token (Back Channel)<br/>Authorization: Basic base64(crm:crm-secret)<br/>grant_type=authorization_code&code=AC1<br/>&redirect_uri=https://tanaka.crm.sandbox.com/auth/callback<br/>&code_verifier=V1
-    Auth->>IdDB: client認証。client_secret ハッシュ照合
+    Auth->>IdDB: client認証。oidc_client_secrets の active な行のいずれかとハッシュ照合
     Auth->>SsoStore: code AC1 を取得し used=true に更新。アトミック
     Auth->>Auth: 未使用 / 期限内 / client_id一致 / redirect_uri一致<br/>BASE64URL(SHA256(V1)) == code_challenge
     Auth->>SsoStore: Refresh Token発行。{rt, user_id, tenant_id, sid, client_id:crm}
@@ -95,7 +96,7 @@ sequenceDiagram
 要点。
 
 - code は60秒、一回限り。使用済み化を先に行ってから検証結果を返す
-- 認可リクエストのテナントは client_id と redirect_uri の組から Auth Server が解決する。Tenant Web Application はテナントを申告しない
+- 認可リクエストのテナントは client_id と redirect_uri の組から Auth Server が解決する。redirect_uri をサービスの redirect_uri_template に当てて slug を取り出し、tenants を引く。Tenant Web Application はテナントを申告しない
 - アクセス判定は Cognito 認証成功後、code 発行前に行う。契約がないサービス、所属していないテナントには code を発行しない
 - 認証は成功しているため SSO Session は作成する。アクセスできるテナントへ移動すればログイン画面なしで入れる
 - ブラウザに渡るのは Cookie のみ。access_token / refresh_token は TanakaCrm のサーバー側セッションに保存する
@@ -124,7 +125,7 @@ sequenceDiagram
     Browser->>Auth: GET /authorize?...<br/>Cookie: sso_session=X1 (auth.sandbox.com宛てなので自動送信)
     Auth->>SsoStore: sso_session X1 を検証。アイドル / 絶対期限内
     Note over Auth: SSO Session有効 → Cognito再認証もログインUIも不要
-    Auth->>IdDB: client_id=crm の取得。redirect_uri から tenant=suzuki を解決
+    Auth->>IdDB: client_id=crm の取得。redirect_uri をテンプレートに当てて slug=suzuki → tenants から解決
     Auth->>IdDB: アクセス判定。users → tenants → tenant_services (suzuki, crm) → tenant_members (suzuki, user_id)
     alt 判定失敗
         Auth-->>Browser: 302 https://suzuki.crm.sandbox.com/auth/callback?error=access_denied&error_description=<理由>&state=S2
@@ -164,7 +165,7 @@ sequenceDiagram
     Note over TanakaCms: tenant_session Cookieなし。tanaka.crm とは別ホスト
     TanakaCms-->>Browser: 302 https://auth.sandbox.com/authorize<br/>?client_id=cms&redirect_uri=https://tanaka.cms.sandbox.com/auth/callback&...
     Browser->>Auth: GET /authorize?... Cookie: sso_session=X1
-    Auth->>IdDB: client_id=cms の取得。redirect_uri から tenant=tanaka を解決
+    Auth->>IdDB: client_id=cms の取得。redirect_uri をテンプレートに当てて slug=tanaka → tenants から解決
     Auth->>IdDB: アクセス判定。tenant_services (tanaka, cms) あり。tenant_members (tanaka, user_id) あり
     Auth->>SsoStore: authorized_clients に cms を追加。code 発行 {client_id:cms, tenant_id:tanaka, sid}
     Auth-->>Browser: 302 https://tanaka.cms.sandbox.com/auth/callback?code=AC3&state=S3
@@ -177,7 +178,7 @@ sequenceDiagram
 
 ### 2.3 契約のないサービス。suzuki.cms.sandbox.com へアクセス
 
-redirect_uri は登録済みだが suzuki は cms を契約していない。
+redirect_uri は cms のテンプレートに一致し suzuki も tenants にあるが、suzuki は cms を契約していない。
 
 ```mermaid
 sequenceDiagram
@@ -191,7 +192,7 @@ sequenceDiagram
     Browser->>SuzukiCms: GET /
     SuzukiCms-->>Browser: 302 /authorize?client_id=cms&redirect_uri=https://suzuki.cms.sandbox.com/auth/callback&state=S4...
     Browser->>Auth: GET /authorize?... Cookie: sso_session=X1
-    Auth->>IdDB: redirect_uri から tenant=suzuki を解決。登録済みなので 400 にはしない
+    Auth->>IdDB: redirect_uri をテンプレートに当てて slug=suzuki → tenants にあるので 400 にはしない
     Auth->>IdDB: アクセス判定。tenant_services (suzuki, cms) なし
     Auth->>SsoStore: lastSeenAt更新。SSO Session は維持
     Auth-->>Browser: 302 https://suzuki.cms.sandbox.com/auth/callback<br/>?error=access_denied&error_description=not_contracted&state=S4
@@ -221,9 +222,11 @@ auth.sandbox.com       → SSO Session 1つ。authorized_clients = [crm, cms]
 flowchart TD
     A["GET /authorize"] --> B{"client_id が<br/>oidc_clients に存在?"}
     B -- no --> E1["400 エラー画面<br/>リダイレクトしない"]
-    B -- yes --> C{"(client_id, redirect_uri) が<br/>oidc_client_redirect_uris に<br/>完全一致で存在?"}
+    B -- yes --> C{"redirect_uri が<br/>redirect_uri_template に一致?<br/>前後完全一致 + 中間が slug 形式"}
     C -- no --> E1
-    C -- yes --> C2["redirect_uri の tenant_id から<br/>テナントを解決"]
+    C -- yes --> C1{"slug が tenants に存在?"}
+    C1 -- no --> E1
+    C1 -- yes --> C2["そのテナントを<br/>認可リクエストのテナントとする"]
     C2 --> D{"response_type=code<br/>scope に openid<br/>code_challenge_method=S256?"}
     D -- no --> E2["302 redirect_uri<br/>?error=invalid_request&state"]
     D -- yes --> F{"sso_session Cookie<br/>が有効?"}
@@ -244,13 +247,13 @@ flowchart TD
     K --> L["302 redirect_uri?code&state"]
 ```
 
-redirect_uri に tenant_id がない場合はテナントに紐付かない戻り先であり、users.status の確認だけで許可する。Access Token に tenant_id は載らない。
+テンプレートに一致しない redirect_uri と、一致しても slug が tenants にない redirect_uri はどちらも `invalid_redirect_uri` で、E1 のとおりリダイレクトしない。テナントに紐付かない戻り先は存在せず、すべての認可はテナントに紐付く。user → tenant → 契約 → Membership の判定は、user・契約・Membership を並列に取得したうえでこの順に評価する。
 
 ### 3.2 /token の判定フロー。grant_type=authorization_code
 
 ```mermaid
 flowchart TD
-    A["POST /token"] --> B{"client_secret_basic<br/>で client 認証成功?"}
+    A["POST /token"] --> B{"client_secret_basic<br/>で client 認証成功?<br/>active な secret のいずれかに一致"}
     B -- no --> E1["401 invalid_client"]
     B -- yes --> C["code をストアから取得し<br/>アトミックに used=true へ"]
     C --> D{"code が存在し<br/>更新前 used=false?"}
@@ -319,10 +322,10 @@ sequenceDiagram
     Browser->>TanakaCrm: GET /projects (tenant_session=T1)
     TanakaCrm->>Sess: セッション crm:tanaka:T1 取得。access_token を取り出す
     TanakaCrm->>ApiCrm: GET /v1/projects<br/>Host: api.crm.sandbox.com<br/>Authorization: Bearer <access_token>
-    ApiCrm->>ApiCrm: Host から aud=https://api.crm.sandbox.com を導く<br/>未知の Host なら 404
+    ApiCrm->>ApiCrm: Host が aud=https://api.crm.sandbox.com のホストと一致するか確認<br/>違えば 404
     ApiCrm->>ApiCrm: JWT検証<br/>署名(Auth JWKS, kid) / iss / aud / exp
-    ApiCrm->>ApiCrm: claims から sub(user_id), tenant_id, sid を取得
-    ApiCrm->>IdDB: tenant_members で (tenant_id, user_id) を検索し role を取得
+    ApiCrm->>ApiCrm: claims から sub(user_id), tenant_id を取得
+    ApiCrm->>IdDB: users / tenants / tenant_members を 1 回の JOIN で取得<br/>user active → tenant active → membership active の順に判定
     alt Membershipなし
         ApiCrm-->>TanakaCrm: 403 {error: forbidden}
     end
@@ -474,10 +477,11 @@ sequenceDiagram
         WebCms->>WebCms: cms:sid:<sid> から tanaka の Tenant Session を削除
         WebCms-->>Auth: 200
     end
-    Auth-->>Browser: 200 ログアウト完了ページ<br/>「CRM (tanaka) に戻る」→ https://tanaka.crm.sandbox.com/<br/>Set-Cookie: sso_session=; Max-Age=0
+    Auth-->>Browser: 200 ログアウト完了ページ<br/>「CRM (tanaka) に戻る」→ https://tanaka.crm.sandbox.com/<br/>crm の redirect_uri_template を tenant=tanaka で展開した origin<br/>Set-Cookie: sso_session=; Max-Age=0
 ```
 
 通知先は SSO Session の authorized_clients に含まれるサービス。サービスは logout_token の sid で、テナントを問わず自サービスの全セッションを削除する。
+戻り先のリンクは `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin から導く。`tenant` は確認画面の hidden フィールドで POST まで引き継ぐ。
 通知に失敗したサービスの Tenant Session は、Access Token 期限切れ後の Refresh で `invalid_grant` となり自然に失効する。最大遅延は Access Token 寿命の15分。
 
 ## 12. 異常系。認可レスポンスの改ざんと再利用
@@ -510,8 +514,15 @@ sequenceDiagram
     rect rgb(255, 240, 240)
     Note over Attacker,SsoStore: ケースC: redirect_uri不一致 (Open Redirect)
     Attacker->>Auth: GET /authorize?client_id=crm&redirect_uri=https://evil.example/cb
-    Auth->>Auth: (crm, redirect_uri) が登録にない
+    Auth->>Auth: crm の redirect_uri_template に一致しない
     Auth-->>Attacker: 400 エラー画面。evil.example へはリダイレクトしない
+    end
+
+    rect rgb(255, 240, 240)
+    Note over Attacker,SsoStore: ケースC2: 未登録テナントの slug
+    Attacker->>Auth: GET /authorize?client_id=crm&redirect_uri=https://nobody.crm.sandbox.com/auth/callback
+    Auth->>Auth: テンプレートには一致するが slug=nobody が tenants にない
+    Auth-->>Attacker: 400 エラー画面。nobody.crm へはリダイレクトしない
     end
 
     rect rgb(255, 240, 240)

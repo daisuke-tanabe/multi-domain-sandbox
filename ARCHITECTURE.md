@@ -15,16 +15,17 @@ apps/crm-web          <tenant>.crm.sandbox.com。CRM の Web。BFF として Coo
 apps/crm-api          api.crm.sandbox.com。CRM の Resource Server
 apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ構成
 apps/cms-api          api.cms.sandbox.com。CMS の Resource Server
-packages/shared       Result 型、ストア抽象、暗号、JWT、Cookie、ロガー
+packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
-packages/service-web  *-web の Hono アプリ本体。画面、API 呼び出し、設定スキーマ
-packages/service-api  *-api の Hono アプリ本体。Token 検証、Membership 認可、routes、adapters
+packages/service-web  *-web の Hono アプリ本体。画面、API 呼び出し、設定スキーマ、起動関数
+packages/service-api  *-api の Hono アプリ本体。Token 検証、Membership 認可、routes、adapters、設定スキーマ、起動関数
 tools/provision       AWS 専用。RDS のスキーマ作成、Cognito テストユーザー作成、シード投入
 db/                   PostgreSQL の初期化 SQL とシード
 docs/                 仕様と設計
 ```
 
-apps は起動と設定の組み立てだけを持つ。サービスごとに web と api を 1 プロセスずつ動かし、実装は packages に置いて共有する。
+apps/crm-web / cms-web / crm-api / cms-api はエントリポイントだけを持つ。`main.ts` は `startServiceWeb("crm-web")` や `startServiceApi("crm-api")` を呼ぶ 2 行で、設定スキーマと依存の組み立ては `packages/service-web/src/config.ts` `start.ts` と `packages/service-api/src/config.ts` `start.ts` にある。
+サービスごとに web と api を 1 プロセスずつ動かし、実装は packages に置いて共有する。
 サービスを増やすときは apps に web と api を 1 組追加し、`.env` でサービス固有の値を渡す。
 `*-web` はクライアントを意味する。ただし Token と Cookie をブラウザへ出さない BFF 方式のため、画面の配信と `/auth/*`、API 中継を担う薄いサーバーは必ず残す。
 
@@ -38,7 +39,7 @@ apps は起動と設定の組み立てだけを持つ。サービスごとに we
 | バリデーション | zod + @hono/zod-validator | システム境界の入力は必ずスキーマで検証する |
 | JWT / JWKS | jose | 自前実装禁止 |
 | DB | PostgreSQL 16 on Docker。pg ドライバで素の SQL | ORM は使わない |
-| Session / Code Store | `KeyValueStore` インターフェース。ローカルはインメモリ | Redis 実装は同じインターフェースで差し替える |
+| Session / Code Store | `KeyValueStore` インターフェース。ローカルはインメモリ | `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替える。auth-api と `*-web` で共通 |
 | Cognito | `CognitoAuthenticator` インターフェース。ローカルはモック | 本番アダプタは雛形のみ |
 | テスト | Vitest | `app.request()` でサーバー起動なしに検証 |
 | Lint / Format | oxlint / oxfmt | PostToolUse hook で自動適用 |
@@ -56,7 +57,7 @@ apps は起動と設定の組み立てだけを持つ。サービスごとに we
 | api.cms.localhost | 3004 | cms-api |
 
 Auth への サーバー間通信は DNS に依存しないよう `127.0.0.1:3000` を内部 URL として設定し、公開 URL とは別に持つ。
-web から api への呼び出しは公開 URL をそのまま使う。api は Host から aud を決めるため、ホスト名を変えて呼んではならない。
+web から api への呼び出しは公開 URL をそのまま使う。api は aud を `API_BASE_URL` に固定し、Host がそのホストと違えば 404 にするため、ホスト名を変えて呼んではならない。
 
 ## レイヤー規約
 
@@ -64,7 +65,7 @@ web から api への呼び出しは公開 URL をそのまま使う。api は H
 
 ```text
 src/
-  main.ts            起動。設定読み込みと依存の組み立て
+  main.ts            起動。設定読み込みと依存の組み立て。packages では start.ts が担い、apps の main.ts はそれを呼ぶだけ
   app.ts             Hono アプリの組み立て。テストから import する
   config.ts          環境変数の検証と型付き設定
   routes/            HTTP ハンドラ。入力検証と応答のみ
@@ -75,7 +76,8 @@ src/
 
 - routes は ports を直接呼ばず usecases を呼ぶ
 - usecases は adapters を import しない。ports だけに依存する
-- main.ts でのみ adapters を組み立てる
+- main.ts と start.ts でのみ adapters を組み立てる
+- `*-api` の認証は `usecases/resolve-tenant-context.ts` に置く。Host 確認、Bearer 検証、user / tenant / membership の取得と判定までを usecase が行い、`auth/middleware.ts` はその Result を HTTP ステータスに写像するだけにする
 
 ## エラー規約
 
@@ -88,14 +90,22 @@ src/
 
 - Cookie は `docs/design/03-cookie-design.md` に従う。本番は `__Host-` 必須
 - Token は `docs/design/04-token-design.md` に従う。ブラウザへ渡さない
-- redirect_uri は完全一致。不一致時はリダイレクトしない
+- redirect_uri は完全一致。不一致時はリダイレクトしない。登録はサービスごとの `redirect_uri_template` で行い、`{tenant}` をテナント slug で展開した文字列と比較する
+- client_secret はサービスごとに複数持てる。ローテーションは新 secret を追加してから旧 secret を revoked にする
 - API の tenant_id は Access Token 由来のみ。リクエストの値を認可に使わない
 - Repository は tenant_id を必須引数に取る
+
+## DB 規約
+
+- 主キーはサロゲート ID。ULID を TEXT で保存する。`client_id` や `slug` のような公開識別子は UNIQUE 制約で守り、外部キーには使わない
+- 関連テーブルの主キーは参照する 2 つのサロゲート ID の組にする
+- 外部キーの逆引きにはインデックスを張る
+- `updated_at` はトリガーで更新する。アプリ側で更新しない
 
 ## 環境変数
 
 - 各アプリは `.env.example` を持つ。`.env` は git 管理外
-- 起動時に zod で検証し、不足があれば起動を失敗させる
+- 起動時に zod で検証し、不足があれば起動を失敗させる。検証は `packages/shared` の `parseEnv` に zod スキーマを渡して行い、`envBoolean` `jsonArrayEnv` `publicSchemeEnv` を再利用する
 - 開発時の既定値はコード側に持たせず `.env.example` に書く
 
 ## 命名

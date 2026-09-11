@@ -11,6 +11,7 @@ import {
   TANAKA_CRM_ORIGIN,
   visitedPaths,
 } from "../packages/service-web/src/test-support.ts";
+import { createReporter } from "./check-reporter.ts";
 
 /**
  * 起動中の 3 サーバーと PostgreSQL に対して、実 HTTP でログインから SSO、Tenant Logout までを通す。
@@ -19,12 +20,7 @@ import {
 const dispatch = (url: URL, init: RequestInit = {}): Promise<Response> =>
   fetch(url, { ...init, redirect: "manual" });
 
-const results: Array<{ name: string; ok: boolean; detail?: string }> = [];
-
-function check(name: string, ok: boolean, detail?: string): void {
-  results.push({ name, ok, ...(detail !== undefined && { detail }) });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail === undefined ? "" : `  (${detail})`}`);
-}
+const { check, finish } = createReporter();
 
 const discovery = await fetch(`${AUTH_ORIGIN}/.well-known/openid-configuration`);
 check("discovery document is served", discovery.status === 200);
@@ -118,6 +114,4 @@ const exposed = cookieHosts.some((host) =>
 );
 check("no JWT is stored in browser cookies", !exposed);
 
-const failed = results.filter((result) => !result.ok);
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-process.exit(failed.length === 0 ? 0 : 1);
+finish();

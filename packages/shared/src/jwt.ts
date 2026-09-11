@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   SignJWT,
   createLocalJWKSet,
+  errors as joseErrors,
   decodeProtectedHeader,
   exportJWK,
   generateKeyPair,
@@ -12,6 +13,7 @@ import {
   type JWTPayload,
   type JSONWebKeySet,
 } from "jose";
+import type { Clock } from "./clock.ts";
 import { err, ok, type Result } from "./result.ts";
 
 /**
@@ -79,17 +81,33 @@ export function signJwt(key: SigningKey, options: SignOptions): Promise<string> 
     .sign(key.privateKey);
 }
 
-export type VerifyError = { kind: "invalid_token"; reason: string };
+/** 期限切れだけは呼び出し側が Refresh の判断に使うため区別する */
+export type VerifyError =
+  | { readonly kind: "expired" }
+  | { readonly kind: "invalid_token"; readonly reason: string };
 
 export interface VerifyOptions {
   readonly issuer: string;
   /** 省略時は aud を検証しない。呼び出し側で aud を別途検証すること */
   readonly audience?: string;
-  readonly currentDate?: Date;
+  /** 省略時はシステム時刻 */
+  readonly clock?: Clock;
   readonly clockToleranceSeconds?: number;
 }
 
 const DEFAULT_CLOCK_TOLERANCE_SECONDS = 30;
+
+// createLocalJWKSet は呼ぶたびに公開鍵を import し直すため、JWKS オブジェクトごとに使い回す
+const localKeySets = new WeakMap<JSONWebKeySet, ReturnType<typeof createLocalJWKSet>>();
+
+function localKeySet(jwks: JSONWebKeySet): ReturnType<typeof createLocalJWKSet> {
+  let keySet = localKeySets.get(jwks);
+  if (keySet === undefined) {
+    keySet = createLocalJWKSet(jwks);
+    localKeySets.set(jwks, keySet);
+  }
+  return keySet;
+}
 
 /**
  * JWKS で JWT を検証する。alg は RS256 のみ許可する。
@@ -100,16 +118,18 @@ export async function verifyJwt(
   options: VerifyOptions,
 ): Promise<Result<JWTPayload, VerifyError>> {
   try {
-    const keySet = createLocalJWKSet(jwks);
-    const { payload } = await jwtVerify(token, keySet, {
+    const { payload } = await jwtVerify(token, localKeySet(jwks), {
       algorithms: [SIGNING_ALGORITHM],
       issuer: options.issuer,
       ...(options.audience !== undefined && { audience: options.audience }),
       clockTolerance: options.clockToleranceSeconds ?? DEFAULT_CLOCK_TOLERANCE_SECONDS,
-      ...(options.currentDate !== undefined && { currentDate: options.currentDate }),
+      ...(options.clock !== undefined && {
+        currentDate: new Date(options.clock.nowSeconds() * 1000),
+      }),
     });
     return ok(payload);
   } catch (error: unknown) {
+    if (error instanceof joseErrors.JWTExpired) return err({ kind: "expired" });
     return err({
       kind: "invalid_token",
       reason: error instanceof Error ? error.message : "unknown",

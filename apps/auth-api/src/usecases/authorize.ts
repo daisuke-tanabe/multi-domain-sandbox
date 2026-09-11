@@ -1,17 +1,10 @@
-import { err, ok, randomToken, type Result } from "@sandbox/shared";
+import { err, ok, randomToken, type AccessDeniedReason, type Result } from "@sandbox/shared";
 import { AUTHORIZATION_CODE_TTL_SECONDS } from "../policy.ts";
-import type { IdentityRepository, OidcClient, Tenant } from "../ports/identity-repository.ts";
+import type { IdentityRepository, OidcClient, Tenant, User } from "../ports/identity-repository.ts";
 import type { AuthorizationCode, SsoSession } from "../ports/stores.ts";
 import type { ValidatedAuthorizationRequest } from "./authorization-request.ts";
 import type { AuthDeps } from "./deps.ts";
 import { touchSsoSession } from "./sso-session.ts";
-
-export type AccessDeniedReason =
-  | "user_disabled"
-  | "tenant_suspended"
-  | "not_contracted"
-  | "no_membership"
-  | "membership_inactive";
 
 export type AccessCheckError = {
   readonly kind: "access_denied";
@@ -19,40 +12,37 @@ export type AccessCheckError = {
 };
 
 /**
- * ユーザーがこのサービスのこのテナントへアクセスできるか判定する。
+ * ユーザーがこのサービスのこのテナントへアクセスできるか判定し、通れば User を返す。
  *   1. ユーザーが active
- *   2. テナントに紐付かない戻り先ならここで許可
- *   3. テナントが active
- *   4. テナントがこのサービスを契約している (tenant_services)
- *   5. ユーザーがテナントに active で所属している (tenant_members)
+ *   2. テナントが active
+ *   3. テナントがこのサービスを契約している (tenant_services)
+ *   4. ユーザーがテナントに active で所属している (tenant_members)
+ * 契約と Membership は独立なので並列に引き、判定は上の順で行う。
  */
 export async function checkTenantAccess(
   identity: IdentityRepository,
   client: OidcClient,
-  tenant: Tenant | null,
+  tenant: Tenant,
   userId: string,
-): Promise<Result<void, AccessCheckError>> {
-  const user = await identity.findUserById(userId);
+): Promise<Result<User, AccessCheckError>> {
+  const [user, contract, membership] = await Promise.all([
+    identity.findUserById(userId),
+    identity.findContract(tenant.id, client.id),
+    identity.findMembership(tenant.id, userId),
+  ]);
   if (user === undefined || user.status !== "active")
     return err({ kind: "access_denied", reason: "user_disabled" });
-  if (tenant === null) return ok(undefined);
   if (tenant.status !== "active") return err({ kind: "access_denied", reason: "tenant_suspended" });
-
-  const contract = await identity.findContract(tenant.id, client.clientId);
   if (contract === undefined || contract.status !== "active")
     return err({ kind: "access_denied", reason: "not_contracted" });
-
-  const membership = await identity.findMembership(tenant.id, userId);
   if (membership === undefined) return err({ kind: "access_denied", reason: "no_membership" });
   if (membership.status !== "active")
     return err({ kind: "access_denied", reason: "membership_inactive" });
-  return ok(undefined);
+  return ok(user);
 }
 
 export interface IssuedCode {
   readonly code: string;
-  readonly redirectUri: string;
-  readonly state: string;
 }
 
 /**
@@ -73,14 +63,13 @@ export async function authorizeWithSession(
   if (!access.ok) {
     deps.logger.info("authorize denied", {
       clientId: request.client.clientId,
-      tenant: request.tenant?.slug ?? null,
+      tenant: request.tenant.slug,
       userId: session.userId,
       reason: access.error.reason,
     });
     return access;
   }
 
-  const now = deps.clock.nowSeconds();
   const code: AuthorizationCode = {
     used: false,
     code: randomToken(),
@@ -90,18 +79,17 @@ export async function authorizeWithSession(
     nonce: request.nonce,
     codeChallenge: request.codeChallenge,
     userId: session.userId,
-    tenantId: request.tenant?.id ?? null,
+    tenantId: request.tenant.id,
     sid: session.sid,
     ssoSessionId: session.id,
     authTime: session.authTime,
-    createdAt: now,
   };
   await deps.stores.authorizationCodes.set(code.code, code, AUTHORIZATION_CODE_TTL_SECONDS);
   await touchSsoSession(deps, session, request.client.clientId);
   deps.logger.info("authorization code issued", {
     clientId: request.client.clientId,
-    tenant: request.tenant?.slug ?? null,
+    tenant: request.tenant.slug,
     userId: session.userId,
   });
-  return ok({ code: code.code, redirectUri: request.redirectUri, state: request.state });
+  return ok({ code: code.code });
 }

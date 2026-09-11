@@ -2,17 +2,15 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { CookiePolicy } from "@sandbox/shared";
-import type { AuthorizationRequest } from "../ports/stores.ts";
-import { validateAuthorizationRequest } from "../usecases/authorization-request.ts";
-import { authorizeWithSession } from "../usecases/authorize.ts";
 import { issueCsrfToken, verifyCsrfToken } from "../usecases/csrf.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import { login, type LoginError } from "../usecases/login.ts";
+import { resumePendingAuthorization } from "../usecases/pending-authorization.ts";
 import { loadSsoSession } from "../usecases/sso-session.ts";
 import { errorPage, loginPage } from "../views/pages.ts";
 import {
-  buildRedirect,
   noStore,
+  redirectForOutcome,
   readCsrfCookie,
   readSsoCookie,
   writeCsrfCookie,
@@ -120,55 +118,10 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       writeSsoCookie(c, policy, result.value.session.id);
       if (request === undefined) return c.redirect("/");
       await deps.stores.authorizationRequests.delete(form.rid);
-      return c.redirect(await completeAuthorization(deps, request, result.value.session.id));
+      const outcome = await resumePendingAuthorization(deps, request, result.value.session);
+      return c.redirect(redirectForOutcome(deps.issuer, request, outcome));
     },
   );
 
   return app;
-}
-
-/**
- * ログイン成功後、保存しておいた認可リクエストに対して code を発行する。
- */
-async function completeAuthorization(
-  deps: AuthDeps,
-  request: AuthorizationRequest,
-  sessionId: string,
-): Promise<string> {
-  const validated = await validateAuthorizationRequest(deps.identity, {
-    client_id: request.clientId,
-    redirect_uri: request.redirectUri,
-    response_type: "code",
-    scope: request.scope,
-    state: request.state,
-    nonce: request.nonce,
-    code_challenge: request.codeChallenge,
-    code_challenge_method: "S256",
-  });
-  if (!validated.ok) {
-    // ログイン中に Client が無効化された場合。redirect_uri は保存時点で検証済みなので戻してよい
-    return buildRedirect(request.redirectUri, deps.issuer, {
-      error: "invalid_request",
-      state: request.state,
-    });
-  }
-  const session = await deps.stores.ssoSessions.get(sessionId);
-  if (session === undefined) {
-    return buildRedirect(request.redirectUri, deps.issuer, {
-      error: "server_error",
-      state: request.state,
-    });
-  }
-  const outcome = await authorizeWithSession(deps, validated.value, session);
-  if (!outcome.ok) {
-    return buildRedirect(request.redirectUri, deps.issuer, {
-      error: "access_denied",
-      error_description: outcome.error.reason,
-      state: request.state,
-    });
-  }
-  return buildRedirect(outcome.value.redirectUri, deps.issuer, {
-    code: outcome.value.code,
-    state: outcome.value.state,
-  });
 }

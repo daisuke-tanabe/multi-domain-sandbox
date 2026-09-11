@@ -161,15 +161,15 @@ export function projectsPage(props: ProjectsPageProps): Html {
   );
 }
 
-export function errorPage(
-  serviceName: string,
-  tenantSlug: string,
-  title: string,
-  message: string,
-): Html {
+export interface PageLabels {
+  readonly serviceName: string;
+  readonly tenantSlug: string;
+}
+
+export function errorPage(labels: PageLabels, title: string, message: string): Html {
   return layout(
-    serviceName,
-    tenantSlug,
+    labels.serviceName,
+    labels.tenantSlug,
     title,
     undefined,
     html`

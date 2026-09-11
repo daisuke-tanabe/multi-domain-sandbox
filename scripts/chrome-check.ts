@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   AUTH_ORIGIN,
   SEED_USER_PASSWORD,
@@ -10,6 +11,7 @@ import {
   TANAKA_CMS_ORIGIN,
   TANAKA_CRM_ORIGIN,
 } from "../packages/service-web/src/test-support.ts";
+import { createReporter } from "./check-reporter.ts";
 
 /**
  * 実際の Chrome を headless で起動し、CDP 経由でログインから別テナント・別サービスへの SSO までを操作する。
@@ -44,24 +46,19 @@ const chrome = spawn(
   { stdio: "ignore" },
 );
 
+const targetsSchema = z.array(
+  z.object({ type: z.string(), webSocketDebuggerUrl: z.string().optional() }),
+);
+
 async function waitForDevtools(): Promise<string> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     try {
       const res = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-      const targets: unknown = await res.json();
-      if (Array.isArray(targets)) {
-        const page = targets.find(
-          (t) =>
-            typeof t === "object" &&
-            t !== null &&
-            Reflect.get(t, "type") === "page" &&
-            "webSocketDebuggerUrl" in t,
-        );
-        if (page !== undefined && typeof page === "object" && page !== null) {
-          const url = Reflect.get(page, "webSocketDebuggerUrl");
-          if (typeof url === "string") return url;
-        }
-      }
+      const targets = targetsSchema.safeParse(await res.json());
+      const page = targets.success
+        ? targets.data.find((t) => t.type === "page" && t.webSocketDebuggerUrl !== undefined)
+        : undefined;
+      if (page?.webSocketDebuggerUrl !== undefined) return page.webSocketDebuggerUrl;
     } catch {
       // Chrome 起動待ち
     }
@@ -119,11 +116,7 @@ class Cdp {
   }
 }
 
-const results: Array<{ name: string; ok: boolean; detail: string }> = [];
-function check(name: string, ok: boolean, detail: string): void {
-  results.push({ name, ok, detail });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}  (${detail})`);
-}
+const { check, finish } = createReporter();
 
 try {
   const wsUrl = await waitForDevtools();
@@ -243,6 +236,4 @@ try {
   rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
-const failed = results.filter((r) => !r.ok).length;
-console.log(`\n${results.length - failed}/${results.length} checks passed`);
-process.exit(failed === 0 ? 0 : 1);
+finish();

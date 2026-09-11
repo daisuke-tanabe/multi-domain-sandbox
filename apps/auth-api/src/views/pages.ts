@@ -105,6 +105,11 @@ export function logoutConfirmPage(
             ? ""
             : html`<input type="hidden" name="client_id" value="${props.clientId}" />`
         }
+        ${
+          props.tenantSlug === undefined
+            ? ""
+            : html`<input type="hidden" name="tenant" value="${props.tenantSlug}" />`
+        }
         <button type="submit">ログアウトする</button>
       </form>
     `,

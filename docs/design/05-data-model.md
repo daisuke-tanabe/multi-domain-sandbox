@@ -6,6 +6,7 @@
 Identity DB は Auth Server が所有し、API Server は読み取り専用で参照する。判断事項D3。
 ユーザーとテナントは別概念とし、tenant_members が多対多を表す。認可は必ず tenant_members を根拠にする。
 サービスとテナントも別概念とし、tenant_services が契約を表す。OIDC Client はサービスと1対1で、テナントには紐付かない。判断事項D13。
+主キーはすべてサロゲート ID とし、client_id や slug は UNIQUE 制約で守る公開識別子にする。redirect_uri はサービスごとの `redirect_uri_template` で登録し、client_secret は oidc_client_secrets に複数行持てる。判断事項D15。
 
 ## 全体像
 
@@ -16,7 +17,7 @@ flowchart LR
         tenants
         tenant_members
         oidc_clients
-        oidc_client_redirect_uris
+        oidc_client_secrets
         tenant_services
     end
     subgraph BusinessDB ["Business DB  所有: API Server"]
@@ -27,19 +28,22 @@ flowchart LR
         code["sso:code:*"]
         rt["sso:rt:*"]
         authreq["sso:authreq:*"]
-        tsess["clientId:tenantSlug:*"]
-        tsid["clientId:sid:*"]
+        rtfamily["sso:rtfamily:*"]
+        tsess["clientId:sess:tenantSlug:*"]
+        tsid["clientId:sid:sid:*"]
+        tpre["clientId:pre:tenantSlug:*"]
     end
     tenant_members --> users
     tenant_members --> tenants
     tenant_services --> tenants
     tenant_services --> oidc_clients
-    oidc_client_redirect_uris --> oidc_clients
-    oidc_client_redirect_uris -. "tenant_id。NULL可" .-> tenants
+    oidc_client_secrets --> oidc_clients
     projects -. "tenant_id参照。FKなし" .-> tenants
 ```
 
 Identity DB と Business DB は物理的に同一インスタンスでもよいが、スキーマを分け、API Server の Identity スキーマへの権限は SELECT のみにする。サンドボックスでは `identity` スキーマと `business` スキーマに分けている。
+
+外部キーはすべてサロゲート ID を参照する。`oidc_clients.client_id` を参照する外部キーは持たない。`updated_at` を持つ表はトリガー `identity.touch_updated_at()` で更新時刻を自動更新する。
 
 ## Identity DB
 
@@ -103,10 +107,11 @@ CREATE INDEX tenant_members_user_id_idx ON tenant_members (user_id);
 
 ```sql
 CREATE TABLE oidc_clients (
-  client_id              TEXT PRIMARY KEY,   -- サービスID。crm / cms
-  client_secret_hash     TEXT NOT NULL,      -- ハッシュのみ保存
+  id                     TEXT PRIMARY KEY,   -- ULID。内部参照と外部キーはこちら
+  client_id              TEXT NOT NULL UNIQUE, -- OAuth の公開識別子。サービスID。crm / cms。^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$
   name                   TEXT NOT NULL,      -- 表示名。CRM / CMS
   audience               TEXT NOT NULL,      -- サービスの API origin。Access Token の aud
+  redirect_uri_template  TEXT NOT NULL CHECK (redirect_uri_template LIKE '%{tenant}%'), -- {tenant} を 1 か所だけ含む
   allowed_scopes         TEXT[] NOT NULL DEFAULT ARRAY['openid','profile','email'],
   backchannel_logout_uri TEXT,               -- サービス単位。テナントに依存しない
   status                 TEXT NOT NULL DEFAULT 'active', -- active / disabled
@@ -116,50 +121,67 @@ CREATE TABLE oidc_clients (
 ```
 
 - 1 Client = 1 サービス。テナントには紐付かないため tenant_id 列を持たない
-- client_secret はサービスごとに1つ。ローカルでは `crm-secret` `cms-secret` の固定値。DB にはハッシュのみ
-- audience は API Server が Host から導く値と完全一致させる。ローカルは `http://api.crm.localhost:3002`
+- id はサロゲート主キー。oidc_client_secrets と tenant_services の外部キーは id を参照する。client_id を変更しても外部キーは連鎖しない
+- redirect_uri_template はサービスに 1 つ。ローカルは `http://{tenant}.crm.localhost:3001/auth/callback`、本番は `https://{tenant}.crm.example.com/auth/callback`。`{tenant}` をテナント slug で展開した文字列と redirect_uri を完全一致で比較する
+- 認可リクエストのテナントは redirect_uri をテンプレートに当てて slug を取り出し、tenants を slug で引いて決める。crm と `http://suzuki.crm.localhost:3001/auth/callback` なら suzuki
+- テンプレートに一致しない、または slug が tenants にない redirect_uri は `invalid_redirect_uri` としてリダイレクトせず 400 にする。テナントに紐付かない戻り先は持たない
+- audience は API Server が `API_BASE_URL` から導く値と完全一致させる。ローカルは `http://api.crm.localhost:3002`
 - backchannel_logout_uri はサービスのベースホスト。ローカルは `http://crm.localhost:3001/auth/backchannel-logout`
 
-### oidc_client_redirect_uris
+### oidc_client_secrets
 
 ```sql
-CREATE TABLE oidc_client_redirect_uris (
-  client_id     TEXT NOT NULL REFERENCES oidc_clients (client_id) ON DELETE CASCADE,
-  redirect_uri  TEXT NOT NULL,               -- 完全一致比較。正規化しない
-  tenant_id     TEXT REFERENCES tenants (id) ON DELETE CASCADE, -- NULL ならテナントに紐付かない戻り先
-  PRIMARY KEY (client_id, redirect_uri)
+CREATE TABLE oidc_client_secrets (
+  id              TEXT PRIMARY KEY,          -- ULID
+  oidc_client_id  TEXT NOT NULL REFERENCES oidc_clients (id) ON DELETE CASCADE,
+  secret_hash     TEXT NOT NULL,             -- sha256$<base64url>
+  status          TEXT NOT NULL DEFAULT 'active', -- active / revoked
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at      TIMESTAMPTZ
 );
+CREATE INDEX oidc_client_secrets_active_idx ON oidc_client_secrets (oidc_client_id)
+  WHERE status = 'active';
 ```
 
-- redirect_uri はテナント × サービスごとに登録する。`https://<slug>.<service>.sandbox.com/auth/callback`
-- 認可リクエストのテナントは (client_id, redirect_uri) の行の tenant_id で決まる。crm と `http://suzuki.crm.localhost:3001/auth/callback` なら suzuki
-- redirect_uri の登録と契約は独立している。suzuki.cms の redirect_uri は登録済みだが契約がないため access_denied になる
-- tenant_id が NULL の行は管理画面など、テナントに紐付かない戻り先。`/authorize` は users.status のみ確認し、Token に tenant_id を載せない
+- client_secret はサービスごとに複数持てる。`/token` と `/revoke` は active な行のいずれかに一致すれば認証成功とする
+- ローテーションは、新しい secret を active で挿入し、サービスの `CLIENT_SECRET` を差し替えてから、旧行を revoked にする。切替中は新旧どちらでも通るため無停止で進められる
+- client_secret は 32 バイト以上の乱数とし、DB にはハッシュのみ保存する。ローカルでは `crm-secret` `cms-secret` の固定値
+- ハッシュは SHA-256。client_secret は人が選ぶパスワードではなく十分に長い乱数であるため KDF を使わない。scrypt は `/token` のたびに数十ミリ秒イベントループを止めるため採用しない。`packages/shared/src/secret-hash.ts`
 
 ### tenant_services
 
 ```sql
 CREATE TABLE tenant_services (
-  tenant_id     TEXT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
-  client_id     TEXT NOT NULL REFERENCES oidc_clients (client_id) ON DELETE CASCADE,
-  status        TEXT NOT NULL DEFAULT 'active', -- active / suspended
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, client_id)
+  tenant_id       TEXT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+  oidc_client_id  TEXT NOT NULL REFERENCES oidc_clients (id) ON DELETE CASCADE,
+  status          TEXT NOT NULL DEFAULT 'active', -- active / suspended
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, oidc_client_id)
 );
+CREATE INDEX tenant_services_oidc_client_id_idx ON tenant_services (oidc_client_id);
 ```
 
 - 契約。テナントがそのサービスを利用できるかを表す
-- `/authorize` と refresh_token grant は tenants.status の後、tenant_members の前にこの表を確認する。行がないか status が active でなければ not_contracted
+- `/authorize` と refresh_token grant は tenants.status の後、tenant_members の前にこの表を確認する。行がないか status が active でなければ not_contracted。検索キーは oidc_clients.id
 - ポータルは所属テナントごとに、この表で active なサービスだけを入口として表示する
+- テナント追加は tenants と tenant_services の行を足すだけで完了する。redirect_uri はテンプレートから導くため、テナントごとの登録は不要
 
 ### 初期データ
 
-サービス。
+サービス oidc_clients。
 
-| client_id | name | audience | backchannel_logout_uri |
+| id | client_id | name | audience | redirect_uri_template | backchannel_logout_uri |
+| --- | --- | --- | --- | --- | --- |
+| 01J00000000000000000000CRM | crm | CRM | http://api.crm.localhost:3002 | http://{tenant}.crm.localhost:3001/auth/callback | http://crm.localhost:3001/auth/backchannel-logout |
+| 01J00000000000000000000CMS | cms | CMS | http://api.cms.localhost:3004 | http://{tenant}.cms.localhost:3003/auth/callback | http://cms.localhost:3003/auth/backchannel-logout |
+
+client_secret oidc_client_secrets。
+
+| id | oidc_client_id | 平文 | status |
 | --- | --- | --- | --- |
-| crm | CRM | http://api.crm.localhost:3002 | http://crm.localhost:3001/auth/backchannel-logout |
-| cms | CMS | http://api.cms.localhost:3004 | http://cms.localhost:3003/auth/backchannel-logout |
+| 01J0000000000000000CRMSEC1 | 01J00000000000000000000CRM | crm-secret | active |
+| 01J0000000000000000CMSSEC1 | 01J00000000000000000000CMS | cms-secret | active |
 
 テナント。
 
@@ -170,20 +192,13 @@ CREATE TABLE tenant_services (
 
 契約 tenant_services。
 
-| tenant | client_id |
-| --- | --- |
-| tanaka | crm |
-| tanaka | cms |
-| suzuki | crm |
-
-redirect_uri。
-
-| client_id | redirect_uri | tenant |
+| tenant | oidc_client_id | サービス |
 | --- | --- | --- |
-| crm | http://tanaka.crm.localhost:3001/auth/callback | tanaka |
-| crm | http://suzuki.crm.localhost:3001/auth/callback | suzuki |
-| cms | http://tanaka.cms.localhost:3003/auth/callback | tanaka |
-| cms | http://suzuki.cms.localhost:3003/auth/callback | suzuki。契約なし |
+| tanaka | 01J00000000000000000000CRM | crm |
+| tanaka | 01J00000000000000000000CMS | cms |
+| suzuki | 01J00000000000000000000CRM | crm |
+
+suzuki.cms.localhost:3003 の redirect_uri は cms のテンプレートに一致し slug=suzuki も tenants にあるため `/authorize` は受理するが、契約がないため access_denied になる。
 
 Membership tenant_members。
 
@@ -227,76 +242,79 @@ API Server はトランザクション開始時に `SET LOCAL app.tenant_id = :t
 ## Session Store
 
 Redis 想定。すべて TTL 付き。ローカル検証はインメモリ Map。
+ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、auth-api は `adapters/stores.ts` の `createAuthStores`、`*-web` は `startServiceWeb` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。
+寿命はストアの TTL で管理し、値には `createdAt` のような期限計算用の項目を持たせない。アイドル期限と絶対期限を持つ SSO Session と Tenant Session は例外で、`packages/shared/src/session-expiry.ts` の共通判定を使う。
 
 ### SSO Session
 
-キー `sso:sess:<sso_session_id>`。TTL は絶対期限。
+プレフィックス `sso:sess`、キー `<sso_session_id>`。TTL は絶対期限。
 
 ```typescript
 type SsoSession = {
   id: string;                 // 256bit random。Cookie値
   sid: string;                // ID Token に載せる公開識別子
   userId: string;             // users.id
-  cognitoSub: string;
-  cognitoTokens: {
-    accessToken: string;      // 暗号化済み
-    refreshToken: string;     // 暗号化済み
-    expiresAt: number;
-  };
+  encryptedCognitoTokens: string; // Cognito の Access / ID / Refresh Token を暗号化した文字列
   authTime: number;
   createdAt: number;
-  lastSeenAt: number;         // アイドル判定。/authorize ごとに更新
+  lastSeenAt: number;         // アイドル判定。/authorize ごとに更新。書き込みは 60 秒に 1 回に間引く
   authorizedClients: string[]; // code を発行したサービス。Global Logout の通知先。例 ["crm", "cms"]
 };
 ```
 
-逆引き `sso:sid:<sid> → sso_session_id` を持ち、Back-Channel Logout と Refresh Token 失効に使う。
+cognito_sub は保持しない。users.id で引けるため必要になった時点で Identity DB から取る。
+逆引き `sso:sid` の `<sid> → sso_session_id` を持ち、Back-Channel Logout と Refresh Token 失効に使う。
 
 ### 認可リクエスト
 
-キー `sso:authreq:<rid>`。TTL 30分。ログイン画面を挟む間の保持用。
+プレフィックス `sso:authreq`、キー `<rid>`。TTL 30分。ログイン画面を挟む間の保持用。
 
 ```typescript
 type AuthorizationRequest = {
-  rid: string;
   clientId: string;           // サービス
+  tenantId: string;           // redirect_uri をテンプレートに当てて解決したテナント
   redirectUri: string;
-  tenantId: string | null;    // redirect_uri から解決したテナント
   scope: string;
   state: string;
   nonce: string;
   codeChallenge: string;
-  createdAt: number;
 };
 ```
 
+`/authorize` で検証済みの値だけを保存する。ログイン成功後は `usecases/pending-authorization.ts` が Client がまだ active でテナントが存在することだけを確かめ、パラメータは再検証せずにアクセス判定と code 発行へ進む。
+
 ### Authorization Code
 
-キー `sso:code:<code>`。TTL 60秒。
+プレフィックス `sso:code`、キー `<code>`。TTL 60秒。
 
 ```typescript
-type AuthorizationCode = {
-  code: string;
-  clientId: string;
-  redirectUri: string;
-  scope: string;
-  nonce: string;
-  codeChallenge: string;
-  userId: string;
-  tenantId: string | null;
-  sid: string;
-  ssoSessionId: string;
-  authTime: number;
-  used: boolean;
-  createdAt: number;
-};
+type AuthorizationCode =
+  | {
+      used: false;
+      code: string;
+      clientId: string;
+      redirectUri: string;
+      scope: string;
+      nonce: string;
+      codeChallenge: string;
+      userId: string;
+      tenantId: string;
+      sid: string;
+      ssoSessionId: string;
+      authTime: number;
+    }
+  | {
+      used: true;             // 再利用検知用。交換時に発行した Refresh Token の系列を持つ
+      code: string;
+      familyId: string;
+    };
 ```
 
 `used` の更新は `GETDEL` または Lua スクリプトで取得と削除を同時に行い、二重交換を排除する。
 
 ### Refresh Token
 
-キー `sso:rt:<token>`。TTL 12時間。
+プレフィックス `sso:rt`、キー `<token>`。TTL 12時間。
 
 ```typescript
 type RefreshToken = {
@@ -304,57 +322,53 @@ type RefreshToken = {
   familyId: string;           // ローテーション系列。再利用検知時に系列全体を失効
   clientId: string;
   userId: string;
-  tenantId: string | null;
+  tenantId: string;
   sid: string;
   ssoSessionId: string;
   scope: string;
-  createdAt: number;
-  revokedAt?: number;
+  authTime: number;
+  status: "active" | "rotated" | "revoked";
 };
 ```
 
-逆引き `sso:rtfamily:<familyId> → token[]` と `sso:sidrt:<sid> → familyId[]` を持つ。
+逆引き `sso:rtfamily` の `<familyId> → token[]` と `sso:sidrt` の `<sid> → familyId[]` を持つ。系列の値は token の一覧だけで、失効フラグは持たない。系列の失効は一覧の全 token を並列に revoked へ更新する。refresh_token grant の検証は `validateRefreshContext` にまとめ、どの段階で失敗しても系列を 1 回だけ失効させる。
 
 ### Tenant Session
 
-キー `<clientId>:<tenantSlug>:<session_id>`。例 `crm:tanaka:T1`。TTL は絶対期限。
+プレフィックス `<clientId>:sess`、キー `<tenantSlug>:<session_id>`。例 プレフィックス `crm:sess`、キー `tanaka:T1`。TTL は絶対期限。
 
 ```typescript
 type TenantSession = {
   id: string;                 // Cookie値
-  clientId: string;           // サービス。crm / cms
   tenantSlug: string;         // Host から解決したテナント
   userId: string;             // ID Token の sub
   tenantId: string;
   sid: string;
+  email: string | null;
+  name: string | null;
   accessToken: string;        // API 呼び出し用
   accessTokenExpiresAt: number;
   refreshToken: string;
   csrfToken: string;          // Tenant Logout 用
-  email: string;
-  name?: string;
   createdAt: number;
-  lastSeenAt: number;
+  lastSeenAt: number;         // 書き込みは 60 秒に 1 回に間引く
 };
 ```
 
-- 1プロセスで複数テナントの Host を受け、複数サービスが同じ Session Store を共有し得るため、キーに clientId と tenantSlug を含めて空間を分ける。Cookie 値が同じでも別ホストのセッションを引けない
-- 取得時に session.clientId と session.tenantSlug が Host から解決した値と一致することを確認する
-- 逆引き `<clientId>:sid:<sid> → sessionKey[]` を持つ。Back-Channel Logout はサービス単位で届くため、同じ sid で作られたそのサービスの全テナントのセッションをまとめて削除できる
+- 1 プロセスは 1 サービスを担当するため、サービスはストアのプレフィックスで分け、値には clientId を持たない。プロセス内では tenantSlug をキーに含めて空間を分ける。Cookie 値が同じでも別ホストのセッションを引けない
+- 逆引きはプレフィックス `<clientId>:sid`、キー `sid:<sid> → sessionKey[]`。Back-Channel Logout はサービス単位で届くため、同じ sid で作られたそのサービスの全テナントのセッションをまとめて削除できる
 - role は保存しない。表示用に必要なら API から都度取得する
 
 ### pre-auth
 
-キー `<clientId>:<tenantSlug>:<id>`。TTL 30分。
+プレフィックス `<clientId>:pre`、キー `<tenantSlug>:<id>`。`<id>` は Cookie 値。TTL 30分。`/auth/callback` で `getAndDelete` により取得と同時に消す。
 
 ```typescript
 type PreAuthState = {
-  id: string;                 // Cookie値
   state: string;
   nonce: string;
   codeVerifier: string;
   returnTo: string;           // 自ドメイン内パスのみ
-  createdAt: number;
 };
 ```
 
@@ -371,8 +385,8 @@ interface KeyValueStore<T> {
 
 | 環境 | 実装 |
 | --- | --- |
-| ローカル検証 | インメモリ Map + 期限管理 |
-| 本番 | Redis。getAndDelete は GETDEL |
+| ローカル検証 | インメモリ Map + 期限管理。`REDIS_URL` 未設定時に `createStoreFactory` が選ぶ |
+| 本番 | Redis。getAndDelete は GETDEL。`REDIS_URL` 設定時に `createStoreFactory` が選ぶ |
 
 ## 障害時の考慮
 

@@ -7,7 +7,7 @@
 -- bob      : suzuki の admin のみ
 -- carol    : どのテナントにも所属しない
 --
--- client_secret はローカル固定値。ハッシュは packages/shared/src/secret-hash.ts の scrypt 形式
+-- client_secret はローカル固定値。ハッシュは packages/shared/src/secret-hash.ts の sha256 形式
 --   crm : crm-secret
 --   cms : cms-secret
 
@@ -26,21 +26,19 @@ INSERT INTO identity.tenant_members (tenant_id, user_id, role) VALUES
   ('01J00000000000000000SUZUKI0', '01J0000000000000000000ALICE', 'viewer'),
   ('01J00000000000000000SUZUKI0', '01J00000000000000000000BOB0', 'admin');
 
-INSERT INTO identity.oidc_clients (client_id, client_secret_hash, name, audience, backchannel_logout_uri) VALUES
-  ('crm', 'scrypt$c2FuZGJveC1maXhlZC1zYWx0$s13D4d-MMXU9mEfZd2OWnNLfpqUnrGEZnWwtO1wAxTg', 'CRM', 'http://api.crm.localhost:3002', 'http://crm.localhost:3001/auth/backchannel-logout'),
-  ('cms', 'scrypt$c2FuZGJveC1maXhlZC1zYWx0$R2io-GheJszjo_f1mrYAMPWACmY2sbFLGdvcJH1kS98', 'CMS', 'http://api.cms.localhost:3004', 'http://cms.localhost:3003/auth/backchannel-logout');
+INSERT INTO identity.oidc_clients (id, client_id, name, audience, redirect_uri_template, backchannel_logout_uri) VALUES
+  ('01J00000000000000000000CRM', 'crm', 'CRM', 'http://api.crm.localhost:3002', 'http://{tenant}.crm.localhost:3001/auth/callback', 'http://crm.localhost:3001/auth/backchannel-logout'),
+  ('01J00000000000000000000CMS', 'cms', 'CMS', 'http://api.cms.localhost:3004', 'http://{tenant}.cms.localhost:3003/auth/callback', 'http://cms.localhost:3003/auth/backchannel-logout');
 
--- 戻り先はテナント × サービスごとに登録する。suzuki.cms は登録するが契約がないため access_denied になる
-INSERT INTO identity.oidc_client_redirect_uris (client_id, redirect_uri, tenant_id) VALUES
-  ('crm', 'http://tanaka.crm.localhost:3001/auth/callback', '01J00000000000000000TANAKA0'),
-  ('crm', 'http://suzuki.crm.localhost:3001/auth/callback', '01J00000000000000000SUZUKI0'),
-  ('cms', 'http://tanaka.cms.localhost:3003/auth/callback', '01J00000000000000000TANAKA0'),
-  ('cms', 'http://suzuki.cms.localhost:3003/auth/callback', '01J00000000000000000SUZUKI0');
+INSERT INTO identity.oidc_client_secrets (id, oidc_client_id, secret_hash) VALUES
+  ('01J0000000000000000CRMSEC1', '01J00000000000000000000CRM', 'sha256$DZrMSRDqNdPJqi0LEVDJBK2C01JR-aT9MPB1yLcXiXc'),
+  ('01J0000000000000000CMSSEC1', '01J00000000000000000000CMS', 'sha256$oQwvcNfYzgyba9W-8quyDRljKkulL6dUppdft83rHjU');
 
-INSERT INTO identity.tenant_services (tenant_id, client_id) VALUES
-  ('01J00000000000000000TANAKA0', 'crm'),
-  ('01J00000000000000000TANAKA0', 'cms'),
-  ('01J00000000000000000SUZUKI0', 'crm');
+-- suzuki は cms を契約していない。suzuki.cms への認可は access_denied (not_contracted) になる
+INSERT INTO identity.tenant_services (tenant_id, oidc_client_id) VALUES
+  ('01J00000000000000000TANAKA0', '01J00000000000000000000CRM'),
+  ('01J00000000000000000TANAKA0', '01J00000000000000000000CMS'),
+  ('01J00000000000000000SUZUKI0', '01J00000000000000000000CRM');
 
 RESET ROLE;
 

@@ -1,4 +1,4 @@
-import type { Role } from "./ports/identity-reader.ts";
+import type { Role } from "@sandbox/shared";
 
 /**
  * Role → Permission の対応表。docs/design/07-api-auth-design.md に対応する。

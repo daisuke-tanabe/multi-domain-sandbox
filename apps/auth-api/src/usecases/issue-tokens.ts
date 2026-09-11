@@ -9,7 +9,7 @@ export interface IssueTokensInput {
   readonly scope: string;
   readonly nonce: string | undefined;
   readonly sid: string;
-  readonly tenant: Tenant | null;
+  readonly tenant: Tenant;
   readonly authTime: number;
 }
 
@@ -19,7 +19,7 @@ export interface IssuedTokens {
   readonly expiresIn: number;
 }
 
-function profileClaims(user: User, scopes: ReadonlyArray<string>): Record<string, unknown> {
+export function profileClaims(user: User, scopes: ReadonlyArray<string>): Record<string, unknown> {
   return {
     ...(scopes.includes("email") && { email: user.email, email_verified: true }),
     ...(scopes.includes("profile") && user.name !== null && { name: user.name }),
@@ -34,8 +34,7 @@ function profileClaims(user: User, scopes: ReadonlyArray<string>): Record<string
 export async function issueTokens(deps: AuthDeps, input: IssueTokensInput): Promise<IssuedTokens> {
   const now = deps.clock.nowSeconds();
   const scopes = input.scope.split(" ");
-  const tenantClaims =
-    input.tenant === null ? {} : { tenant_id: input.tenant.id, tenant_slug: input.tenant.slug };
+  const tenantClaims = { tenant_id: input.tenant.id, tenant_slug: input.tenant.slug };
 
   const idToken = await signJwt(deps.signingKey, {
     issuer: deps.issuer,

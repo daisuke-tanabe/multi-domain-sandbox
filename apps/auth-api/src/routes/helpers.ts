@@ -6,7 +6,9 @@ import {
   shortLivedCookieAttributes,
   type CookiePolicy,
 } from "@sandbox/shared";
+import type { Result } from "@sandbox/shared";
 import { COOKIE_CSRF, COOKIE_SSO_SESSION, CSRF_TOKEN_TTL_SECONDS } from "../policy.ts";
+import type { AccessCheckError, IssuedCode } from "../usecases/authorize.ts";
 
 export function ssoCookieName(policy: CookiePolicy): string {
   return cookieName(COOKIE_SSO_SESSION, "host", policy);
@@ -55,6 +57,27 @@ export function buildRedirect(
   }
   url.searchParams.set("iss", issuer);
   return url.toString();
+}
+
+/**
+ * code 発行の結果を認可レスポンスのリダイレクト先にする。拒否理由は error_description で Client に伝える。
+ */
+export function redirectForOutcome(
+  issuer: string,
+  request: { readonly redirectUri: string; readonly state: string },
+  outcome: Result<IssuedCode, AccessCheckError | { readonly kind: "invalid_request" }>,
+): string {
+  if (outcome.ok) {
+    return buildRedirect(request.redirectUri, issuer, {
+      code: outcome.value.code,
+      state: request.state,
+    });
+  }
+  return buildRedirect(request.redirectUri, issuer, {
+    error: outcome.error.kind,
+    ...(outcome.error.kind === "access_denied" && { error_description: outcome.error.reason }),
+    state: request.state,
+  });
 }
 
 export function noStore(c: Context): void {

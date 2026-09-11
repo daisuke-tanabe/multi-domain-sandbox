@@ -13,8 +13,7 @@ export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const REFRESH_TOKEN_TTL_SECONDS = 12 * 60 * 60;
 export const CSRF_TOKEN_TTL_SECONDS = 30 * 60;
 
-export const SUPPORTED_SCOPES = ["openid", "profile", "email"] as const;
-export type Scope = (typeof SUPPORTED_SCOPES)[number];
+export const SUPPORTED_SCOPES: ReadonlyArray<string> = ["openid", "profile", "email"];
 
 export const COOKIE_SSO_SESSION = "sso_session";
 export const COOKIE_CSRF = "auth_csrf";

@@ -1,3 +1,4 @@
+import { expandRedirectUriTemplate } from "@sandbox/shared";
 import type {
   Contract,
   IdentityRepository,
@@ -17,7 +18,7 @@ export interface MemoryIdentityData {
   readonly tenants: ReadonlyArray<Tenant>;
   readonly users: ReadonlyArray<User>;
   readonly memberships: ReadonlyArray<{ tenantId: string; userId: string } & Membership>;
-  readonly contracts: ReadonlyArray<{ tenantId: string; clientId: string } & Contract>;
+  readonly contracts: ReadonlyArray<{ tenantId: string; oidcClientId: string } & Contract>;
 }
 
 export class MemoryIdentityRepository implements IdentityRepository {
@@ -53,6 +54,10 @@ export class MemoryIdentityRepository implements IdentityRepository {
     return this.data.tenants.find((tenant) => tenant.id === id);
   }
 
+  public async findTenantBySlug(slug: string): Promise<Tenant | undefined> {
+    return this.data.tenants.find((tenant) => tenant.slug === slug);
+  }
+
   public async findMembership(tenantId: string, userId: string): Promise<Membership | undefined> {
     const found = this.memberships.find(
       (member) => member.tenantId === tenantId && member.userId === userId,
@@ -60,9 +65,9 @@ export class MemoryIdentityRepository implements IdentityRepository {
     return found === undefined ? undefined : { role: found.role, status: found.status };
   }
 
-  public async findContract(tenantId: string, clientId: string): Promise<Contract | undefined> {
+  public async findContract(tenantId: string, oidcClientId: string): Promise<Contract | undefined> {
     const found = this.contracts.find(
-      (contract) => contract.tenantId === tenantId && contract.clientId === clientId,
+      (contract) => contract.tenantId === tenantId && contract.oidcClientId === oidcClientId,
     );
     return found === undefined ? undefined : { status: found.status };
   }
@@ -76,12 +81,12 @@ export class MemoryIdentityRepository implements IdentityRepository {
         const services = this.contracts
           .filter((contract) => contract.tenantId === tenant.id && contract.status === "active")
           .flatMap((contract) => {
-            const client = this.data.clients.find((c) => c.clientId === contract.clientId);
-            const target = client?.redirectTargets.find((t) => t.tenant?.id === tenant.id);
-            if (client === undefined || target === undefined) return [];
-            return [
-              { clientId: client.clientId, name: client.name, origin: new URL(target.uri).origin },
-            ];
+            const client = this.data.clients.find((c) => c.id === contract.oidcClientId);
+            if (client === undefined || client.status !== "active") return [];
+            const origin = new URL(
+              expandRedirectUriTemplate(client.redirectUriTemplate, tenant.slug),
+            ).origin;
+            return [{ clientId: client.clientId, name: client.name, origin }];
           });
         return [{ tenant, role: member.role, services }];
       });
@@ -94,10 +99,11 @@ export class MemoryIdentityRepository implements IdentityRepository {
     );
   }
 
-  /** テストで契約を解除するための操作 */
+  /** テストで契約を解除するための操作。clientId は OAuth の client_id */
   public removeContract(tenantId: string, clientId: string): void {
+    const client = this.data.clients.find((c) => c.clientId === clientId);
     this.contracts = this.contracts.filter(
-      (contract) => !(contract.tenantId === tenantId && contract.clientId === clientId),
+      (contract) => !(contract.tenantId === tenantId && contract.oidcClientId === client?.id),
     );
   }
 }

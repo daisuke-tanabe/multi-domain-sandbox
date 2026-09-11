@@ -15,9 +15,10 @@ import {
 import {
   err,
   ok,
-  verifyJwt,
+  RemoteJwksSource,
+  verifyJwtWithSource,
   type Clock,
-  type JSONWebKeySet,
+  type FetchLike,
   type Logger,
   type Result,
 } from "@sandbox/shared";
@@ -35,10 +36,6 @@ export interface SdkCognitoConfig {
   readonly clientSecret: string;
 }
 
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
-
-const JWKS_CACHE_SECONDS = 10 * 60;
-
 /**
  * 本番向け Cognito アダプタ。USER_SRP_AUTH でパスワードを平文送信せずに認証し、
  * 返ってきた ID Token を Cognito の JWKS で検証してから claims を返す。
@@ -47,8 +44,7 @@ const JWKS_CACHE_SECONDS = 10 * 60;
 export class SdkCognitoAuthenticator implements CognitoAuthenticator {
   private readonly client: CognitoIdentityProviderClient;
   private readonly issuer: string;
-  private jwks: JSONWebKeySet | undefined;
-  private jwksFetchedAt = 0;
+  private readonly jwks: RemoteJwksSource;
 
   constructor(
     private readonly config: SdkCognitoConfig,
@@ -58,6 +54,7 @@ export class SdkCognitoAuthenticator implements CognitoAuthenticator {
   ) {
     this.client = new CognitoIdentityProviderClient({ region: config.region });
     this.issuer = `https://cognito-idp.${config.region}.amazonaws.com/${config.userPoolId}`;
+    this.jwks = new RemoteJwksSource(`${this.issuer}/.well-known/jwks.json`, fetchFn, clock);
   }
 
   public async authenticate(
@@ -148,15 +145,13 @@ export class SdkCognitoAuthenticator implements CognitoAuthenticator {
     if (AccessToken === undefined || IdToken === undefined || RefreshToken === undefined) {
       return err({ kind: "unavailable", reason: "tokens missing in authentication result" });
     }
-    const jwks = await this.getJwks();
-    if (!jwks.ok) return jwks;
-    const verified = await verifyJwt(IdToken, jwks.value, {
+    const verified = await verifyJwtWithSource(IdToken, this.jwks, {
       issuer: this.issuer,
       audience: this.config.clientId,
-      currentDate: new Date(this.clock.nowSeconds() * 1000),
+      clock: this.clock,
     });
     if (!verified.ok) {
-      this.logger.error("cognito id token verification failed", { reason: verified.error.reason });
+      this.logger.error("cognito id token verification failed", { reason: verified.error.kind });
       return err({ kind: "unavailable", reason: "id token verification failed" });
     }
     const claims = verified.value;
@@ -170,7 +165,6 @@ export class SdkCognitoAuthenticator implements CognitoAuthenticator {
     return ok({
       sub: claims.sub,
       email: claims.email,
-      emailVerified: claims.email_verified === true,
       ...(typeof claims.name === "string" && { name: claims.name }),
       tokens: {
         accessToken: AccessToken,
@@ -179,26 +173,6 @@ export class SdkCognitoAuthenticator implements CognitoAuthenticator {
         expiresAt: this.clock.nowSeconds() + (ExpiresIn ?? 3600),
       },
     });
-  }
-
-  private async getJwks(): Promise<Result<JSONWebKeySet, CognitoAuthError>> {
-    const now = this.clock.nowSeconds();
-    if (this.jwks !== undefined && now - this.jwksFetchedAt < JWKS_CACHE_SECONDS)
-      return ok(this.jwks);
-    try {
-      const res = await this.fetchFn(`${this.issuer}/.well-known/jwks.json`);
-      if (!res.ok) return err({ kind: "unavailable", reason: `jwks status ${res.status}` });
-      const body: unknown = await res.json();
-      if (typeof body !== "object" || body === null || !Array.isArray(Reflect.get(body, "keys"))) {
-        return err({ kind: "unavailable", reason: "malformed cognito jwks" });
-      }
-      const jwks: JSONWebKeySet = { keys: Reflect.get(body, "keys") };
-      this.jwks = jwks;
-      this.jwksFetchedAt = now;
-      return ok(jwks);
-    } catch (error: unknown) {
-      return err({ kind: "unavailable", reason: errorName(error) });
-    }
   }
 }
 

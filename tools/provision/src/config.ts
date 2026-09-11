@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { jsonArrayEnv, parseEnv, publicSchemeEnv } from "@sandbox/shared";
 
 const serviceSchema = z.object({
   clientId: z.string().min(1),
@@ -9,32 +10,34 @@ const serviceSchema = z.object({
   apiBaseUrl: z.string().url(),
 });
 
-const envSchema = z.object({
-  DATABASE_URL: z.string().min(1),
-  AUTH_DB_PASSWORD: z.string().min(1),
-  API_DB_PASSWORD: z.string().min(1),
-  PUBLIC_SCHEME: z.enum(["http", "https"]).default("https"),
-  SERVICES: z.string().transform((value, ctx) => {
-    const parsed = z.array(serviceSchema).safeParse(JSON.parse(value));
-    if (!parsed.success) {
-      ctx.addIssue({ code: "custom", message: "SERVICES must be a JSON array" });
-      return z.NEVER;
-    }
-    return parsed.data;
-  }),
-  COGNITO_REGION: z.string().optional(),
-  COGNITO_USER_POOL_ID: z.string().optional(),
-  SEED_USER_PASSWORD: z.string().optional(),
-});
+const envSchema = z
+  .object({
+    DATABASE_URL: z.string().min(1),
+    AUTH_DB_PASSWORD: z.string().min(1),
+    API_DB_PASSWORD: z.string().min(1),
+    PUBLIC_SCHEME: publicSchemeEnv.default("https"),
+    SERVICES: jsonArrayEnv(serviceSchema),
+    COGNITO_REGION: z.string().min(1).optional(),
+    COGNITO_USER_POOL_ID: z.string().min(1).optional(),
+    SEED_USER_PASSWORD: z.string().min(1).optional(),
+  })
+  .transform((env) => ({
+    ...env,
+    /** 3 つ揃ったときだけ Cognito にユーザーを作る。揃わなければ固定 sub でシードする */
+    COGNITO:
+      env.COGNITO_REGION !== undefined &&
+      env.COGNITO_USER_POOL_ID !== undefined &&
+      env.SEED_USER_PASSWORD !== undefined
+        ? {
+            region: env.COGNITO_REGION,
+            userPoolId: env.COGNITO_USER_POOL_ID,
+            password: env.SEED_USER_PASSWORD,
+          }
+        : undefined,
+  }));
 
 export type ProvisionConfig = z.infer<typeof envSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProvisionConfig {
-  const parsed = envSchema.safeParse(env);
-  if (!parsed.success) {
-    throw new Error(
-      `Invalid provision configuration: ${JSON.stringify(parsed.error.flatten().fieldErrors)}`,
-    );
-  }
-  return parsed.data;
+  return parseEnv("provision", envSchema, env);
 }

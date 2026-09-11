@@ -9,10 +9,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@hono/node-server": "catalog:",
-    "@sandbox/oidc-client": "workspace:*",
     "@sandbox/service-web": "workspace:*",
-    "@sandbox/shared": "workspace:*",
     "tsx": "catalog:"
   },
   "devDependencies": {

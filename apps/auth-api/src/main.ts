@@ -1,17 +1,18 @@
 import { serve } from "@hono/node-server";
 import {
   createLogger,
-  createRedisClient,
+  createPool,
+  createStoreFactory,
   generateSigningKey,
   importSigningKeyFromPem,
+  nodeFetch,
   parseEncryptionKey,
   systemClock,
 } from "@sandbox/shared";
 import { SdkCognitoAuthenticator } from "./adapters/cognito-sdk.ts";
 import { MockCognitoAuthenticator } from "./adapters/mock-cognito.ts";
-import { createMemoryStores } from "./adapters/memory-stores.ts";
-import { createRedisStores } from "./adapters/redis-stores.ts";
-import { createPool, PgIdentityRepository } from "./adapters/pg-identity-repository.ts";
+import { PgIdentityRepository } from "./adapters/pg-identity-repository.ts";
+import { createAuthStores } from "./adapters/stores.ts";
 import { createAuthApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import type { AuthDeps } from "./usecases/deps.ts";
@@ -42,38 +43,29 @@ function createCognitoAuthenticator() {
   }
   return new SdkCognitoAuthenticator(
     {
-      region: config.COGNITO_REGION ?? "",
-      userPoolId: config.COGNITO_USER_POOL_ID ?? "",
-      clientId: config.COGNITO_CLIENT_ID ?? "",
-      clientSecret: config.COGNITO_CLIENT_SECRET ?? "",
+      region: config.COGNITO_REGION,
+      userPoolId: config.COGNITO_USER_POOL_ID,
+      clientId: config.COGNITO_CLIENT_ID,
+      clientSecret: config.COGNITO_CLIENT_SECRET,
     },
     systemClock,
     logger,
-    (input, init) => fetch(input, init),
+    nodeFetch,
   );
-}
-
-if (config.REDIS_URL === undefined) {
-  logger.warn("REDIS_URL is not set. Sessions are kept in memory and lost on restart");
 }
 
 const deps: AuthDeps = {
   issuer: config.ISSUER,
   clock: systemClock,
-  stores:
-    config.REDIS_URL === undefined
-      ? createMemoryStores(systemClock)
-      : createRedisStores(createRedisClient(config.REDIS_URL)),
-  identity: new PgIdentityRepository(
-    createPool(config.DATABASE_URL, (error) =>
-      logger.error("database pool error", { message: error.message }),
-    ),
+  stores: createAuthStores(
+    createStoreFactory({ redisUrl: config.REDIS_URL, clock: systemClock, logger }),
   ),
+  identity: new PgIdentityRepository(createPool(config.DATABASE_URL, logger)),
   cognito: createCognitoAuthenticator(),
   signingKey,
   encryptionKeys: [encryptionKey.value],
   logger,
-  fetch: (input, init) => fetch(input, init),
+  fetch: nodeFetch,
 };
 
 const app = createAuthApp({ deps, cookiePolicy: { secure: config.COOKIE_SECURE } });

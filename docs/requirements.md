@@ -141,7 +141,7 @@ SameSite=Lax
 
 ## 11. OAuth 2.0 / OpenID Connect
 
-Auth Serverは可能な限り標準的なOAuth 2.0 / OpenID Connectに準拠する。各サービスをOAuth/OIDC Clientとして扱い、テナントはClientに紐付けない。redirect_uriはテナント × サービスごとに厳格に管理し、ワイルドカードは原則として許可しない。認可リクエストのテナントはclient_idとredirect_uriの組から決める。
+Auth Serverは可能な限り標準的なOAuth 2.0 / OpenID Connectに準拠する。各サービスをOAuth/OIDC Clientとして扱い、テナントはClientに紐付けない。redirect_uriはサービスごとのテンプレートで厳格に管理し、テナントのslugを展開した文字列との完全一致のみ許可する。ワイルドカードは原則として許可しない。認可リクエストのテナントはclient_idとredirect_uriの組から決める。
 
 ## 12. Authorization Code
 

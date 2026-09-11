@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 const TOKEN_BYTES = 32;
 
@@ -27,4 +27,11 @@ export function isValidCodeVerifier(value: string): boolean {
     value.length <= CODE_VERIFIER_MAX &&
     CODE_VERIFIER_PATTERN.test(value)
   );
+}
+
+/** 長さの違いを含めて一定時間で比較する。CSRF トークンやパスワードの照合に使う */
+export function timingSafeEqualString(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
 }

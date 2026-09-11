@@ -1,18 +1,14 @@
-import { decrypt, randomToken, signJwt } from "@sandbox/shared";
+import { decrypt, getErrorMessage, randomToken, signJwt } from "@sandbox/shared";
 import { LOGOUT_TOKEN_TTL_SECONDS } from "../policy.ts";
 import type { SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "./deps.ts";
 import { revokeRefreshTokenFamily } from "./refresh-tokens.ts";
 import { destroySsoSession } from "./sso-session.ts";
 
-export interface BackchannelResult {
+interface BackchannelResult {
   readonly clientId: string;
   readonly ok: boolean;
   readonly reason?: string;
-}
-
-export interface GlobalLogoutResult {
-  readonly notifications: ReadonlyArray<BackchannelResult>;
 }
 
 /**
@@ -41,14 +37,9 @@ export function issueLogoutToken(deps: AuthDeps, clientId: string, sid: string):
  * 3. SSO Session を削除
  * 4. code を発行した Client へ Back-Channel Logout を並列送信。失敗しても完了扱い
  */
-export async function globalLogout(
-  deps: AuthDeps,
-  session: SsoSession,
-): Promise<GlobalLogoutResult> {
+export async function globalLogout(deps: AuthDeps, session: SsoSession): Promise<void> {
   const families = (await deps.stores.sidRefreshFamilies.get(session.sid)) ?? [];
-  for (const familyId of families) {
-    await revokeRefreshTokenFamily(deps, familyId);
-  }
+  await Promise.all(families.map((familyId) => revokeRefreshTokenFamily(deps, familyId)));
   await deps.stores.sidRefreshFamilies.delete(session.sid);
 
   await revokeCognitoTokens(deps, session);
@@ -62,7 +53,6 @@ export async function globalLogout(
     notified: notifications.filter((n) => n.ok).map((n) => n.clientId),
     failed: notifications.filter((n) => !n.ok).map((n) => n.clientId),
   });
-  return { notifications };
 }
 
 async function revokeCognitoTokens(deps: AuthDeps, session: SsoSession): Promise<void> {
@@ -100,6 +90,6 @@ async function notifyClient(
     if (!res.ok) return { clientId, ok: false, reason: `status ${res.status}` };
     return { clientId, ok: true };
   } catch (error: unknown) {
-    return { clientId, ok: false, reason: error instanceof Error ? error.message : "unknown" };
+    return { clientId, ok: false, reason: getErrorMessage(error) };
   }
 }

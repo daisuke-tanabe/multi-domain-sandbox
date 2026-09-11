@@ -20,7 +20,8 @@
 | --- | --- | --- | --- | --- | --- |
 | A1 | client_id 未登録 | Auth | 400。リダイレクトしない | Auth のエラー画面「無効なリクエストです」 | ログ |
 | A2 | client status が active でない | Auth | 400。リダイレクトしない | 同上 | ログ |
-| A3 | (client_id, redirect_uri) が未登録。未登録テナントのホストを含む | Auth | 400。リダイレクトしない | 同上 | 警告ログ。攻撃の可能性 |
+| A3 | redirect_uri が client の redirect_uri_template に一致しない。別ホスト、パス違い、クエリ付き、末尾スラッシュ、大文字、多段ラベル | Auth | 400 invalid_redirect_uri。リダイレクトしない | 同上 | 警告ログ。攻撃の可能性 |
+| A3b | redirect_uri はテンプレートに一致するが slug が tenants にない | Auth | 400 invalid_redirect_uri。リダイレクトしない | 同上 | 警告ログ。未登録テナントのホストへは飛ばさない |
 | A4 | redirect_uri 未指定 | Auth | 400。リダイレクトしない | 同上 | ログ |
 | A5 | response_type が code 以外 | Auth | 302 redirect_uri?error=unsupported_response_type&state | Tenant のエラー画面 | |
 | A6 | scope に openid なし | Auth | 302 error=invalid_scope | 同上 | |
@@ -37,7 +38,7 @@
 | A17 | tenant_services に契約なし / suspended | Auth | 302 error=access_denied&error_description=not_contracted | Tenant 403「テナント suzuki は CMS を契約していません」 | ログ。SSO Session は維持 |
 | A18 | tenant_members はあるが status が active でない | Auth | 302 error=access_denied&error_description=membership_inactive | Tenant 403「アクセス権がありません」 | ログ |
 
-アクセス判定は A13 → A12 → A17 → A11 / A18 の順に行い、最初に失敗した理由を error_description に載せる。
+アクセス判定は A13 → A12 → A17 → A11 / A18 の順に行い、最初に失敗した理由を error_description に載せる。users、tenant_services、tenant_members の取得は並列に行い、評価順序だけをこの順に固定する。
 
 ## 2. ログイン。GET/POST /login
 
@@ -83,7 +84,7 @@
 
 | # | ケース | 検知 | 応答 | 副作用 |
 | --- | --- | --- | --- | --- |
-| T1 | Client 認証失敗 | Auth | 401 invalid_client。WWW-Authenticate: Basic | 警告ログ |
+| T1 | Client 認証失敗。active な secret のいずれにも一致しない。revoked 済みの secret を含む | Auth | 401 invalid_client。WWW-Authenticate: Basic | 警告ログ |
 | T2 | grant_type 未対応 | Auth | 400 unsupported_grant_type | |
 | T3 | code 不在 / 期限切れ | Auth | 400 invalid_grant | |
 | T4 | code 再利用 | Auth | 400 invalid_grant | 同 code から発行した Refresh Token 系列を失効。警告ログ |
@@ -119,7 +120,7 @@
 | P13 | JWKS 取得失敗かつキャッシュなし | API | 503 | アラート |
 | P14 | Identity DB 障害 | API | 503 | アラート。キャッシュがあれば寿命内のみ利用 |
 | P15 | RLS 設定漏れ。app.tenant_id 未設定 | DB | クエリが 0 件になる | 起動時テストで検知する |
-| P16 | Host が API_HOST と一致しない | API | 404 not_found。Token 検証に進まない | ログ |
+| P16 | Host が API_BASE_URL のホストと一致しない | API | 404 not_found。Token 検証に進まない | ログ |
 
 ## 6. Logout
 
@@ -131,18 +132,18 @@
 | O4 | Global Logout の CSRF 不一致 | Auth | 403 | |
 | O5 | Back-Channel Logout 通知失敗 | Auth | 完了扱い | 対象サービスの全テナントの Session は Refresh 失敗で最大15分以内に失効。ログ |
 | O6 | logout_token 検証失敗 / aud が未知のサービス | Tenant | 400 | 警告ログ。セッションは削除しない |
-| O7 | Global Logout の client_id / tenant に対応する redirect_uri がない | Auth | ログアウトは実行。完了画面はポータルへのリンクのみ | |
+| O7 | Global Logout の client_id が未登録、または tenant が slug 形式でない | Auth | ログアウトは実行。完了画面はポータルへのリンクのみ。戻り先は redirect_uri_template の展開からしか作らない | |
 
 ## 7. 運用系
 
 | # | ケース | 検知 | 対処 |
 | --- | --- | --- | --- |
 | M1 | 署名鍵ローテーション中に旧 kid の Token | Tenant / API | JWKS に旧鍵が残っていれば検証成功。削除は Token 最大寿命経過後 |
-| M2 | Client secret ローテーション中 | Auth | 新旧 2 世代を受け付ける猶予期間 |
+| M2 | Client secret ローテーション中 | Auth | oidc_client_secrets に新旧 2 行が active の間はどちらでも `/token` を通す。サービスの `CLIENT_SECRET` 切替後に旧行を revoked にする |
 | M3 | 時刻ずれ | Tenant / API | 30 秒の許容スキュー。NTP 同期を必須にする |
-| M4 | テナント削除 | Auth / API | tenant_members / tenant_services / redirect_uri を CASCADE 削除。oidc_clients は残る。既存 Token は Membership 再検証で拒否 |
+| M4 | テナント削除 | Auth / API | tenant_members / tenant_services を CASCADE 削除。oidc_clients は残る。redirect_uri はテンプレート由来のため削除対象がない。既存 Token は Membership 再検証で拒否 |
 | M6 | 契約解除 | Auth | tenant_services を削除または suspended。`/authorize` と Refresh で not_contracted。既存 Access Token は最大15分で失効 |
-| M7 | サービス廃止 | Auth / Tenant | oidc_clients を disabled。A2 で拒否。そのサービスの web と api のプロセスを停止し、provision の SERVICES から除く |
+| M7 | サービス廃止 | Auth / Tenant | oidc_clients を disabled。A2 で拒否。oidc_client_secrets と tenant_services は oidc_clients.id を参照するため行を消せば CASCADE で消える。そのサービスの web と api のプロセスを停止し、provision の SERVICES から除く |
 | M5 | Cognito でユーザー削除 | Auth | 次回ログインで L4。既存 SSO Session は期限まで残るため、削除時に Auth の管理 API から SSO Session を失効させる運用を定義 |
 
 ## ユーザー向けメッセージ方針

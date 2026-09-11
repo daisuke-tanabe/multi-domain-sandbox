@@ -54,14 +54,25 @@ token=<refresh_token>&token_type_hint=refresh_token
 
 | 項目 | 内容 |
 | --- | --- |
-| エンドポイント | `GET /logout?client_id=crm&tenant=tanaka` で確認画面。`POST /logout` に csrf、client_id、tenant を送る |
+| エンドポイント | `GET /logout?client_id=crm&tenant=tanaka` で確認画面。確認フォームは csrf、client_id、tenant を hidden で持ち、`POST /logout` に送る |
 | CSRF | 同期トークン必須 |
 | 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → Cookie 削除 |
 | 通知先 | SSO Session の authorized_clients に含まれるサービスのうち backchannel_logout_uri を持つもの。サービスごとに1通 |
 | 通知失敗 | 完了扱い。対象サービスの Session は Refresh 失敗で最大15分以内に失効 |
-| 完了画面 | `client_id` と `tenant` に対応する登録 redirect_uri の origin へ「CRM (tanaka) に戻る」のリンク。加えて `/` ポータルへのリンク |
+| 完了画面 | `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin へ「CRM (tanaka) に戻る」のリンク。加えて `/` ポータルへのリンク |
 
 サービスへの通知はテナントを区別しない。alice が tanaka.crm と suzuki.crm にログインしていても crm には1通だけ送り、crm 側が sid で両方のセッションを削除する。
+
+### 戻り先リンクの導出
+
+```text
+client_id = crm, tenant = tanaka
+template  = https://{tenant}.crm.sandbox.com/auth/callback
+展開      = https://tanaka.crm.sandbox.com/auth/callback
+リンク    = https://tanaka.crm.sandbox.com/   (展開結果の origin)
+```
+
+`tenant` はクエリで受け取った文字列をそのまま使わず、slug の形式 `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$` を満たす場合だけ展開する。展開元がサービスの登録テンプレートなので、リンク先はサービスのホスト以外になり得ない。`client_id` が未登録か `tenant` が形式を満たさない場合はリンクを出さずポータルへのリンクだけにする。ポータルの各サービスへのリンクも同じ展開で導く。
 
 ### logout_token
 
@@ -88,14 +99,15 @@ Tenant Web Application 側の検証。
 3. `events` に backchannel-logout が含まれる
 4. `nonce` が含まれていないこと
 5. jti の重複を短時間記憶してリプレイを拒否
-6. `<clientId>:sid:<sid>` の逆引きから、テナントを問わずそのサービスの Tenant Session をすべて削除
+6. ストア `<clientId>:sid` のキー `sid:<sid>` の逆引きから、テナントを問わずそのサービスの Tenant Session をすべて削除
 
 ### 前提となる構造
 
 - ID Token と Access Token に `sid` を含める
-- Tenant Session に `sid` を保存し、`<clientId>:sid:<sid> → sessionKey[]` の逆引きを持つ
+- Tenant Session に `sid` を保存し、ストア `<clientId>:sid` に `sid:<sid> → sessionKey[]` の逆引きを持つ
 - SSO Session に `authorized_clients` としてサービスの client_id を保存する
 - oidc_clients に `backchannel_logout_uri` 列を持つ
+- oidc_clients に `redirect_uri_template` 列を持ち、完了画面とポータルの戻り先を展開で導く
 
 ## RP-Initiated Logout を採用しない理由
 

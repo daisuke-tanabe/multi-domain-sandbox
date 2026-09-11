@@ -1,4 +1,4 @@
-import type { Clock, CookiePolicy, KeyValueStore, Logger } from "@sandbox/shared";
+import type { Clock, CookiePolicy, FetchLike, KeyValueStore, Logger } from "@sandbox/shared";
 
 /**
  * サービス単位の OIDC Client 設定。docs/design/06-oidc-client-design.md に対応する。
@@ -31,14 +31,13 @@ export interface OidcProviderConfig {
 
 /**
  * Tenant Session。ブラウザには id を Cookie で渡すだけで、Token はサーバー側に閉じる。
- * clientId と tenantSlug の組でキー空間を分ける。
+ * 1 プロセス 1 サービスなので、キー空間はテナントで分ける。
  */
 export interface TenantSession {
   readonly id: string;
-  readonly clientId: string;
   readonly tenantSlug: string;
   readonly userId: string;
-  readonly tenantId: string | null;
+  readonly tenantId: string;
   readonly sid: string;
   readonly email: string | null;
   readonly name: string | null;
@@ -52,17 +51,11 @@ export interface TenantSession {
 }
 
 export interface PreAuthState {
-  readonly id: string;
-  readonly clientId: string;
-  readonly tenantSlug: string;
   readonly state: string;
   readonly nonce: string;
   readonly codeVerifier: string;
   readonly returnTo: string;
-  readonly createdAt: number;
 }
-
-export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 export interface OidcClientDeps {
   readonly provider: OidcProviderConfig;
@@ -71,7 +64,7 @@ export interface OidcClientDeps {
   /** logout_token の aud からサービスを解決する。Back-Channel Logout は Host に依存しない */
   readonly resolveClientById: (clientId: string) => ServiceConfig | undefined;
   readonly sessions: KeyValueStore<TenantSession>;
-  /** sid → Tenant Session ID の一覧。Back-Channel Logout で一括削除する */
+  /** sid → Tenant Session のキー一覧。Back-Channel Logout で一括削除する */
   readonly sessionsBySid: KeyValueStore<ReadonlyArray<string>>;
   readonly preAuth: KeyValueStore<PreAuthState>;
   readonly clock: Clock;

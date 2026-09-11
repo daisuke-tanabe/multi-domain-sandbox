@@ -1,13 +1,14 @@
-import { encrypt, randomToken } from "@sandbox/shared";
+import { createSessionExpiry, encrypt, randomToken } from "@sandbox/shared";
 import { SSO_SESSION_ABSOLUTE_SECONDS, SSO_SESSION_IDLE_SECONDS } from "../policy.ts";
 import type { CognitoAuthenticated } from "../ports/cognito.ts";
 import type { User } from "../ports/identity-repository.ts";
 import type { SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "./deps.ts";
 
-function remainingAbsoluteTtl(session: SsoSession, now: number): number {
-  return session.createdAt + SSO_SESSION_ABSOLUTE_SECONDS - now;
-}
+const expiry = createSessionExpiry({
+  idleSeconds: SSO_SESSION_IDLE_SECONDS,
+  absoluteSeconds: SSO_SESSION_ABSOLUTE_SECONDS,
+});
 
 /**
  * Cookie の値から SSO Session を取得する。アイドルと絶対の両方の期限を確認する。
@@ -19,11 +20,7 @@ export async function loadSsoSession(
   if (sessionId === undefined || sessionId === "") return undefined;
   const session = await deps.stores.ssoSessions.get(sessionId);
   if (session === undefined) return undefined;
-
-  const now = deps.clock.nowSeconds();
-  const idleExpired = session.lastSeenAt + SSO_SESSION_IDLE_SECONDS <= now;
-  const absoluteExpired = remainingAbsoluteTtl(session, now) <= 0;
-  if (idleExpired || absoluteExpired) {
+  if (expiry.isExpired(session, deps.clock.nowSeconds())) {
     await destroySsoSession(deps, session);
     return undefined;
   }
@@ -46,15 +43,16 @@ export async function createSsoSession(
     id: randomToken(),
     sid: randomToken(),
     userId: user.id,
-    cognitoSub: user.cognitoSub,
     encryptedCognitoTokens: encrypt(JSON.stringify(authenticated.tokens), currentKey),
     authTime: now,
     createdAt: now,
     lastSeenAt: now,
     authorizedClients: [],
   };
-  await deps.stores.ssoSessions.set(session.id, session, SSO_SESSION_ABSOLUTE_SECONDS);
-  await deps.stores.sidIndex.set(session.sid, session.id, SSO_SESSION_ABSOLUTE_SECONDS);
+  await Promise.all([
+    deps.stores.ssoSessions.set(session.id, session, SSO_SESSION_ABSOLUTE_SECONDS),
+    deps.stores.sidIndex.set(session.sid, session.id, SSO_SESSION_ABSOLUTE_SECONDS),
+  ]);
   return session;
 }
 
@@ -71,7 +69,7 @@ export async function touchSsoSession(
     ? session.authorizedClients
     : [...session.authorizedClients, clientId];
   const updated: SsoSession = { ...session, lastSeenAt: now, authorizedClients };
-  await deps.stores.ssoSessions.set(updated.id, updated, remainingAbsoluteTtl(updated, now));
+  await deps.stores.ssoSessions.set(updated.id, updated, expiry.remainingTtl(updated, now));
   return updated;
 }
 

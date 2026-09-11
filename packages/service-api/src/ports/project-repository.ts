@@ -1,4 +1,4 @@
-import type { Role } from "./identity-reader.ts";
+import type { Role } from "@sandbox/shared";
 
 /**
  * 認可済みのリクエストコンテキスト。tenantId は Access Token 由来の値のみ。

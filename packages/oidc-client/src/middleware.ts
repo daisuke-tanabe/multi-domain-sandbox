@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
-import { clearSessionCookie, readSessionCookie } from "./routes.ts";
-import { loadSession, saveSession } from "./session.ts";
+import { clearSessionCookie, readSessionCookie } from "./cookies.ts";
+import { loadSession, touchSession } from "./session.ts";
 import type { OidcClientConfig, OidcClientDeps, TenantSession } from "./types.ts";
 
 /**
@@ -15,17 +15,13 @@ export type OidcEnv = { Variables: OidcVariables };
 
 /**
  * Host から Client を解決し、セッションがあれば読み込む。未ログインでも通す。
+ * Back-Channel Logout のようにテナントのホストで届かない経路は、この前に mount する。
  */
 export function tenantContext(
   deps: OidcClientDeps,
   onUnknownHost: (c: Context) => Response | Promise<Response>,
 ): MiddlewareHandler<OidcEnv> {
   return async (c, next) => {
-    // Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、ここでは解決しない
-    if (c.req.path === "/auth/backchannel-logout") {
-      await next();
-      return;
-    }
     const client = deps.resolveClient(c.req.header("host"));
     if (client === undefined) return onUnknownHost(c);
     c.set("tenantClient", client);
@@ -33,7 +29,7 @@ export function tenantContext(
     const cookieValue = readSessionCookie(c, deps);
     const session = await loadSession(deps, client, cookieValue);
     if (session === undefined && cookieValue !== undefined) clearSessionCookie(c, deps);
-    c.set("tenantSession", session === undefined ? undefined : await saveSession(deps, session));
+    c.set("tenantSession", session === undefined ? undefined : await touchSession(deps, session));
     await next();
   };
 }

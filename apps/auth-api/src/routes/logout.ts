@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import type { CookiePolicy } from "@sandbox/shared";
+import { expandRedirectUriTemplate, type CookiePolicy } from "@sandbox/shared";
 import { issueCsrfToken, verifyCsrfToken } from "../usecases/csrf.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import { globalLogout } from "../usecases/global-logout.ts";
@@ -24,7 +24,7 @@ const logoutFormSchema = z.object({
 /**
  * Global Logout。docs/design/10-logout-design.md に対応する。
  * GET は確認画面、POST で SSO Session を破棄し各 Client へ Back-Channel Logout を送る。
- * 戻り先は登録済み Client の redirect_uri の origin からのみ導出する。Open Redirect を防ぐ。
+ * 戻り先は Client の redirect_uri テンプレートをテナントで展開した origin からのみ導出する。Open Redirect を防ぐ。
  */
 export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
@@ -79,14 +79,12 @@ async function returnTarget(
   clientId: string | undefined,
   tenantSlug: string | undefined,
 ): Promise<{ label: string; href: string } | undefined> {
-  if (clientId === undefined) return undefined;
-  const client = await deps.identity.findClient(clientId);
-  if (client === undefined) return undefined;
-  // 戻り先は登録済み redirect_uri の origin からのみ導出する。テナント指定があればそのテナントの行を使う
-  const target =
-    client.redirectTargets.find((t) => tenantSlug !== undefined && t.tenant?.slug === tenantSlug) ??
-    client.redirectTargets[0];
-  if (target === undefined) return undefined;
-  const label = target.tenant === null ? client.name : `${client.name} (${target.tenant.slug})`;
-  return { label, href: new URL(target.uri).origin + "/" };
+  if (clientId === undefined || tenantSlug === undefined) return undefined;
+  const [client, tenant] = await Promise.all([
+    deps.identity.findClient(clientId),
+    deps.identity.findTenantBySlug(tenantSlug),
+  ]);
+  if (client === undefined || tenant === undefined) return undefined;
+  const origin = new URL(expandRedirectUriTemplate(client.redirectUriTemplate, tenant.slug)).origin;
+  return { label: `${client.name} (${tenant.slug})`, href: `${origin}/` };
 }

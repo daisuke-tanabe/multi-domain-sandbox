@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { FakeClock } from "./clock.ts";
 import { generateSigningKey, signJwt, toJwks, verifyJwt } from "./jwt.ts";
 
 const ISSUER = "https://auth.example.test";
@@ -21,7 +22,7 @@ describe("jwt", () => {
     const result = await verifyJwt(token, toJwks([key]), {
       issuer: ISSUER,
       audience: "tenant-a",
-      currentDate: new Date(now * 1000),
+      clock: new FakeClock(now),
     });
 
     // Assert
@@ -47,7 +48,7 @@ describe("jwt", () => {
     const result = await verifyJwt(token, toJwks([key]), {
       issuer: ISSUER,
       audience: "https://api.example.test",
-      currentDate: new Date(now * 1000),
+      clock: new FakeClock(now),
     });
 
     expect(result.ok).toBe(false);
@@ -68,7 +69,7 @@ describe("jwt", () => {
     const result = await verifyJwt(token, toJwks([key]), {
       issuer: ISSUER,
       audience: "tenant-a",
-      currentDate: new Date((now + 400) * 1000),
+      clock: new FakeClock(now + 400),
     });
 
     expect(result.ok).toBe(false);
@@ -90,7 +91,7 @@ describe("jwt", () => {
     const result = await verifyJwt(token, toJwks([other]), {
       issuer: ISSUER,
       audience: "tenant-a",
-      currentDate: new Date(now * 1000),
+      clock: new FakeClock(now),
     });
 
     expect(result.ok).toBe(false);

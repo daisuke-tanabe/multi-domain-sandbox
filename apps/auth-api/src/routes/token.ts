@@ -1,6 +1,7 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import type { OidcClient } from "../ports/identity-repository.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import {
   authenticateClient,
@@ -10,87 +11,90 @@ import {
 } from "../usecases/token.ts";
 import { noStore } from "./helpers.ts";
 
-const tokenFormSchema = z.object({
-  grant_type: z.string().min(1),
-  code: z.string().optional(),
-  redirect_uri: z.string().optional(),
-  code_verifier: z.string().optional(),
-  refresh_token: z.string().optional(),
-});
+const tokenFormSchema = z.discriminatedUnion("grant_type", [
+  z.object({
+    grant_type: z.literal("authorization_code"),
+    code: z.string().min(1),
+    redirect_uri: z.string().min(1),
+    code_verifier: z.string().min(1),
+  }),
+  z.object({
+    grant_type: z.literal("refresh_token"),
+    refresh_token: z.string().min(1),
+  }),
+]);
 
 const revokeFormSchema = z.object({
   token: z.string().min(1),
   token_type_hint: z.string().optional(),
 });
 
+type ClientEnv = { Variables: { client: OidcClient } };
+
+/** client_secret_basic。失敗は 401 と WWW-Authenticate で返す */
+function clientAuth(deps: AuthDeps, realm: string): MiddlewareHandler<ClientEnv> {
+  return async (c, next) => {
+    noStore(c);
+    const client = await authenticateClient(deps.identity, c.req.header("Authorization"));
+    if (!client.ok) {
+      c.header("WWW-Authenticate", `Basic realm="${realm}"`);
+      return c.json({ error: "invalid_client" }, 401);
+    }
+    c.set("client", client.value);
+    await next();
+  };
+}
+
 /**
  * POST /token と POST /revoke。Back Channel 専用。
  */
-export function tokenRoutes(deps: AuthDeps): Hono {
-  const app = new Hono();
+export function tokenRoutes(deps: AuthDeps): Hono<ClientEnv> {
+  const app = new Hono<ClientEnv>();
 
   app.post(
     "/token",
+    clientAuth(deps, "token"),
     zValidator("form", tokenFormSchema, (result, c) => {
-      if (!result.success) return c.json({ error: "invalid_request" }, 400);
+      // grant_type が未知でも必須項目が欠けても invalid_request。未知の grant_type は別コードで返す
+      if (!result.success) {
+        const grantType = Reflect.get(result.data ?? {}, "grant_type");
+        const known = grantType === "authorization_code" || grantType === "refresh_token";
+        return c.json({ error: known ? "invalid_request" : "unsupported_grant_type" }, 400);
+      }
       return undefined;
     }),
     async (c) => {
-      noStore(c);
-      const client = await authenticateClient(deps.identity, c.req.header("Authorization"));
-      if (!client.ok) {
-        c.header("WWW-Authenticate", 'Basic realm="token"');
-        return c.json({ error: "invalid_client" }, 401);
-      }
-
+      const client = c.get("client");
       const form = c.req.valid("form");
-      switch (form.grant_type) {
-        case "authorization_code": {
-          const result = await exchangeAuthorizationCode(deps, client.value, {
-            code: form.code,
-            redirectUri: form.redirect_uri,
-            codeVerifier: form.code_verifier,
-          });
-          if (!result.ok) {
-            deps.logger.info("token exchange rejected", {
-              clientId: client.value.clientId,
-              reason: result.error.reason,
-            });
-            return c.json({ error: "invalid_grant" }, 400);
-          }
-          return c.json(result.value);
-        }
-        case "refresh_token": {
-          const result = await refreshAccessToken(deps, client.value, form.refresh_token);
-          if (!result.ok) {
-            deps.logger.info("refresh rejected", {
-              clientId: client.value.clientId,
-              reason: result.error.reason,
-            });
-            return c.json({ error: "invalid_grant" }, 400);
-          }
-          return c.json(result.value);
-        }
-        default:
-          return c.json({ error: "unsupported_grant_type" }, 400);
+      const result =
+        form.grant_type === "authorization_code"
+          ? await exchangeAuthorizationCode(deps, client, {
+              code: form.code,
+              redirectUri: form.redirect_uri,
+              codeVerifier: form.code_verifier,
+            })
+          : await refreshAccessToken(deps, client, form.refresh_token);
+      if (!result.ok) {
+        deps.logger.info("token request rejected", {
+          grantType: form.grant_type,
+          clientId: client.clientId,
+          reason: result.error.reason,
+        });
+        return c.json({ error: "invalid_grant" }, 400);
       }
+      return c.json(result.value);
     },
   );
 
   app.post(
     "/revoke",
+    clientAuth(deps, "revoke"),
     zValidator("form", revokeFormSchema, (result, c) => {
       if (!result.success) return c.json({ error: "invalid_request" }, 400);
       return undefined;
     }),
     async (c) => {
-      noStore(c);
-      const client = await authenticateClient(deps.identity, c.req.header("Authorization"));
-      if (!client.ok) {
-        c.header("WWW-Authenticate", 'Basic realm="revoke"');
-        return c.json({ error: "invalid_client" }, 401);
-      }
-      await revokeRefreshToken(deps, client.value, c.req.valid("form").token);
+      await revokeRefreshToken(deps, c.get("client"), c.req.valid("form").token);
       return c.body(null, 200);
     },
   );

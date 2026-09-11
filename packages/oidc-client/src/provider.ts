@@ -1,14 +1,17 @@
 import { z } from "zod";
 import {
   err,
+  getErrorMessage,
   ok,
-  verifyJwt,
+  RemoteJwksSource,
+  verifyJwtWithSource,
   type Clock,
-  type JSONWebKeySet,
+  type FetchLike,
+  type JwksError,
   type JWTPayload,
   type Result,
 } from "@sandbox/shared";
-import type { FetchLike, OidcClientConfig, OidcProviderConfig } from "./types.ts";
+import type { OidcClientConfig, OidcProviderConfig } from "./types.ts";
 
 const discoverySchema = z.object({
   issuer: z.string().url(),
@@ -28,8 +31,6 @@ const tokenResponseSchema = z.object({
   scope: z.string().optional(),
 });
 
-const jwksSchema = z.object({ keys: z.array(z.record(z.string(), z.unknown())) });
-
 export type Discovery = z.infer<typeof discoverySchema>;
 export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
@@ -41,21 +42,30 @@ export type ProviderError =
   | { readonly kind: "token_request_failed"; readonly reason: string }
   | { readonly kind: "id_token_invalid"; readonly reason: string };
 
-const JWKS_REFRESH_MIN_INTERVAL_SECONDS = 60;
-
 /**
  * OpenID Provider との通信。Discovery と JWKS をキャッシュし、Back Channel 呼び出しは内部 URL に書き換える。
  */
 export class OidcProvider {
   private discovery: Discovery | undefined;
-  private jwks: JSONWebKeySet | undefined;
-  private jwksFetchedAt = 0;
+  private readonly jwks: RemoteJwksSource;
 
   constructor(
     private readonly config: OidcProviderConfig,
     private readonly fetchFn: FetchLike,
     private readonly clock: Clock,
-  ) {}
+  ) {
+    // jwks_uri は Discovery から決まるため、取得時に解決する
+    this.jwks = new RemoteJwksSource(
+      async (): Promise<Result<string, JwksError>> => {
+        const discovery = await this.getDiscovery();
+        return discovery.ok
+          ? ok(this.toBackchannel(discovery.value.jwks_uri))
+          : err({ kind: "jwks_unavailable", reason: discovery.error.reason });
+      },
+      fetchFn,
+      clock,
+    );
+  }
 
   public get issuer(): string {
     return this.config.issuer;
@@ -71,7 +81,9 @@ export class OidcProvider {
     return target.toString();
   }
 
-  public async getDiscovery(): Promise<Result<Discovery, ProviderError>> {
+  public async getDiscovery(): Promise<
+    Result<Discovery, Extract<ProviderError, { kind: "discovery_failed" }>>
+  > {
     if (this.discovery !== undefined) return ok(this.discovery);
     const url = this.toBackchannel(`${this.config.issuer}/.well-known/openid-configuration`);
     try {
@@ -85,77 +97,45 @@ export class OidcProvider {
       this.discovery = parsed.data;
       return ok(parsed.data);
     } catch (error: unknown) {
-      return err({
-        kind: "discovery_failed",
-        reason: error instanceof Error ? error.message : "unknown",
-      });
+      return err({ kind: "discovery_failed", reason: getErrorMessage(error) });
     }
   }
 
-  private async getJwks(forceRefresh: boolean): Promise<Result<JSONWebKeySet, ProviderError>> {
-    const now = this.clock.nowSeconds();
-    const canRefresh = now - this.jwksFetchedAt >= JWKS_REFRESH_MIN_INTERVAL_SECONDS;
-    if (this.jwks !== undefined && (!forceRefresh || !canRefresh)) return ok(this.jwks);
-
-    const discovery = await this.getDiscovery();
-    if (!discovery.ok) return discovery;
-    try {
-      const res = await this.fetchFn(this.toBackchannel(discovery.value.jwks_uri));
-      if (!res.ok) return err({ kind: "jwks_failed", reason: `status ${res.status}` });
-      const parsed = jwksSchema.safeParse(await res.json());
-      if (!parsed.success) return err({ kind: "jwks_failed", reason: "malformed jwks" });
-      this.jwks = parsed.data;
-      this.jwksFetchedAt = now;
-      return ok(parsed.data);
-    } catch (error: unknown) {
-      return err({
-        kind: "jwks_failed",
-        reason: error instanceof Error ? error.message : "unknown",
-      });
+  private async verify(
+    token: string,
+    audience: string | undefined,
+  ): Promise<Result<JWTPayload, ProviderError>> {
+    const verified = await verifyJwtWithSource(token, this.jwks, {
+      issuer: this.config.issuer,
+      ...(audience !== undefined && { audience }),
+      clock: this.clock,
+    });
+    if (verified.ok) return verified;
+    if (verified.error.kind === "jwks_unavailable") {
+      return err({ kind: "jwks_failed", reason: verified.error.reason });
     }
+    return err({
+      kind: "id_token_invalid",
+      reason: verified.error.kind === "expired" ? "expired" : verified.error.reason,
+    });
   }
 
   /**
-   * ID Token を検証する。未知の kid なら JWKS を一度だけ再取得して再試行する。
+   * ID Token を検証する。未知の kid は JwksSource が一度だけ再取得する。
    */
   public async verifyIdToken(
     idToken: string,
     client: OidcClientConfig,
     expectedNonce: string,
   ): Promise<Result<JWTPayload, ProviderError>> {
-    const first = await this.verifyWithJwks(idToken, client, false);
-    if (first.ok) return this.checkNonce(first.value, expectedNonce);
-    if (first.error.kind !== "id_token_invalid") return first;
-    const second = await this.verifyWithJwks(idToken, client, true);
-    if (!second.ok) return second;
-    return this.checkNonce(second.value, expectedNonce);
-  }
-
-  private checkNonce(
-    payload: JWTPayload,
-    expectedNonce: string,
-  ): Result<JWTPayload, ProviderError> {
+    const verified = await this.verify(idToken, client.clientId);
+    if (!verified.ok) return verified;
+    const payload = verified.value;
     if (payload.nonce !== expectedNonce)
       return err({ kind: "id_token_invalid", reason: "nonce mismatch" });
     if (typeof payload.sub !== "string")
       return err({ kind: "id_token_invalid", reason: "sub missing" });
     return ok(payload);
-  }
-
-  private async verifyWithJwks(
-    idToken: string,
-    client: OidcClientConfig,
-    forceRefresh: boolean,
-  ): Promise<Result<JWTPayload, ProviderError>> {
-    const jwks = await this.getJwks(forceRefresh);
-    if (!jwks.ok) return jwks;
-    const verified = await verifyJwt(idToken, jwks.value, {
-      issuer: this.config.issuer,
-      audience: client.clientId,
-      currentDate: new Date(this.clock.nowSeconds() * 1000),
-    });
-    if (!verified.ok) return err({ kind: "id_token_invalid", reason: verified.error.reason });
-    return ok(verified.value);
   }
 
   /**
@@ -165,13 +145,8 @@ export class OidcProvider {
   public async verifyLogoutToken(
     logoutToken: string,
   ): Promise<Result<{ sid: string; audience: string }, ProviderError>> {
-    const jwks = await this.getJwks(true);
-    if (!jwks.ok) return jwks;
-    const verified = await verifyJwt(logoutToken, jwks.value, {
-      issuer: this.config.issuer,
-      currentDate: new Date(this.clock.nowSeconds() * 1000),
-    });
-    if (!verified.ok) return err({ kind: "id_token_invalid", reason: verified.error.reason });
+    const verified = await this.verify(logoutToken, undefined);
+    if (!verified.ok) return verified;
     const payload = verified.value;
     const events = payload.events;
     const hasLogoutEvent =
@@ -229,10 +204,7 @@ export class OidcProvider {
         return err({ kind: "token_request_failed", reason: `revoke status ${res.status}` });
       return ok(undefined);
     } catch (error: unknown) {
-      return err({
-        kind: "token_request_failed",
-        reason: error instanceof Error ? error.message : "unknown",
-      });
+      return err({ kind: "token_request_failed", reason: getErrorMessage(error) });
     }
   }
 
@@ -264,10 +236,7 @@ export class OidcProvider {
         return err({ kind: "token_request_failed", reason: "malformed token response" });
       return ok(parsed.data);
     } catch (error: unknown) {
-      return err({
-        kind: "token_request_failed",
-        reason: error instanceof Error ? error.message : "unknown",
-      });
+      return err({ kind: "token_request_failed", reason: getErrorMessage(error) });
     }
   }
 }

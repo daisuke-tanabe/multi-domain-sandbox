@@ -1,29 +1,25 @@
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import type {
-  IdentityMembership,
-  IdentityReader,
-  IdentityTenant,
-  IdentityUser,
-} from "../ports/identity-reader.ts";
+import {
+  membershipStatusSchema,
+  queryOne,
+  roleSchema,
+  tenantStatusSchema,
+  userStatusSchema,
+} from "@sandbox/shared";
+import type { AccessContext, IdentityReader } from "../ports/identity-reader.ts";
 import type { Project, ProjectRepository, TenantContext } from "../ports/project-repository.ts";
 
-const userRow = z.object({
-  id: z.string(),
-  email: z.string(),
+const accessContextRow = z.object({
+  user_id: z.string().nullable(),
+  email: z.string().nullable(),
   name: z.string().nullable(),
-  status: z.enum(["active", "disabled"]),
-});
-
-const tenantRow = z.object({
-  id: z.string(),
-  slug: z.string(),
-  status: z.enum(["active", "suspended"]),
-});
-
-const membershipRow = z.object({
-  role: z.enum(["owner", "admin", "member", "viewer"]),
-  status: z.enum(["active", "invited", "disabled"]),
+  user_status: userStatusSchema.nullable(),
+  tenant_id: z.string().nullable(),
+  slug: z.string().nullable(),
+  tenant_status: tenantStatusSchema.nullable(),
+  role: roleSchema.nullable(),
+  membership_status: membershipStatusSchema.nullable(),
 });
 
 const projectRow = z.object({
@@ -43,34 +39,35 @@ function toProject(row: z.infer<typeof projectRow>): Project {
 export class PgIdentityReader implements IdentityReader {
   constructor(private readonly pool: Pool) {}
 
-  public async findUserById(id: string): Promise<IdentityUser | undefined> {
-    const result = await this.pool.query(
-      "SELECT id, email, name, status FROM identity.users WHERE id = $1",
-      [id],
+  public async findAccessContext(userId: string, tenantId: string): Promise<AccessContext> {
+    // 1 往復で 3 行分を引く。存在しないものは NULL になる
+    const row = await queryOne(
+      this.pool,
+      accessContextRow,
+      `SELECT u.id AS user_id, u.email, u.name, u.status AS user_status,
+              t.id AS tenant_id, t.slug, t.status AS tenant_status,
+              m.role, m.status AS membership_status
+         FROM (SELECT $1::text AS user_id, $2::text AS tenant_id) p
+         LEFT JOIN identity.users u ON u.id = p.user_id
+         LEFT JOIN identity.tenants t ON t.id = p.tenant_id
+         LEFT JOIN identity.tenant_members m ON m.user_id = p.user_id AND m.tenant_id = p.tenant_id`,
+      [userId, tenantId],
     );
-    const first = result.rows[0];
-    return first === undefined ? undefined : userRow.parse(first);
-  }
-
-  public async findTenantById(id: string): Promise<IdentityTenant | undefined> {
-    const result = await this.pool.query(
-      "SELECT id, slug, status FROM identity.tenants WHERE id = $1",
-      [id],
-    );
-    const first = result.rows[0];
-    return first === undefined ? undefined : tenantRow.parse(first);
-  }
-
-  public async findMembership(
-    tenantId: string,
-    userId: string,
-  ): Promise<IdentityMembership | undefined> {
-    const result = await this.pool.query(
-      "SELECT role, status FROM identity.tenant_members WHERE tenant_id = $1 AND user_id = $2",
-      [tenantId, userId],
-    );
-    const first = result.rows[0];
-    return first === undefined ? undefined : membershipRow.parse(first);
+    if (row === undefined) return { user: undefined, tenant: undefined, membership: undefined };
+    return {
+      user:
+        row.user_id !== null && row.email !== null && row.user_status !== null
+          ? { id: row.user_id, email: row.email, name: row.name, status: row.user_status }
+          : undefined,
+      tenant:
+        row.tenant_id !== null && row.slug !== null && row.tenant_status !== null
+          ? { id: row.tenant_id, slug: row.slug, status: row.tenant_status }
+          : undefined,
+      membership:
+        row.role !== null && row.membership_status !== null
+          ? { role: row.role, status: row.membership_status }
+          : undefined,
+    };
   }
 }
 
@@ -132,11 +129,4 @@ export class PgProjectRepository implements ProjectRepository {
       return toProject(projectRow.parse(result.rows[0]));
     });
   }
-}
-
-export function createPool(connectionString: string, onError: (error: Error) => void): Pool {
-  const pool = new Pool({ connectionString, max: 10 });
-  // アイドル接続が切れたときの error イベントを拾わないとプロセスごと落ちる
-  pool.on("error", onError);
-  return pool;
 }

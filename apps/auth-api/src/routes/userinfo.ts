@@ -1,6 +1,7 @@
 import { Hono } from "hono";
-import { toJwks, verifyJwt } from "@sandbox/shared";
+import { readBearerToken, toJwks, verifyJwt } from "@sandbox/shared";
 import type { AuthDeps } from "../usecases/deps.ts";
+import { profileClaims } from "../usecases/issue-tokens.ts";
 import { noStore } from "./helpers.ts";
 
 /**
@@ -11,15 +12,15 @@ export function userinfoRoutes(deps: AuthDeps): Hono {
 
   app.get("/userinfo", async (c) => {
     noStore(c);
-    const header = c.req.header("Authorization");
-    if (header === undefined || !header.startsWith("Bearer ")) {
+    const token = readBearerToken(c.req.header("Authorization"));
+    if (token === undefined) {
       c.header("WWW-Authenticate", "Bearer");
       return c.json({ error: "invalid_request" }, 401);
     }
-    const verified = await verifyJwt(header.slice("Bearer ".length), toJwks([deps.signingKey]), {
+    const verified = await verifyJwt(token, toJwks([deps.signingKey]), {
       issuer: deps.issuer,
       audience: deps.issuer,
-      currentDate: new Date(deps.clock.nowSeconds() * 1000),
+      clock: deps.clock,
     });
     if (!verified.ok || typeof verified.value.sub !== "string") {
       c.header("WWW-Authenticate", 'Bearer error="invalid_token"');
@@ -32,8 +33,7 @@ export function userinfoRoutes(deps: AuthDeps): Hono {
     const scopes = typeof verified.value.scope === "string" ? verified.value.scope.split(" ") : [];
     return c.json({
       sub: user.id,
-      ...(scopes.includes("email") && { email: user.email, email_verified: true }),
-      ...(scopes.includes("profile") && user.name !== null && { name: user.name }),
+      ...profileClaims(user, scopes),
       ...(typeof verified.value.tenant_id === "string" && { tenant_id: verified.value.tenant_id }),
     });
   });

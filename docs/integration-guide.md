@@ -21,8 +21,8 @@
 
 - 認証は Cognito、SSO は独立した Auth Server、アプリのセッションは各サービス、と責務を 3 層に分ける
 - Auth Server は OpenID Connect の Authorization Code Flow + PKCE を提供する OpenID Provider として振る舞い、各サービスはその Confidential Client になる
-- 導入する単位はサービス。サービスは `client_id` と `client_secret` を 1 組、`backchannel_logout_uri` を 1 つ、API の `audience` を 1 つ持つ
-- テナントは顧客企業で、サービスをまたいで共有される。サービスは提供するテナントごとに `redirect_uri` を 1 つ登録し、Auth Server は `client_id` と `redirect_uri` の組でテナントを決める
+- 導入する単位はサービス。サービスは `client_id` を 1 つ、`client_secret` を 1 つ以上、`redirect_uri_template` を 1 つ、`backchannel_logout_uri` を 1 つ、API の `audience` を 1 つ持つ
+- テナントは顧客企業で、サービスをまたいで共有される。サービスは `https://{tenant}.<service>.<domain>/auth/callback` の形の `redirect_uri_template` を 1 つ登録し、Auth Server は `redirect_uri` をテンプレートに当てて取り出した slug でテナントを決める。テナントごとの redirect_uri 登録はない
 - テナントがそのサービスを使えるかは契約テーブル `tenant_services` で決まる。契約がなければ Membership があっても `access_denied` になる
 - サービス間で共有するのは Cookie でも JWT でもなく「ブラウザのリダイレクト」と「一回限りの Authorization Code」だけ。だからサブドメインでも別ドメインでも同じ手順で SSO が成立する
 - Cognito の Token は Auth Server の内部に閉じ、各サービスは Auth Server が署名した ID Token と Access Token だけを受け取る
@@ -31,9 +31,9 @@
 
 サービス側の作業を順番に並べる。詳細は各節に書く。
 
-1. Auth Server に Client を 1 件登録する。`client_id`、`client_secret`、`name`、`audience`、`backchannel_logout_uri`。5.6 節
-2. 提供するテナントごとに `redirect_uri` を登録する。`https://<tenant>.<service>.<domain>/auth/callback` の形で、`tenant_id` を紐付ける。5.6 節
-3. テナントとサービスの契約を `tenant_services` に入れる。5.6 節
+1. Auth Server に Client を 1 件登録する。`client_id`、`name`、`audience`、`redirect_uri_template`、`backchannel_logout_uri`。`redirect_uri_template` は `https://{tenant}.<service>.<domain>/auth/callback` の形で `{tenant}` を 1 か所だけ含む。5.6 節
+2. `client_secret` を 32 バイト以上の乱数で生成し、`oidc_client_secrets` に active で 1 行入れる。5.6 節
+3. テナントとサービスの契約を `tenant_services` に入れる。テナントごとの redirect_uri 登録はない。5.6 節
 4. サービス側に `/auth/login` `/auth/callback` `/auth/logout` `/auth/backchannel-logout` の 4 エンドポイントを置く。5.1 節
 5. サービスの API で Access Token を検証する。`aud` は自サービスの `audience` と一致させる。5.7 節
 6. 6 章のシーケンスをすべて通す。9 章の完了条件で確認する
@@ -80,7 +80,7 @@ flowchart TB
     subgraph AuthLayer ["auth.example.com  OpenID Provider"]
         Auth["Auth Server<br/>/authorize /login /token /jwks /userinfo /revoke /logout /"]
         SsoStore[("Redis<br/>SSO Session / Code / Refresh Token")]
-        IdDB[("Identity DB<br/>users / tenants / tenant_members<br/>oidc_clients / oidc_client_redirect_uris / tenant_services")]
+        IdDB[("Identity DB<br/>users / tenants / tenant_members<br/>oidc_clients / oidc_client_secrets / tenant_services")]
         Auth --- SsoStore
         Auth --- IdDB
     end
@@ -141,7 +141,7 @@ Domain 属性を付けないため、ブラウザは Cookie を発行ホスト�
 
 ### 4.2 SSO を成立させているのはリダイレクトと Code
 
-tanaka.cms を初めて開いたとき、tanaka.cms は自分の Cookie を持っていないので「未ログイン」と判断する。ここで tanaka.cms はブラウザを `auth.example.com/authorize` へリダイレクトする。ブラウザは auth のホストに対しては `sso_session` Cookie を持っているので、auth は「このブラウザは既にログイン済み」と分かる。auth は `client_id=cms` と `redirect_uri` から tenant を tanaka と特定し、契約と Membership を確認したうえで cms 宛ての Authorization Code を発行し、ブラウザを `tanaka.cms.example.com/auth/callback?code=...` へ戻す。tanaka.cms はその code をサーバー間通信で auth に渡し、代わりに Token を受け取って自分の Cookie を発行する。
+tanaka.cms を初めて開いたとき、tanaka.cms は自分の Cookie を持っていないので「未ログイン」と判断する。ここで tanaka.cms はブラウザを `auth.example.com/authorize` へリダイレクトする。ブラウザは auth のホストに対しては `sso_session` Cookie を持っているので、auth は「このブラウザは既にログイン済み」と分かる。auth は `client_id=cms` の `redirect_uri_template` に `redirect_uri` を当てて tenant を tanaka と特定し、契約と Membership を確認したうえで cms 宛ての Authorization Code を発行し、ブラウザを `tanaka.cms.example.com/auth/callback?code=...` へ戻す。tanaka.cms はその code をサーバー間通信で auth に渡し、代わりに Token を受け取って自分の Cookie を発行する。
 
 ```text
 tanaka.cms の Cookie なし
@@ -164,9 +164,9 @@ tanaka.cms の Cookie 発行
 
 ### 4.4 別ドメインのサービスを足すときにやること
 
-1. Auth Server の Client Registry に `client_id = service-c` `client_secret` `audience = https://api.another-service.net` `backchannel_logout_uri = https://another-service.net/auth/backchannel-logout` を登録する
-2. 提供するテナントごとに `redirect_uri` を登録する。テナントごとにホストを分けるなら `https://<tenant>.another-service.net/auth/callback`、1 ホストで提供するなら `https://another-service.net/auth/callback` を `tenant_id` 付きで登録する
-3. `tenant_services` に契約を入れる
+1. Auth Server の Client Registry に `client_id = service-c` `audience = https://api.another-service.net` `redirect_uri_template = https://{tenant}.another-service.net/auth/callback` `backchannel_logout_uri = https://another-service.net/auth/backchannel-logout` を登録する。テンプレートはテナントごとにホストを分ける前提で、`{tenant}` の位置はパスでもよい。`https://another-service.net/t/{tenant}/auth/callback` のように、展開結果がサービスのホストに閉じていればよい
+2. `client_secret` を `oidc_client_secrets` に active で 1 行入れる
+3. `tenant_services` に契約を入れる。テナントごとの redirect_uri 登録はない
 4. サービス側に `/auth/login` `/auth/callback` `/auth/logout` `/auth/backchannel-logout` を置く
 5. サービス側に `external_user_id` を保存する列を用意する
 
@@ -209,7 +209,7 @@ Host の先頭ラベルがテナント slug、残りがサービスの `baseHost
 | 規約 | 内容 |
 | --- | --- |
 | 認証 | `Authorization: Bearer <access_token>` 必須。Cookie は受け付けない |
-| aud | Host から `<scheme>://<host>` を組み立てて `aud` と照合する。登録外の Host は 404、別サービス向けの Token は 401 |
+| aud | 自 API の公開 URL 1 つを `aud` とし、Token の `aud` と照合する。リクエストの Host がその URL のホストと異なれば 404、別サービス向けの Token は 401 |
 | テナント指定 | パス、クエリ、ヘッダに tenant を含めない。Token の `tenant_id` が唯一の根拠 |
 | 認可 | Token 検証 → users.status → tenant_members → Role → Permission → データアクセス |
 
@@ -221,7 +221,7 @@ Host の先頭ラベルがテナント slug、残りがサービスの `baseHost
 | --- | --- | --- | --- |
 | `response_type` | 必須 | `code` | それ以外は `unsupported_response_type` |
 | `client_id` | 必須 | 登録済み Client ID。サービス ID と同値。`crm` など | 未登録ならリダイレクトせず 400 |
-| `redirect_uri` | 必須 | 登録値と文字列完全一致。登録行の `tenant_id` がこのリクエストのテナントになる | 不一致ならリダイレクトせず 400 |
+| `redirect_uri` | 必須 | Client の `redirect_uri_template` を slug で展開した文字列と完全一致。取り出した slug で `tenants` を引いた行がこのリクエストのテナントになる | テンプレート不一致、または slug が `tenants` にない場合は `invalid_redirect_uri` でリダイレクトせず 400 |
 | `scope` | 必須 | `openid` を含む。`profile` `email` 任意 | 許可外は `invalid_scope` |
 | `state` | 必須 | Client が生成した 256bit 乱数 | ないと `invalid_request` |
 | `nonce` | 必須 | Client が生成した 256bit 乱数 | ないと `invalid_request` |
@@ -255,7 +255,7 @@ Set-Cookie: __Host-sso_session=<id>; Path=/; Secure; HttpOnly; SameSite=Lax   (�
 | --- | --- | --- |
 | 1 | `users.status = active` | `user_disabled` |
 | 2 | `tenants.status = active` | `tenant_suspended` |
-| 3 | `tenant_services (tenant_id, client_id)` が active | `not_contracted` |
+| 3 | `tenant_services (tenant_id, oidc_client_id)` が active | `not_contracted` |
 | 4 | `tenant_members (tenant_id, user_id)` が存在 | `no_membership` |
 | 5 | `tenant_members.status = active` | `membership_inactive` |
 
@@ -299,7 +299,7 @@ Set-Cookie: __Host-sso_session=<id>; Path=/; Secure; HttpOnly; SameSite=Lax   (�
 
 #### POST `/token`
 
-`Authorization: Basic base64(client_id:client_secret)`、`application/x-www-form-urlencoded`。`client_id` はサービス ID。テナントは code に紐付いているため、`/token` にテナントを渡す必要はない。
+`Authorization: Basic base64(client_id:client_secret)`、`application/x-www-form-urlencoded`。`client_id` はサービス ID。`client_secret` は `oidc_client_secrets` の active な行のいずれかに一致すればよく、ローテーション中は新旧どちらでも通る。テナントは code に紐付いているため、`/token` にテナントを渡す必要はない。
 
 grant_type=authorization_code。
 
@@ -332,7 +332,7 @@ grant_type=refresh_token。
 
 | エラー | 状態 | 条件 |
 | --- | --- | --- |
-| `invalid_client` | 401 | Basic 認証失敗。`WWW-Authenticate: Basic` |
+| `invalid_client` | 401 | Basic 認証失敗。active な secret のいずれにも一致しない。revoked 済みの secret を含む。`WWW-Authenticate: Basic` |
 | `invalid_grant` | 400 | code 不在、期限切れ、再利用、client 不一致、redirect_uri 不一致、PKCE 不一致、SSO Session 失効、Refresh Token 再利用、契約解除、Membership 消失 |
 | `unsupported_grant_type` | 400 | 上記以外の grant_type |
 
@@ -348,7 +348,7 @@ refresh_token grant では `/authorize` と同じ順序で user、tenant、契�
 
 #### GET `/logout?client_id=<client_id>&tenant=<slug>` と POST `/logout`
 
-GET は確認画面。POST は `csrf` と任意の `client_id` `tenant` を受け取り、SSO Session を破棄して各 Client に Back-Channel Logout を送る。完了画面には `client_id` と `tenant` に対応する登録 redirect_uri の origin へのリンクを「CRM (tanaka) に戻る」の形で出し、ポータルへのリンクも出す。戻り先を登録済み redirect_uri からしか導出しないため Open Redirect にならない。
+GET は確認画面で、`client_id` と `tenant` を hidden に持つ。POST は `csrf` と任意の `client_id` `tenant` を受け取り、SSO Session を破棄して各 Client に Back-Channel Logout を送る。完了画面には `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin へのリンクを「CRM (tanaka) に戻る」の形で出し、ポータルへのリンクも出す。戻り先を登録済みテンプレートの展開からしか導出しないため Open Redirect にならない。
 
 #### POST `/auth/backchannel-logout`。サービス側
 
@@ -423,56 +423,63 @@ Cookie の値はすべてサーバー側ストアを指す乱数で、JWT やユ
 
 | ストア | キー | 内容 | TTL |
 | --- | --- | --- | --- |
-| SSO Session | `sso:sess:<id>` | sid、user_id、cognito_sub、暗号化した Cognito Token、auth_time、lastSeenAt、code を発行した client 一覧 | 12 時間 |
+| SSO Session | `sso:sess:<id>` | sid、user_id、暗号化した Cognito Token、auth_time、lastSeenAt、code を発行した client 一覧 | 12 時間 |
 | 認可リクエスト | `sso:authreq:<rid>` | client_id、redirect_uri、scope、state、nonce、code_challenge | 30 分 |
 | Authorization Code | `sso:code:<code>` | client_id、redirect_uri、nonce、code_challenge、user_id、tenant_id、sid、used | 60 秒。使用済みは再利用検知のため 10 分保持 |
 | Refresh Token | `sso:rt:<token>` | family_id、client_id、user_id、tenant_id、sid、status | 12 時間 |
-| Tenant Session | `<client_id>:<tenant_slug>:<id>` | client_id、tenant_slug、user_id、tenant_id、sid、access_token、refresh_token、csrf_token | 12 時間 |
-| pre-auth | `<client_id>:<tenant_slug>:<id>` | state、nonce、code_verifier、return_to | 30 分 |
-| sid 逆引き | `<client_id>:sid:<sid>` | そのサービスの Tenant Session ID の一覧。テナントをまたぐ | 12 時間 |
+| Tenant Session | `<client_id>:sess:<tenant_slug>:<id>` | tenant_slug、user_id、tenant_id、sid、access_token、refresh_token、csrf_token | 12 時間 |
+| pre-auth | `<client_id>:pre:<tenant_slug>:<id>` | state、nonce、code_verifier、return_to | 30 分 |
+| sid 逆引き | `<client_id>:sid:sid:<sid>` | そのサービスの Tenant Session キーの一覧。テナントをまたぐ | 12 時間 |
 
-Tenant Session のキーにサービスとテナントを含めるため、1 プロセスで複数テナントのホストを受けてもセッションが混ざらない。sid 逆引きはサービス単位で、Back-Channel Logout がテナントをまたいで全セッションを消せるようにしている。Redis の `GETDEL` で Authorization Code を取得と同時に削除し、二重交換を排除する。
+Tenant Session はサービスごとのストア `<client_id>:sess` に `<tenant_slug>:<id>` のキーで置くため、1 プロセスで複数テナントのホストを受けてもセッションが混ざらない。サービスの区別はストアのプレフィックスで行い、値には client_id を持たせない。sid 逆引きはサービス単位で、Back-Channel Logout がテナントをまたいで全セッションを消せるようにしている。Redis の `GETDEL` で Authorization Code を取得と同時に削除し、二重交換を排除する。
 
 ### 5.6 Identity DB
 
 ```sql
-users                     (id, cognito_sub UNIQUE, email, name, status)
-tenants                   (id, slug UNIQUE, name, status)
-tenant_members            (tenant_id, user_id, role, status)     -- role: owner / admin / member / viewer
-oidc_clients              (client_id, client_secret_hash, name, audience, allowed_scopes, backchannel_logout_uri, status)
-oidc_client_redirect_uris (client_id, redirect_uri, tenant_id)   -- 完全一致比較。tenant_id でテナントを決める
-tenant_services           (tenant_id, client_id, status)         -- 契約
+users                (id, cognito_sub UNIQUE, email, name, status)
+tenants              (id, slug UNIQUE, name, status)
+tenant_members       (tenant_id, user_id, role, status)          -- role: owner / admin / member / viewer
+oidc_clients         (id, client_id UNIQUE, name, audience, redirect_uri_template, allowed_scopes, backchannel_logout_uri, status)
+oidc_client_secrets  (id, oidc_client_id, secret_hash, status, created_at, revoked_at)  -- status: active / revoked
+tenant_services      (tenant_id, oidc_client_id, status)         -- 契約
 ```
 
-`users.cognito_sub` が正規のユーザー識別子。`users.id` は境界の外へ出す代理キーで、Client にはこちらを `sub` として渡す。
+主キーはすべて ULID のサロゲート ID。`client_id` と `slug` は外部に見せる識別子で UNIQUE 制約で守り、外部キーは `oidc_clients.id` と `tenants.id` だけを参照する。`users.cognito_sub` が正規のユーザー識別子。`users.id` は境界の外へ出す代理キーで、Client にはこちらを `sub` として渡す。
 
 サービス、テナント、契約の関係。
 
 | テーブル | 単位 | 内容 |
 | --- | --- | --- |
-| `oidc_clients` | サービスごとに 1 行 | `client_id` はサービス ID。`audience` はそのサービスの API origin。`backchannel_logout_uri` はサービスに 1 つ |
-| `oidc_client_redirect_uris` | サービス×テナントごとに 1 行 | `redirect_uri` の完全一致で認可リクエストのテナントを決める。`tenant_id` が NULL の行はテナントに紐付かない戻り先 |
-| `tenant_services` | サービス×テナントごとに 1 行 | 契約。この行がなければ redirect_uri が登録されていても `not_contracted` |
+| `oidc_clients` | サービスごとに 1 行 | `client_id` はサービス ID。`audience` はそのサービスの API origin。`redirect_uri_template` は `{tenant}` を 1 か所だけ含む。`backchannel_logout_uri` はサービスに 1 つ |
+| `oidc_client_secrets` | サービスごとに 1 行以上 | `client_secret` の `sha256$<base64url>` ハッシュ。`/token` は active な行のいずれかに一致すれば通す。ローテーションは新行を active で追加 → サービスの secret を差し替え → 旧行を revoked |
+| `tenant_services` | サービス×テナントごとに 1 行 | 契約。この行がなければ redirect_uri がテンプレートに一致しても `not_contracted` |
+
+`redirect_uri` の検証とテナント解決は 1 つの処理で行う。`redirect_uri_template` の `{tenant}` より前と後ろが `redirect_uri` と文字列完全一致し、中間が slug の形式 `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$` であれば、その slug で `tenants` を引く。テンプレートを slug で展開した文字列と `redirect_uri` が 1 バイトでも違えば不一致で、末尾スラッシュ、クエリ、大文字、多段ラベルはすべて拒否する。slug が `tenants` になければ同じく不一致として扱う。したがってテナントを追加するときは `tenants` と `tenant_services` に行を足すだけでよい。
+
+`client_secret` は 32 バイト以上の乱数にする。ハッシュは KDF ではなく SHA-256 で、人が選ぶパスワードではなく十分に長い乱数である前提に立つ。scrypt のような KDF は `/token` のたびに数十ミリ秒イベントループを止めるため使わない。
 
 サンドボックスのシード。
 
 ```text
-oidc_clients:              crm (audience https://api.crm.<domain>), cms (audience https://api.cms.<domain>)
-tenants:                   tanaka (Tanaka Inc.), suzuki (Suzuki Ltd.)
-oidc_client_redirect_uris: crm×tanaka, crm×suzuki, cms×tanaka, cms×suzuki
-tenant_services:           tanaka→crm, tanaka→cms, suzuki→crm
-tenant_members:            alice = tanaka owner / suzuki viewer, bob = suzuki admin, carol = 所属なし
+oidc_clients:         crm (id 01J00000000000000000000CRM, audience https://api.crm.<domain>, template https://{tenant}.crm.<domain>/auth/callback)
+                      cms (id 01J00000000000000000000CMS, audience https://api.cms.<domain>, template https://{tenant}.cms.<domain>/auth/callback)
+oidc_client_secrets:  01J0000000000000000CRMSEC1 → crm (active), 01J0000000000000000CMSSEC1 → cms (active)
+tenants:              tanaka (Tanaka Inc.), suzuki (Suzuki Ltd.)
+tenant_services:      tanaka→crm, tanaka→cms, suzuki→crm
+tenant_members:       alice = tanaka owner / suzuki viewer, bob = suzuki admin, carol = 所属なし
 ```
 
-cms×suzuki は redirect_uri が登録されていて契約がない例で、`error=access_denied&error_description=not_contracted` になる。
+suzuki.cms は redirect_uri が cms のテンプレートに一致し suzuki も既知のテナントだが契約がない例で、`error=access_denied&error_description=not_contracted` になる。
 
 ### 5.7 API Server の認可順序
 
 ```text
-Host → aud を決定 (登録外の Host は 404)
+Host が自 API の公開 URL のホストと一致するか (違えば 404)
  → Bearer 抽出
  → JWT 検証 (署名 / iss / aud / exp。alg は RS256 固定。aud 不一致は 401)
+ → users / tenants / tenant_members を 1 回の JOIN で取得
  → users.status = active
+ → tenants.status = active
  → tenant_members (token.tenant_id, token.sub) が active
  → role → permission
  → endpoint が要求する permission を確認
@@ -483,7 +490,7 @@ Host → aud を決定 (登録外の Host は 404)
 
 ## 6. シーケンス図
 
-登場人物。Browser はユーザーのブラウザ、CrmA は tanaka.crm の BFF、CrmB は suzuki.crm の BFF、CmsA は tanaka.cms の BFF、CmsB は suzuki.cms の BFF、Auth は Auth Server、Cognito は User Pool、IdDB は Identity DB、Store は Redis、SessCrm は crm のセッションストア、ApiCrm は crm の API Server。
+登場人物。Browser はユーザーのブラウザ、CrmA は tanaka.crm の BFF、CrmB は suzuki.crm の BFF、CmsA は tanaka.cms の BFF、CmsB は suzuki.cms の BFF、Auth は Auth Server、Cognito は User Pool、IdDB は Identity DB、Store は Redis、SessCrm は crm のセッションストア、ApiCrm は crm の API Server。図中の `crm:tanaka:TS1` や `crm:sid:SID1` は、サービスごとのストアのプレフィックスとキーを続けて書いた略記。
 
 ### 6.1 初回ログイン。tanaka.crm に未ログインでアクセス
 
@@ -505,8 +512,9 @@ sequenceDiagram
     CrmA-->>Browser: 302 https://auth.example.com/authorize<br/>?response_type=code&client_id=crm<br/>&redirect_uri=https://tanaka.crm.example.com/auth/callback<br/>&scope=openid profile email&state=S1&nonce=N1<br/>&code_challenge=C1&code_challenge_method=S256<br/>Set-Cookie: __Secure-tenant_pre_auth=P1; Path=/auth; Secure; HttpOnly; SameSite=Lax
 
     Browser->>Auth: GET /authorize?... (Cookie sso_session なし)
-    Auth->>IdDB: oidc_clients から client_id=crm、redirect_uri 一覧を取得
-    Auth->>Auth: redirect_uri 完全一致 → tenant=tanaka。response_type、scope、PKCE を検証
+    Auth->>IdDB: oidc_clients から client_id=crm と redirect_uri_template を取得
+    Auth->>Auth: redirect_uri をテンプレートに当てて slug=tanaka を取り出す。response_type、scope、PKCE を検証
+    Auth->>IdDB: tenants を slug=tanaka で検索 → tenant_id
     Auth->>Store: 認可リクエスト保存 {rid:R1, client_id:crm, redirect_uri, scope, state:S1, nonce:N1, code_challenge:C1} TTL 30分
     Auth-->>Browser: 302 /login?rid=R1
 
@@ -538,7 +546,7 @@ sequenceDiagram
     CrmA->>SessCrm: crm:tanaka:P1 から pre-auth を取得して削除
     CrmA->>CrmA: state == S1、iss == 期待する issuer を検証
     CrmA->>Auth: POST /token (サーバー間)<br/>Authorization: Basic base64(crm:crm-secret)<br/>grant_type=authorization_code&code=AC1<br/>&redirect_uri=https://tanaka.crm.example.com/auth/callback&code_verifier=V1
-    Auth->>IdDB: client_secret のハッシュ照合
+    Auth->>IdDB: oidc_client_secrets の active な行と client_secret のハッシュ照合
     Auth->>Store: GETDEL sso:code:AC1
     Auth->>Auth: used=false、client_id 一致、redirect_uri 一致、SHA256(V1)==C1
     Auth->>Store: SSO Session SS1 が有効か確認
@@ -573,7 +581,7 @@ sequenceDiagram
     Browser->>Auth: GET /authorize?...<br/>Cookie: __Host-sso_session=SS1 (auth 宛てなので自動送信)
     Auth->>Store: SS1 を取得。アイドル 2時間 / 絶対 12時間 の期限内か確認
     Note over Auth: 有効 → Cognito 再認証もログイン画面も不要
-    Auth->>IdDB: client_id=crm の redirect_uri を完全一致で検証 → tenant=suzuki
+    Auth->>IdDB: client_id=crm の redirect_uri_template に redirect_uri を当てる → slug=suzuki → tenants から解決
     Auth->>IdDB: tenant_services (suzuki, crm) → tenant_members (suzuki, user_id)
     alt 契約なし / Membership なし
         Auth-->>Browser: 302 https://suzuki.crm.example.com/auth/callback?error=access_denied&error_description=...&state=S2&iss=...
@@ -593,7 +601,7 @@ sequenceDiagram
     CrmB-->>Browser: 200 (role: viewer)
 ```
 
-結果。tanaka.crm と suzuki.crm はそれぞれ独立した Cookie とセッションを持ち、auth には SSO Session が 1 つある。同じユーザーがテナントごとに異なる role を持てる。同じサービスなので client_id と client_secret は同じで、redirect_uri だけが違う。
+結果。tanaka.crm と suzuki.crm はそれぞれ独立した Cookie とセッションを持ち、auth には SSO Session が 1 つある。同じユーザーがテナントごとに異なる role を持てる。同じサービスなので client_id と client_secret と redirect_uri_template は同じで、redirect_uri の slug 部分だけが違う。
 
 ### 6.3 別サービスへの SSO と未契約サービスの拒否。tanaka.cms と suzuki.cms
 
@@ -610,7 +618,7 @@ sequenceDiagram
     Note over CmsA: Host → service=cms, tenant=tanaka。cms の Cookie なし
     CmsA-->>Browser: 302 https://auth.example.com/authorize<br/>?client_id=cms&redirect_uri=https://tanaka.cms.example.com/auth/callback<br/>&state=S3&nonce=N3&code_challenge=C3&...
     Browser->>Auth: GET /authorize?... (Cookie sso_session=SS1)
-    Auth->>IdDB: client_id=cms の redirect_uri → tenant=tanaka
+    Auth->>IdDB: client_id=cms の redirect_uri_template に当てて slug=tanaka → tenants から解決
     Auth->>IdDB: tenant_services (tanaka, cms) = active → tenant_members (tanaka, user_id) = owner
     Auth-->>Browser: 302 https://tanaka.cms.example.com/auth/callback?code=AC3&state=S3&iss=... (ログイン画面なし)
     Browser->>CmsA: GET /auth/callback?code=AC3&state=S3
@@ -624,7 +632,7 @@ sequenceDiagram
     Note over CmsB: Host → service=cms, tenant=suzuki
     CmsB-->>Browser: 302 https://auth.example.com/authorize<br/>?client_id=cms&redirect_uri=https://suzuki.cms.example.com/auth/callback&state=S4&...
     Browser->>Auth: GET /authorize?... (Cookie sso_session=SS1)
-    Auth->>IdDB: client_id=cms の redirect_uri → tenant=suzuki (登録済み)
+    Auth->>IdDB: client_id=cms の redirect_uri_template に当てて slug=suzuki → tenants にある
     Auth->>IdDB: tenant_services (suzuki, cms) → なし
     Auth-->>Browser: 302 https://suzuki.cms.example.com/auth/callback?error=access_denied&error_description=not_contracted&state=S4&iss=...
     Browser->>CmsB: GET /auth/callback?error=access_denied&error_description=not_contracted&state=S4
@@ -659,9 +667,9 @@ sequenceDiagram
         CrmA->>SessCrm: TS1 の access_token / refresh_token を更新
     end
     CrmA->>ApiCrm: GET /v1/projects<br/>Authorization: Bearer AT1
-    ApiCrm->>ApiCrm: Host=api.crm.example.com → aud=https://api.crm.example.com
+    ApiCrm->>ApiCrm: Host=api.crm.example.com が自 API の公開 URL のホストと一致。aud=https://api.crm.example.com
     ApiCrm->>ApiCrm: JWT 検証。署名 (Auth JWKS, kid) / iss / aud / exp / alg=RS256
-    ApiCrm->>IdDB: users.status、tenant_members (AT1.tenant_id, AT1.sub) → role
+    ApiCrm->>IdDB: users / tenants / tenant_members (AT1.tenant_id, AT1.sub) を 1 回の JOIN で取得 → role
     alt Membership なし
         ApiCrm-->>CrmA: 403 {error:"forbidden"}
     end
@@ -777,8 +785,8 @@ sequenceDiagram
     Browser->>Auth: POST /login rid=&csrf=...&username&password
     Auth-->>Browser: 302 /  Set-Cookie: __Host-sso_session=SS1
     Browser->>Auth: GET / (Cookie sso_session=SS1)
-    Auth->>IdDB: tenant_members から所属テナントと role、tenant_services から契約サービス、各サービス×テナントの登録 redirect_uri を取得
-    Auth-->>Browser: 200 一覧。tanaka (owner): CRM / CMS、suzuki (viewer): CRM<br/>各リンクは https://<tenant>.<service>.example.com/auth/login
+    Auth->>IdDB: tenant_members から所属テナントと role、tenant_services から契約サービスと redirect_uri_template を取得
+    Auth-->>Browser: 200 一覧。tanaka (owner): CRM / CMS、suzuki (viewer): CRM<br/>各リンクは redirect_uri_template をテナント slug で展開した origin + /auth/login
     Browser->>CmsA: GET /auth/login (リンクをクリック)
     Note over Browser,CmsA: 以降は 6.3 と同じ。Third-Party Initiated Login の形で通常のフローに合流する
 ```
@@ -810,7 +818,12 @@ sequenceDiagram
     rect rgb(255,240,240)
     Note over Attacker,Auth: redirect_uri 不正 (Open Redirect)
     Attacker->>Auth: GET /authorize?client_id=crm&redirect_uri=https://evil.example/cb
-    Auth-->>Attacker: 400 エラー画面。evil.example へはリダイレクトしない
+    Auth-->>Attacker: 400 エラー画面。テンプレートに一致しない。evil.example へはリダイレクトしない
+    end
+    rect rgb(255,240,240)
+    Note over Attacker,Auth: 未登録テナントの slug
+    Attacker->>Auth: GET /authorize?client_id=crm&redirect_uri=https://nobody.crm.example.com/auth/callback
+    Auth-->>Attacker: 400 エラー画面。テンプレートには一致するが slug=nobody が tenants にない。リダイレクトしない
     end
     rect rgb(255,240,240)
     Note over Attacker,Auth: nonce 不一致 (被害者の code を攻撃者のブラウザで使用)
@@ -849,7 +862,7 @@ App Router を使う Next.js を Tenant Web Application にする場合の配置
 | 本番で Cookie に `domain` 属性を付け、サブドメイン間で共有している | 2.2 Cookie 共有で SSO しない。別ドメインへ広げられない |
 | middleware が毎リクエスト Token を検証し、Cognito Token の寿命がそのままアプリのセッション寿命になっている | 責務分離。アプリセッションと認証 Token が同一 |
 | サインイン、MFA、パスワード再設定の画面をアプリ側が持っている | これらは Auth Server の責務 |
-| テナントごとに別の Client ID を持ち、テナント追加のたびに Secret を増やしている | サービスに 1 Client。テナント追加は redirect_uri と契約の登録だけ |
+| テナントごとに別の Client ID を持ち、テナント追加のたびに Secret を増やしている | サービスに 1 Client と 1 つの redirect_uri_template。テナント追加は tenants と契約の登録だけ |
 
 ### 7.2 対応表
 
@@ -879,7 +892,7 @@ src/
     session-store.ts               Redis。KeyValueStore インターフェース
 ```
 
-Route Handler は Node ランタイムで動かす。`export const runtime = "nodejs"` を明示する。Edge ランタイムでは `node:crypto` の scrypt や ioredis が動かない。middleware は Edge で動くため、そこではセッションストアに触らず Cookie の有無だけを見る。セッションの実体は Server Component や Route Handler 側で読む。
+Route Handler は Node ランタイムで動かす。`export const runtime = "nodejs"` を明示する。Edge ランタイムでは `node:crypto` や ioredis が動かない。middleware は Edge で動くため、そこではセッションストアに触らず Cookie の有無だけを見る。セッションの実体は Server Component や Route Handler 側で読む。
 
 Server Component から API を呼ぶ場合は `cookies()` でセッション ID を取り、セッションストアから Access Token を取り出して `fetch` に付ける。ブラウザから API へ直接呼んでいる箇所は BFF 経由に戻す。ブラウザに Token を持たせないため。
 
@@ -890,7 +903,7 @@ Server Component から API を呼ぶ場合は `cookies()` でセッション ID
 | 段階 | 内容 | ログインできる経路 |
 | --- | --- | --- |
 | 1 | Auth Server を建て、Auth Server 用の画面を新規に作る。ログイン、MFA、MFA セットアップ、パスワード変更、パスワード再設定。既存の User Pool を使い、既存サービスには触らない | 旧のみ |
-| 2 | Auth Server にサービスを Client として登録し、提供中のテナントぶんの redirect_uri と契約を入れる | 旧のみ |
+| 2 | Auth Server にサービスを Client として登録し、redirect_uri_template と client_secret、提供中のテナントぶんの契約を入れる | 旧のみ |
 | 3 | 既存サービスに `/auth/login` `/auth/callback` `/auth/logout` `/auth/backchannel-logout` と新セッション Cookie を追加する。middleware は「新セッション Cookie があれば通す、なければ従来どおり判定する」の二重判定にする。画面のリンクと旧サインインはそのまま | 旧と新 |
 | 4 | バックエンドの Token 検証を「従来の Cognito JWT でも Auth Server の JWT でも通す」にする。BFF は新セッションなら Bearer、旧なら従来の方式でバックエンドを呼ぶ | 旧と新 |
 | 5 | 旧サインインの入口を `/auth/login` への 302 に置き換える。新規ログインは全員 Auth Server 経由になり、旧 Cookie を持つユーザーは期限まで旧経路で動く。問題があればこの 1 行を戻せば旧に復帰する | 旧と新。新規は新のみ |
@@ -909,7 +922,7 @@ Server Component から API を呼ぶ場合は `cookies()` でセッション ID
 | 独自の一回限りトークン | Auth Server の Authorization Code。寿命 60 秒、一回限り、redirect_uri と PKCE に紐付く |
 | `postMessage` で親ページへ通知 | 親ページが自身の `/auth/login` へトップレベルナビゲーションする。親ページのサーバーを Auth Server の Client として登録する |
 | iframe 内での Token 検証 | 不要。親ページは自分のセッション Cookie を持つ。iframe 内で第三者 Cookie に依存しないため、ブラウザの第三者 Cookie 制限の影響を受けない |
-| 呼び出し先 URL の設定値 | Client 登録の `redirect_uri` に置き換える。ワイルドカード禁止、完全一致。顧客ごとにホストが違うなら顧客をテナントとして redirect_uri を登録する |
+| 呼び出し先 URL の設定値 | Client 登録の `redirect_uri_template` に置き換える。ワイルドカード禁止、展開結果との完全一致。顧客ごとにホストが違うなら顧客をテナントとして `tenants` に登録し、テンプレートの `{tenant}` で表す |
 
 親ページが SPA でサーバーを持たない場合は BFF 構成にできない。その場合は薄い BFF を用意するか、親ページのバックエンドを Client にする。ブラウザに Token を置く構成は本設計では採用しない。
 
@@ -930,14 +943,14 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | 5 | Cookie 設計 | `domain` 属性付き Cookie の廃止、Cookie 名の衝突 |
 | 6 | Session Store | Redis があれば流用。なければ新設 |
 | 7 | User / Tenant / Membership のデータモデル | `users.cognito_sub` と `tenant_members` の有無 |
-| 8 | サービスとテナントの対応 | サービスが提供するテナントの一覧。redirect_uri と `tenant_services` の投入元 |
+| 8 | サービスとテナントの対応 | サービスが提供するテナントの一覧。`tenants` と `tenant_services` の投入元。ホストの形が `redirect_uri_template` 1 つで表せるか |
 | 9 | Tenant Web Application の構成 | BFF か SPA か。SPA なら BFF を足す。Host からテナントを決められるか |
 | 10 | API Server の構成 | Token 検証の差し替え、`aud` を自サービスの origin にする、tenant_id をパスから外す |
 | 11 | Auth Server の配置 | 独立したホストとインフラ |
 | 12 | DB 構成 | RLS を使えるか |
 | 13 | CORS | BFF 化で不要になる箇所 |
 | 14 | CSRF | ログインと Logout の POST に同期トークンがあるか |
-| 15 | redirect_uri の管理 | Client Registry への一元化。テナント追加時の登録手順 |
+| 15 | redirect_uri の管理 | Client Registry の `redirect_uri_template` への一元化。テナント追加時に redirect_uri の登録が要らないこと。client_secret のローテーション手順 |
 
 実装の完了条件として次を通す。
 
@@ -998,11 +1011,14 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `docs/requirements.md` | 仕様書全文 |
 | `docs/design/00` 〜 `11` | 判断事項、構成、シーケンス、Cookie、Token、DB、Client、API 認可、セキュリティ、エラー一覧、Logout、テスト計画 |
 | `docs/deploy.md` | AWS 構成と手順 |
-| `db/init/002_identity.sql` `db/init/004_seed.sql` | サービス、テナント、契約、redirect_uri のスキーマとシード |
+| `db/init/002_identity.sql` `db/init/004_seed.sql` | サービス、client_secret、テナント、契約のスキーマとシード。redirect_uri はサービスの `redirect_uri_template` 列 |
+| `packages/shared/src/redirect-template.ts` `packages/shared/src/secret-hash.ts` | redirect_uri テンプレートの照合と展開、client_secret の SHA-256 ハッシュと複数 secret の照合 |
+| `packages/shared/src/jwks.ts` | JWKS の取得と JWT 検証。10 分キャッシュ、未知の kid での 1 回再取得、60 秒の再取得制限、同時要求の集約、失敗時のキャッシュ利用。Auth Server の Cognito 検証、OIDC Client、API Server が共有する |
+| `packages/shared/src/oidc-protocol.ts` | Auth Server と OIDC Client の間のワイヤ契約。access_denied の理由一覧、期限切れを表す `error_description`、Bearer ヘッダの読み書き |
 | `packages/oidc-client` | サービス側に移植する OIDC Client 実装。Host からのサービス / テナント解決、tenant_slug 照合を含む |
 | `apps/auth-api/src/usecases` | Auth Server の判定ロジック。契約と Membership の確認順序はここ |
 | `packages/service-web` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、画面、API 呼び出し |
-| `packages/service-api/src/auth` | API 側の Host → aud 解決、Token 検証、Membership 認可。crm-api / cms-api が共有する |
+| `packages/service-api/src/usecases/resolve-tenant-context.ts` | API 側の Host → aud 確認、Token 検証、user / tenant / membership の 1 回の JOIN による認可。crm-api / cms-api が共有する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
 | `scripts/smoke.ts` | 実 HTTP での受け入れ確認。別サービス SSO と未契約サービスの拒否まで通す |
 | `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。CSP のような fetch では見えない問題を検出する |
 
@@ -1026,7 +1042,7 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | nonce | Client が発行し ID Token に埋め込まれる乱数。code 注入を防ぐ |
 | sid | SSO Session を表す公開識別子。Back-Channel Logout で対象を特定する |
 | rid | Auth Server がログイン画面を挟む間、認可リクエストを保持するための内部キー |
-| audience | サービスの API origin。Access Token の `aud` に入り、API Server は Host から組み立てた値と照合する |
+| audience | サービスの API origin。Access Token の `aud` に入り、API Server は自身の公開 URL と照合する |
 | SSO Session | Auth Server が持つ「このブラウザは認証済み」という状態。auth のホストにだけ Cookie を置く |
 | Tenant Session | 各サービスがテナントごとに持つアプリケーションセッション。そのホストにだけ Cookie を置く |
 | Tenant Logout | 自サービス × テナントのセッションだけを消す。SSO Session は残る |

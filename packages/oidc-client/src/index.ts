@@ -1,7 +1,8 @@
 export { OidcProvider } from "./provider.ts";
 export type { Discovery, TokenResponse, ProviderError } from "./provider.ts";
-export { oidcRoutes, readSessionCookie, clearSessionCookie } from "./routes.ts";
-export type { OidcRouteHooks } from "./routes.ts";
+export { oidcRoutes, backchannelRoutes } from "./routes.ts";
+export type { RenderError, ErrorStatus } from "./routes.ts";
+export { readSessionCookie, clearSessionCookie } from "./cookies.ts";
 export { tenantContext, requireSession } from "./middleware.ts";
 export type { OidcEnv, OidcVariables } from "./middleware.ts";
 export {
@@ -11,7 +12,7 @@ export {
   destroySession,
   destroySessionsBySid,
 } from "./session.ts";
-export { apiFetch, ensureFreshAccessToken } from "./api-client.ts";
+export { apiFetch } from "./api-client.ts";
 export type { ApiAccessError } from "./api-client.ts";
 export {
   SESSION_IDLE_SECONDS,
@@ -28,5 +29,4 @@ export type {
   OidcClientDeps,
   TenantSession,
   PreAuthState,
-  FetchLike,
 } from "./types.ts";

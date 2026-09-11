@@ -1,4 +1,4 @@
-import type { Clock, EncryptionKey, Logger, SigningKey } from "@sandbox/shared";
+import type { Clock, EncryptionKey, FetchLike, Logger, SigningKey } from "@sandbox/shared";
 import type { CognitoAuthenticator } from "../ports/cognito.ts";
 import type { IdentityRepository } from "../ports/identity-repository.ts";
 import type { AuthStores } from "../ports/stores.ts";
@@ -17,5 +17,5 @@ export interface AuthDeps {
   readonly encryptionKeys: ReadonlyArray<EncryptionKey>;
   readonly logger: Logger;
   /** Back-Channel Logout の送信に使う。テストで差し替える */
-  readonly fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  readonly fetch: FetchLike;
 }

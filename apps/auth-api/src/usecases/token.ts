@@ -3,11 +3,11 @@ import {
   err,
   isValidCodeVerifier,
   ok,
-  verifySecret,
+  verifySecretAgainstAny,
   type Result,
 } from "@sandbox/shared";
 import { CONSUMED_CODE_RETENTION_SECONDS } from "../policy.ts";
-import type { IdentityRepository, OidcClient, Tenant } from "../ports/identity-repository.ts";
+import type { IdentityRepository, OidcClient, Tenant, User } from "../ports/identity-repository.ts";
 import type { AuthorizationCode, RefreshToken } from "../ports/stores.ts";
 import { checkTenantAccess } from "./authorize.ts";
 import type { AuthDeps } from "./deps.ts";
@@ -49,7 +49,8 @@ export async function authenticateClient(
 
   const client = await identity.findClient(clientId);
   if (client === undefined || client.status !== "active") return err({ kind: "invalid_client" });
-  if (!verifySecret(clientSecret, client.clientSecretHash)) return err({ kind: "invalid_client" });
+  if (!verifySecretAgainstAny(clientSecret, client.secretHashes))
+    return err({ kind: "invalid_client" });
   return ok(client);
 }
 
@@ -84,12 +85,13 @@ export async function exchangeAuthorizationCode(
   const validation = validateCodeBinding(stored, client, input);
   if (!validation.ok) return validation;
 
-  const session = await loadSsoSession(deps, stored.ssoSessionId);
+  const [session, user, tenant] = await Promise.all([
+    loadSsoSession(deps, stored.ssoSessionId),
+    deps.identity.findUserById(stored.userId),
+    resolveTenant(deps, stored.tenantId),
+  ]);
   if (session === undefined) return err({ kind: "invalid_grant", reason: "sso_session_expired" });
-
-  const user = await deps.identity.findUserById(stored.userId);
   if (user === undefined) return err({ kind: "invalid_grant", reason: "user_missing" });
-  const tenant = await resolveTenant(deps, stored.tenantId);
   if (!tenant.ok) return tenant;
 
   const refreshToken = await createRefreshTokenFamily(deps, {
@@ -177,24 +179,13 @@ export async function refreshAccessToken(
     return err({ kind: "invalid_grant", reason: "refresh_token_reused" });
   }
 
-  const session = await loadSsoSession(deps, stored.ssoSessionId);
-  if (session === undefined) {
+  const validated = await validateRefreshContext(deps, client, stored);
+  if (!validated.ok) {
+    // SSO Session 切れ、契約解除、Membership 削除のいずれでも系列ごと失効させる
     await revokeRefreshTokenFamily(deps, stored.familyId);
-    return err({ kind: "invalid_grant", reason: "sso_session_expired" });
+    return validated;
   }
-
-  const tenant = await resolveTenant(deps, stored.tenantId);
-  if (!tenant.ok) {
-    await revokeRefreshTokenFamily(deps, stored.familyId);
-    return tenant;
-  }
-  const access = await checkTenantAccess(deps.identity, client, tenant.value, stored.userId);
-  if (!access.ok) {
-    await revokeRefreshTokenFamily(deps, stored.familyId);
-    return err({ kind: "invalid_grant", reason: access.error.reason });
-  }
-  const user = await deps.identity.findUserById(stored.userId);
-  if (user === undefined) return err({ kind: "invalid_grant", reason: "user_missing" });
+  const { user, tenant } = validated.value;
 
   const next = await rotateRefreshToken(deps, stored);
   const tokens = await issueTokens(deps, {
@@ -203,7 +194,7 @@ export async function refreshAccessToken(
     scope: stored.scope,
     nonce: undefined,
     sid: stored.sid,
-    tenant: tenant.value,
+    tenant,
     authTime: stored.authTime,
   });
   deps.logger.info("tokens issued via refresh_token", {
@@ -211,6 +202,23 @@ export async function refreshAccessToken(
     userId: user.id,
   });
   return ok(toResponse(tokens, next.token, stored.scope));
+}
+
+/** Refresh 時に SSO Session の生存とテナントアクセスを再確認する */
+async function validateRefreshContext(
+  deps: AuthDeps,
+  client: OidcClient,
+  stored: RefreshToken,
+): Promise<Result<{ user: User; tenant: Tenant }, TokenError>> {
+  const [session, tenant] = await Promise.all([
+    loadSsoSession(deps, stored.ssoSessionId),
+    resolveTenant(deps, stored.tenantId),
+  ]);
+  if (session === undefined) return err({ kind: "invalid_grant", reason: "sso_session_expired" });
+  if (!tenant.ok) return tenant;
+  const access = await checkTenantAccess(deps.identity, client, tenant.value, stored.userId);
+  if (!access.ok) return err({ kind: "invalid_grant", reason: access.error.reason });
+  return ok({ user: access.value, tenant: tenant.value });
 }
 
 /**
@@ -227,12 +235,11 @@ export async function revokeRefreshToken(
   await revokeRefreshTokenFamily(deps, stored.familyId);
 }
 
-/** code や Refresh Token に紐付いたテナントを引く。テナントなしの Client は null */
+/** code や Refresh Token に紐付いたテナントを引く */
 async function resolveTenant(
   deps: AuthDeps,
-  tenantId: string | null,
-): Promise<Result<Tenant | null, TokenError>> {
-  if (tenantId === null) return ok(null);
+  tenantId: string,
+): Promise<Result<Tenant, TokenError>> {
   const tenant = await deps.identity.findTenantById(tenantId);
   if (tenant === undefined) return err({ kind: "invalid_grant", reason: "tenant_missing" });
   return ok(tenant);

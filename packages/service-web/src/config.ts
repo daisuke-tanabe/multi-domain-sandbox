@@ -1,57 +1,59 @@
 import { z } from "zod";
 import type { OidcClientConfig, ServiceConfig } from "@sandbox/oidc-client";
+import { envBoolean, parseEnv, publicSchemeEnv, TENANT_SLUG_PATTERN } from "@sandbox/shared";
 
-const envSchema = z.object({
-  PORT: z.coerce.number().int().positive(),
-  PUBLIC_SCHEME: z.enum(["http", "https"]).default("http"),
-  ISSUER: z.string().url(),
-  AUTH_BACKCHANNEL_URL: z.string().url().optional(),
-  REDIS_URL: z.string().url().optional(),
-  COOKIE_SECURE: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((value) => value === "true"),
-  /** このプロセスが担当するサービス。1 プロセス 1 サービス */
-  CLIENT_ID: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/),
-  CLIENT_SECRET: z.string().min(1),
-  SERVICE_NAME: z.string().min(1),
-  /** テナントのサブドメインを除いたホスト。例 crm.localhost:3001、crm.example.com */
-  BASE_HOST: z.string().min(1),
-  API_BASE_URL: z.string().url(),
-});
+const DEFAULT_SCOPES: ReadonlyArray<string> = ["openid", "profile", "email"];
 
-export type ServiceWebConfig = z.infer<typeof envSchema>;
+const envSchema = z
+  .object({
+    PORT: z.coerce.number().int().positive(),
+    PUBLIC_SCHEME: publicSchemeEnv.default("http"),
+    ISSUER: z.string().url(),
+    AUTH_BACKCHANNEL_URL: z.string().url().optional(),
+    REDIS_URL: z.string().url().optional(),
+    COOKIE_SECURE: envBoolean(),
+    /** このプロセスが担当するサービス。1 プロセス 1 サービス */
+    CLIENT_ID: z.string().regex(TENANT_SLUG_PATTERN),
+    CLIENT_SECRET: z.string().min(1),
+    SERVICE_NAME: z.string().min(1),
+    /** テナントのサブドメインを除いたホスト。例 crm.localhost:3001、crm.example.com */
+    BASE_HOST: z.string().min(1),
+    API_BASE_URL: z.string().url(),
+  })
+  .transform((env): ServiceWebConfig => ({
+    port: env.PORT,
+    publicScheme: env.PUBLIC_SCHEME,
+    issuer: env.ISSUER,
+    authBackchannelUrl: env.AUTH_BACKCHANNEL_URL,
+    redisUrl: env.REDIS_URL,
+    cookieSecure: env.COOKIE_SECURE,
+    baseHost: env.BASE_HOST.toLowerCase(),
+    service: {
+      clientId: env.CLIENT_ID,
+      clientSecret: env.CLIENT_SECRET,
+      scopes: [...DEFAULT_SCOPES],
+      apiBaseUrl: env.API_BASE_URL,
+      name: env.SERVICE_NAME,
+    },
+  }));
 
-export interface ServiceEntry {
-  readonly clientId: string;
-  readonly clientSecret: string;
-  readonly name: string;
+export interface ServiceWebConfig {
+  readonly port: number;
+  readonly publicScheme: "http" | "https";
+  readonly issuer: string;
+  readonly authBackchannelUrl: string | undefined;
+  readonly redisUrl: string | undefined;
+  readonly cookieSecure: boolean;
   readonly baseHost: string;
-  readonly apiBaseUrl: string;
+  readonly service: ServiceConfig;
 }
 
-export function loadServiceWebConfig(env: NodeJS.ProcessEnv = process.env): ServiceWebConfig {
-  const parsed = envSchema.safeParse(env);
-  if (!parsed.success) {
-    throw new Error(
-      `Invalid service-web configuration: ${JSON.stringify(parsed.error.flatten().fieldErrors)}`,
-    );
-  }
-  return parsed.data;
+export function loadServiceWebConfig(
+  component: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ServiceWebConfig {
+  return parseEnv(component, envSchema, env);
 }
-
-export function toServiceEntry(config: ServiceWebConfig): ServiceEntry {
-  return {
-    clientId: config.CLIENT_ID,
-    clientSecret: config.CLIENT_SECRET,
-    name: config.SERVICE_NAME,
-    baseHost: config.BASE_HOST,
-    apiBaseUrl: config.API_BASE_URL,
-  };
-}
-
-const DEFAULT_SCOPES = ["openid", "profile", "email"] as const;
-const TENANT_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export interface ClientResolvers {
   readonly resolveClient: (host: string | undefined) => OidcClientConfig | undefined;
@@ -63,19 +65,10 @@ export interface ClientResolvers {
  * <tenant>.<baseHost> に一致するホストのみ受け付け、先頭ラベルをテナント slug とする。
  * 例 tanaka.crm.localhost:3001 → service crm, tenant tanaka
  */
-export function createClientResolvers(input: {
-  readonly publicScheme: "http" | "https";
-  readonly service: ServiceEntry;
-}): ClientResolvers {
-  const service: ServiceConfig = {
-    clientId: input.service.clientId,
-    clientSecret: input.service.clientSecret,
-    scopes: [...DEFAULT_SCOPES],
-    apiBaseUrl: input.service.apiBaseUrl,
-    name: input.service.name,
-  };
-  const suffix = `.${input.service.baseHost.toLowerCase()}`;
-
+export function createClientResolvers(
+  config: Pick<ServiceWebConfig, "publicScheme" | "baseHost" | "service">,
+): ClientResolvers {
+  const suffix = `.${config.baseHost.toLowerCase()}`;
   return {
     resolveClient: (host) => {
       if (host === undefined) return undefined;
@@ -84,11 +77,12 @@ export function createClientResolvers(input: {
       const slug = lower.slice(0, -suffix.length);
       if (!TENANT_SLUG_PATTERN.test(slug)) return undefined;
       return {
-        ...service,
+        ...config.service,
         tenantSlug: slug,
-        redirectUri: `${input.publicScheme}://${lower}/auth/callback`,
+        redirectUri: `${config.publicScheme}://${lower}/auth/callback`,
       };
     },
-    resolveClientById: (clientId) => (clientId === service.clientId ? service : undefined),
+    resolveClientById: (clientId) =>
+      clientId === config.service.clientId ? config.service : undefined,
   };
 }

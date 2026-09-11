@@ -7,6 +7,7 @@
 推奨アーキテクチャは OIDC Authorization Code Flow + PKCE を用いた独立OpenID Provider方式とし、Tenant Web ApplicationはBFF構成とする。
 OIDC Client はサービス単位で登録し、テナントは顧客としてサービス横断で共有する。テナントがサービスを使えるかは契約で判定する。判断事項D13。
 検証実装はサービスごとに web と api のプロセスを持ち、実装は共有パッケージに置く。判断事項D14。
+Identity DB の主キーはサロゲート ID、redirect_uri はサービスごとのテンプレート、client_secret は複数行でローテーション可能、ハッシュは SHA-256 とする。判断事項D15。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -50,7 +51,7 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 | プロトコル | OpenID Connect Authorization Code Flow + PKCE。auth.sandbox.comを独立したOpenID Providerとする |
 | Cognitoの位置 | Auth Serverの内部認証バックエンド。Cognito Tokenはauth.sandbox.comの外に出さない |
 | Tenant Web Application | BFF構成。サーバー側セッション + Cookie。ブラウザはTokenを持たない |
-| Client登録 | サービスごとに1 Client。テナントは契約 tenant_services でサービスに紐付ける。テナント追加に Client 登録は不要 |
+| Client登録 | サービスごとに1 Client。redirect_uri はサービスごとの `redirect_uri_template` で、テナントは契約 tenant_services でサービスに紐付ける。テナント追加に Client 登録も redirect_uri 登録も不要 |
 | テナントアクセス可否 | `/authorize` 時にAuth Serverが user → tenant → 契約 → Membership の順に検証 |
 | API認証 | Auth Server発行のAccess Token。JWT RS256。aud=サービスごとのAPI origin。BFFがサーバー間で送信 |
 | API認可 | Token検証 → sub / tenant_id取得 → DBでMembership再検証 → Role → データアクセス。Tokenのroleは信用しない |
@@ -77,6 +78,7 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 | 追加 | MFA はフェーズ2。Global Logout は当初フェーズ2としたが、Tenant Logout 後に再ログインされる挙動が分かりにくいため 2026-09-09 に前倒しで実装 |
 | D13 | OIDC Client はサービス単位。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定。2026-09-11 決定 |
 | D14 | apps はサービスごとに web と api を 1 組ずつ持ち、実装は packages/service-web と packages/service-api に共有する。auth は auth-api に改名。2026-09-11 決定 |
+| D15 | Identity DB の主キーはサロゲート ID。redirect_uri はサービスごとの `redirect_uri_template`。client_secret は oidc_client_secrets に複数行持ちローテーション可能。ハッシュは SHA-256。2026-09-11 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -99,7 +101,7 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 | A. テナントごとに1 Client。テナント作成時に自動登録 | aud=テナントとなりTokenのテナント境界が明確。別ドメインサービス追加と同じ仕組みで扱える。仕様書11章の記述と一致 | Tenant Web Applicationがテナント数分のclient_secretを扱う。Secret Store等での管理が必要 |
 | B. Tenant Web Application全体で1 Client。redirect_uriをテナント作成時に列挙追加 | Secretが1つ | 1 Clientが全テナントを代表するためaudでテナントを区別できない。redirect_uriのホストからテナントを推定する独自ロジックが必要 |
 
-当初はAを採用した。その後、複数サービスを1つのAuth Serverで扱う構成に変更した際に、テナントとサービスが直交する軸であることが明確になり、D13でサービス単位のClientへ見直した。Bで懸念した「redirect_uriのホストからテナントを推定する独自ロジック」は、redirect_uriをテナント×サービスごとに登録しtenant_idを持たせることで、登録済みredirect_uriの完全一致検証と同じ処理に吸収できる。
+当初はAを採用した。その後、複数サービスを1つのAuth Serverで扱う構成に変更した際に、テナントとサービスが直交する軸であることが明確になり、D13でサービス単位のClientへ見直した。Bで懸念した「redirect_uriのホストからテナントを推定する独自ロジック」は、D15でサービスごとの `redirect_uri_template` を導入し、テンプレートを slug で展開した文字列との完全一致検証と同じ処理に吸収した。
 
 ### D3. Identity DBの所有者
 
@@ -162,17 +164,17 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 
 | 選択肢 | メリット | デメリット |
 | --- | --- | --- |
-| A. サービスごとに1 Client。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定 | Auth Serverは複数サービスを同じ仕組みで扱える。テナント追加にClient登録が不要で、契約とredirect_uriの登録だけで済む。audがサービスごとに分かれるためTokenがサービスを越えない。Secretはサービス数分のみ | redirect_uriからテナントを解決する必要がある。契約テーブルが増える |
+| A. サービスごとに1 Client。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定 | Auth Serverは複数サービスを同じ仕組みで扱える。テナント追加にClient登録が不要で、契約の登録だけで済む。audがサービスごとに分かれるためTokenがサービスを越えない。Secretはサービス数分のみ | redirect_uriからテナントを解決する必要がある。契約テーブルが増える |
 | B. テナントごとに1 Client。従来のD2 | audがテナントと一致しTokenのテナント境界が明確 | テナント×サービス分のClientが必要。テナント追加のたびにサービス数分のClient登録とSecret配布が発生する。契約という概念を表す場所がない |
 
 決定はA。理由は、1つのAuth Serverで複数サービスを扱う前提では、テナント追加時にClient登録を不要にできること、サービスごとのaudでTokenのサービス越境を拒否できることが運用と安全性の両面で優るため。Bは以前の採用案であり、本決定で置き換える。
 
 具体化。
 
-- `oidc_clients.client_id` はサービスID。サンドボックスでは `crm` と `cms`。client_secretはサービスごとに1つ
+- `oidc_clients.client_id` はサービスID。サンドボックスでは `crm` と `cms`。client_secret はサービス単位で持ち、テナントには紐付かない
 - `oidc_clients.audience` にそのサービスのAPI originを持ち、Access Tokenのaudにする
-- `oidc_client_redirect_uris` はテナント×サービスごとに登録し `tenant_id` を持つ。認可リクエストのテナントは client_id と redirect_uri の組から解決する
-- `identity.tenant_services(tenant_id, client_id, status)` が契約。`/authorize` と refresh_token grant で user → tenant → 契約 → Membership の順に検証する
+- 認可リクエストのテナントは client_id と redirect_uri の組から解決する。解決方法は当初テナント×サービスごとの redirect_uri 行だったが、D15 でサービスごとの `redirect_uri_template` に置き換えた
+- `identity.tenant_services(tenant_id, oidc_client_id, status)` が契約。`/authorize` と refresh_token grant で user → tenant → 契約 → Membership の順に検証する
 - ホストは `<tenant>.<service>.<domain>`。Tenant Web Applicationは Host からサービスとテナントを解決する
 - Back-Channel Logout URIはサービス単位。logout_tokenのsidでそのサービスの全テナントのセッションを削除する
 
@@ -191,10 +193,43 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 
 - `apps/auth-api` は OpenID Provider。旧 auth-server の改名で、ログイン画面、ポータル、ログアウト画面の HTML は当面ここで配信する
 - `apps/crm-web` と `apps/cms-web` は Tenant Web Application。`packages/service-web` の Hono アプリを `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で起動する
-- `apps/crm-api` と `apps/cms-api` は API Server。`packages/service-api` の Hono アプリを `API_HOST` で起動する。aud は `<PUBLIC_SCHEME>://<API_HOST>` の1つだけ
+- `apps/crm-api` と `apps/cms-api` は API Server。`packages/service-api` の Hono アプリを `API_BASE_URL` で起動する。aud は `API_BASE_URL` の1つだけで、Host が URL のホストと異なるリクエストは 404
 - `tools/provision` は AWS 向けの一回限りタスクで、全サービスの `SERVICES` を引き続き受け取る
 - `*-web` はクライアントを意味するが、Token と Cookie をブラウザへ出さない BFF 方式のため薄いサーバーは残す。判断事項D1
 - 次の段階で `*-web` の画面を React Router v7 の SPA に置き換え、auth-api から画面を `auth-web` として分離する予定
+
+### D15. Identity DB の主キーと redirect_uri、client_secret の持ち方
+
+問題点。D13 の当初実装は `oidc_clients.client_id` を主キーとし、redirect_uri をテナント×サービスごとの行で登録し、client_secret を oidc_clients の 1 列に scrypt で保存していた。この形では、テナントを 1 つ足すたびに契約サービス数分の redirect_uri 行を登録する必要があり、client_id を変えると tenant_services と redirect_uri の外部キーが連鎖して更新される。client_secret が 1 列のため、ローテーションは旧 secret を上書きした瞬間に旧 secret を持つサービスが `/token` で invalid_client になり、無停止で切り替えられない。scrypt は `/token` のたびに数十ミリ秒イベントループを止め、Refresh が集中する時間帯に Auth Server 全体の応答を遅らせていた。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| 主キー | A. サロゲート ID を主キーにし、client_id は UNIQUE の公開識別子にする | client_id を変更しても外部キーは連鎖しない。すべての表が同じ ULID の規約で揃う | 結合が 1 段増える。client_id での検索に UNIQUE インデックスが必要 |
+| 主キー | B. 自然キー client_id を主キーに保つ | 表が 1 つ減り、結合が減る | client_id の変更が tenant_services と secret の外部キーへ連鎖する。他の表と主キーの規約が揃わない |
+| redirect_uri | A. サービスごとに `{tenant}` を 1 か所含む `redirect_uri_template` を 1 つ持ち、展開結果との完全一致で検証する | テナント追加時の登録が tenants と tenant_services だけになる。テナント追加コストがサービス数に比例しない。テンプレートを slug で展開した文字列と完全一致させるため、ワイルドカード禁止と完全一致の要件は保たれる | テナントに紐付かない戻り先を表現できない。redirect_uri の形をサービス内で 1 種類に固定する |
+| redirect_uri | B. テナント×サービスごとの redirect_uri 行を持つ | 行単位で任意の URI を登録できる。テナントなしの戻り先も NULL 行で表せる | テナント追加のたびにサービス数分の行を登録する。登録漏れが `/authorize` の 400 として顧客に見える。テンプレートで表せる情報を行に複製している |
+| client_secret | A. oidc_client_secrets に複数行持ち、active な行のいずれかで認証する | 新 secret を追加 → サービスを切替 → 旧 secret を revoked の順で無停止ローテーションできる。revoked_at で履歴が残る | 表が 1 つ増える。active 行の検索に部分インデックスが必要 |
+| client_secret | B. oidc_clients に secret のハッシュを 1 列持つ | 表が少ない | ローテーションが上書きになり、切替の瞬間に旧 secret のサービスが invalid_client になる。猶予期間を作れない |
+| ハッシュ | A. SHA-256。`sha256$<base64url>` | ハッシュ計算がマイクロ秒で終わり `/token` のイベントループを止めない。client_secret は 32 バイト以上の乱数なので辞書攻撃への耐性を KDF で補う必要がない | secret が短い場合の防御にならない。登録時に乱数長を強制する必要がある |
+| ハッシュ | B. scrypt | 短い secret でも辞書攻撃に耐える | `/token` のたびに数十ミリ秒イベントループを止める。client_secret は人が選ぶパスワードではないため、この耐性が要らない |
+
+決定はすべて A。理由は次のとおり。
+
+- テナント追加コストが O(サービス数) から O(1) になる。tenants と tenant_services を足すだけで、どのサービスにも redirect_uri の登録が要らない
+- client_id の変更や外部キーの連鎖がなくなる。tenant_services と oidc_client_secrets は `oidc_clients.id` だけを参照する
+- client_secret のローテーションが無停止で行える。新旧 2 行が active の間は `/token` がどちらも受け付ける
+- `/token` のイベントループ阻害をなくす。SHA-256 と `timingSafeEqual` で照合し、乱数長は登録手順と provision で 32 バイト以上を強制する
+
+具体化。
+
+- `identity.oidc_clients(id, client_id UNIQUE, name, audience, redirect_uri_template, allowed_scopes, backchannel_logout_uri, status)`。`redirect_uri_template` は `{tenant}` を 1 か所だけ含む
+- `identity.oidc_client_secrets(id, oidc_client_id, secret_hash, status, created_at, revoked_at)`。active 行の部分インデックスを持つ
+- `identity.tenant_services(tenant_id, oidc_client_id, status)`。主キーは `(tenant_id, oidc_client_id)`
+- `/authorize` は redirect_uri をテンプレートに当てて slug を取り出し、tenants を slug で引く。テンプレート不一致と未知の slug はどちらも `invalid_redirect_uri` でリダイレクトしない。テナントに紐付かない認可は存在せず、ID Token と Access Token に常に `tenant_id` と `tenant_slug` が載る
+- Global Logout の戻り先とポータルのリンクは、テンプレートをテナント slug で展開して導く
+- provision は `SERVICES[].baseHost` から `<PUBLIC_SCHEME>://{tenant}.<baseHost>/auth/callback` を書き、サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする
+- `*-api` の環境変数は `API_HOST` から `API_BASE_URL` に改名し、provision が `oidc_clients.audience` に書く `apiBaseUrl` と同じ値を与える。aud はその値そのもので、Host が URL のホストと異なるリクエストは 404
+- `updated_at` はトリガー `identity.touch_updated_at()` で更新する
 
 ## 5. 移行計画
 

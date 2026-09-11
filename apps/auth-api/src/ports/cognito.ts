@@ -20,7 +20,6 @@ export interface CognitoTokens {
 export interface CognitoAuthenticated {
   readonly sub: string;
   readonly email: string;
-  readonly emailVerified: boolean;
   readonly name?: string;
   readonly tokens: CognitoTokens;
 }

@@ -1,4 +1,5 @@
 import type {
+  AccessContext,
   IdentityMembership,
   IdentityReader,
   IdentityTenant,
@@ -18,22 +19,16 @@ export interface MemoryIdentityData {
 export class MemoryIdentityReader implements IdentityReader {
   constructor(private data: MemoryIdentityData) {}
 
-  public async findUserById(id: string): Promise<IdentityUser | undefined> {
-    return this.data.users.find((user) => user.id === id);
-  }
-
-  public async findTenantById(id: string): Promise<IdentityTenant | undefined> {
-    return this.data.tenants.find((tenant) => tenant.id === id);
-  }
-
-  public async findMembership(
-    tenantId: string,
-    userId: string,
-  ): Promise<IdentityMembership | undefined> {
-    const found = this.data.memberships.find(
+  public async findAccessContext(userId: string, tenantId: string): Promise<AccessContext> {
+    const membership = this.data.memberships.find(
       (member) => member.tenantId === tenantId && member.userId === userId,
     );
-    return found === undefined ? undefined : { role: found.role, status: found.status };
+    return {
+      user: this.data.users.find((user) => user.id === userId),
+      tenant: this.data.tenants.find((tenant) => tenant.id === tenantId),
+      membership:
+        membership === undefined ? undefined : { role: membership.role, status: membership.status },
+    };
   }
 
   /** テストで Membership を削除するための操作 */

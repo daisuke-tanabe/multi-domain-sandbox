@@ -4,11 +4,11 @@ import {
   generateSigningKey,
   signJwt,
   silentLogger,
+  StaticJwksSource,
   toJwks,
   type SigningKey,
 } from "@sandbox/shared";
 import { MemoryIdentityReader, MemoryProjectRepository } from "./adapters/memory-repositories.ts";
-import { StaticJwksSource } from "./adapters/remote-jwks-source.ts";
 import { createApiApp } from "./app.ts";
 import type { ApiEnv } from "./auth/middleware.ts";
 
@@ -65,7 +65,7 @@ export async function createApiHarness(options: ApiHarnessOptions = {}): Promise
   ]);
   const app = createApiApp({
     issuer: ISSUER,
-    audiences: new Map([[new URL(audience).host, audience]]),
+    audience,
     jwks: new StaticJwksSource(toJwks([key])),
     identity,
     projects,

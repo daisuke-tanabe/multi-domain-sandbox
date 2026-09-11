@@ -1,17 +1,16 @@
 import { Hono } from "hono";
 import { secureHeaders } from "hono/secure-headers";
-import type { Clock, Logger } from "@sandbox/shared";
+import type { Clock, JwksSource, Logger } from "@sandbox/shared";
 import { authenticate, type ApiEnv } from "./auth/middleware.ts";
 import type { IdentityReader } from "./ports/identity-reader.ts";
-import type { JwksSource } from "./ports/jwks-source.ts";
 import type { ProjectRepository } from "./ports/project-repository.ts";
 import { meRoutes } from "./routes/me.ts";
 import { projectRoutes } from "./routes/projects.ts";
 
 export interface ApiAppOptions {
   readonly issuer: string;
-  /** Host → aud。1 プロセスで複数サービスの API ホストを受けられる。未知のホストは 404 */
-  readonly audiences: ReadonlyMap<string, string>;
+  /** この API の公開 URL。aud として検証し、Host がこの URL のホストと違うリクエストは 404 */
+  readonly audience: string;
   readonly jwks: JwksSource;
   readonly identity: IdentityReader;
   readonly projects: ProjectRepository;

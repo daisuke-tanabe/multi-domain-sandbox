@@ -6,11 +6,13 @@ import {
   generateCodeVerifier,
   generateSigningKey,
   hashSecret,
+  MemoryKeyValueStore,
   parseEncryptionKey,
   silentLogger,
+  type FetchLike,
 } from "@sandbox/shared";
 import { MemoryIdentityRepository } from "./adapters/memory-identity-repository.ts";
-import { createMemoryStores } from "./adapters/memory-stores.ts";
+import { createAuthStores } from "./adapters/stores.ts";
 import { MockCognitoAuthenticator } from "./adapters/mock-cognito.ts";
 import { createAuthApp } from "./app.ts";
 import type { AuthDeps } from "./usecases/deps.ts";
@@ -26,6 +28,8 @@ import type { AuthDeps } from "./usecases/deps.ts";
 export const ISSUER = "http://auth.localhost:3000";
 export const CRM_AUDIENCE = "http://api.crm.localhost:3002";
 export const CMS_AUDIENCE = "http://api.cms.localhost:3004";
+export const CRM_ID = "client-crm";
+export const CMS_ID = "client-cms";
 export const TANAKA_ID = "tenant-tanaka";
 export const SUZUKI_ID = "tenant-suzuki";
 export const TANAKA_CRM_REDIRECT = "http://tanaka.crm.localhost:3001/auth/callback";
@@ -71,7 +75,7 @@ export interface TestHarness {
 
 export interface HarnessOptions {
   /** Back-Channel Logout の送信先。省略時は 502 を返す */
-  readonly fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+  readonly fetch?: FetchLike;
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<TestHarness> {
@@ -80,27 +84,23 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
   const identity = new MemoryIdentityRepository({
     clients: [
       {
+        id: CRM_ID,
         clientId: "crm",
-        clientSecretHash: secretHash,
         name: "CRM",
         audience: CRM_AUDIENCE,
-        redirectTargets: [
-          { uri: TANAKA_CRM_REDIRECT, tenant: TANAKA },
-          { uri: SUZUKI_CRM_REDIRECT, tenant: SUZUKI },
-        ],
+        redirectUriTemplate: "http://{tenant}.crm.localhost:3001/auth/callback",
+        secretHashes: [secretHash],
         allowedScopes: ["openid", "profile", "email"],
         status: "active",
         backchannelLogoutUri: "http://crm.localhost:3001/auth/backchannel-logout",
       },
       {
+        id: CMS_ID,
         clientId: "cms",
-        clientSecretHash: secretHash,
         name: "CMS",
         audience: CMS_AUDIENCE,
-        redirectTargets: [
-          { uri: TANAKA_CMS_REDIRECT, tenant: TANAKA },
-          { uri: SUZUKI_CMS_REDIRECT, tenant: SUZUKI },
-        ],
+        redirectUriTemplate: "http://{tenant}.cms.localhost:3003/auth/callback",
+        secretHashes: [secretHash],
         allowedScopes: ["openid", "profile", "email"],
         status: "active",
         backchannelLogoutUri: "http://cms.localhost:3003/auth/backchannel-logout",
@@ -129,9 +129,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
       { tenantId: SUZUKI_ID, userId: "user-bob", role: "admin", status: "active" },
     ],
     contracts: [
-      { tenantId: TANAKA_ID, clientId: "crm", status: "active" },
-      { tenantId: TANAKA_ID, clientId: "cms", status: "active" },
-      { tenantId: SUZUKI_ID, clientId: "crm", status: "active" },
+      { tenantId: TANAKA_ID, oidcClientId: CRM_ID, status: "active" },
+      { tenantId: TANAKA_ID, oidcClientId: CMS_ID, status: "active" },
+      { tenantId: SUZUKI_ID, oidcClientId: CRM_ID, status: "active" },
     ],
   });
   const encryptionKey = parseEncryptionKey("test", randomBytes(32).toString("base64"));
@@ -140,7 +140,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
   const deps: AuthDeps = {
     issuer: ISSUER,
     clock,
-    stores: createMemoryStores(clock),
+    stores: createAuthStores(() => new MemoryKeyValueStore(clock)),
     identity,
     cognito: new MockCognitoAuthenticator(mockUsers, clock),
     signingKey: await generateSigningKey(),

@@ -15,7 +15,7 @@ Cookie値はサーバー側ストアを指すランダムIDのみで、Tokenや�
 | `__Host-tenant_session` | tanaka.crm.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/ | Session Cookie。サーバー側TTLで管理 | Tenant Session ID |
 | `__Secure-tenant_pre_auth` | tanaka.crm.sandbox.com 等 | HttpOnly; Secure; SameSite=Lax; Path=/auth | 30分 | pre-auth state参照ID |
 
-Tenant側のCookie名はホストが異なるため同名でよい。仕様書10章の `tanaka_crm_session` 表記はホスト単位に分かれていることを示す概念名として扱い、実装上は共通名にする。サーバー側ストアのキーは `<clientId>:<tenantSlug>:<sessionId>` で、Cookie値だけでは別ホストのセッションを引けない。
+Tenant側のCookie名はホストが異なるため同名でよい。仕様書10章の `tanaka_crm_session` 表記はホスト単位に分かれていることを示す概念名として扱い、実装上は共通名にする。サーバー側ストアはサービスごとに `<clientId>:sess` のプレフィックスで作り、その中のキーは `<tenantSlug>:<sessionId>` にする。Cookie値だけでは別ホストのセッションを引けない。
 
 ## 設計原則
 

@@ -13,6 +13,7 @@ import {
   createHarness,
   exchangeCode,
   ISSUER,
+  extractCsrf,
   readJson,
   readTokenBody,
   refresh,
@@ -71,11 +72,10 @@ describe("first login via tenant-a", () => {
     expect(body.expires_in).toBe(900);
 
     const jwks = toJwks([harness.deps.signingKey]);
-    const now = new Date(harness.clock.nowSeconds() * 1000);
     const idToken = await verifyJwt(body.id_token, jwks, {
       issuer: ISSUER,
       audience: "crm",
-      currentDate: now,
+      clock: harness.clock,
     });
     expect(idToken.ok).toBe(true);
     if (!idToken.ok) return;
@@ -89,7 +89,7 @@ describe("first login via tenant-a", () => {
     const accessToken = await verifyJwt(body.access_token, jwks, {
       issuer: ISSUER,
       audience: CRM_AUDIENCE,
-      currentDate: now,
+      clock: harness.clock,
     });
     expect(accessToken.ok).toBe(true);
     if (!accessToken.ok) return;
@@ -101,7 +101,7 @@ describe("first login via tenant-a", () => {
     const { url } = authorizeUrl();
     const authorizeRes = await harness.app.request(url);
     const loginRes = await harness.app.request(`${ISSUER}${authorizeRes.headers.get("Location")}`);
-    const csrf = /name="csrf" value="([^"]+)"/.exec(await loginRes.text())?.[1] ?? "";
+    const csrf = extractCsrf(await loginRes.text());
     const rid =
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
     const csrfCookie = loginRes.headers.getSetCookie()[0]?.split(";")[0] ?? "";
@@ -128,7 +128,7 @@ describe("first login via tenant-a", () => {
     const { url } = authorizeUrl();
     const authorizeRes = await harness.app.request(url);
     const loginRes = await harness.app.request(`${ISSUER}${authorizeRes.headers.get("Location")}`);
-    const csrf = /name="csrf" value="([^"]+)"/.exec(await loginRes.text())?.[1] ?? "";
+    const csrf = extractCsrf(await loginRes.text());
     const rid =
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
     const csrfCookie = loginRes.headers.getSetCookie()[0]?.split(";")[0] ?? "";
@@ -217,7 +217,7 @@ describe("SSO to tenant-b with an existing SSO session", () => {
     const idToken = await verifyJwt(body.id_token, toJwks([harness.deps.signingKey]), {
       issuer: ISSUER,
       audience: "crm",
-      currentDate: new Date(harness.clock.nowSeconds() * 1000),
+      clock: harness.clock,
     });
     expect(idToken.ok).toBe(true);
     if (!idToken.ok) return;
@@ -510,7 +510,7 @@ describe("global logout", () => {
     const harness = await createHarness({
       fetch: async (url, init) => {
         const form = new URLSearchParams(String(init?.body ?? ""));
-        received.push({ url, logoutToken: form.get("logout_token") ?? "" });
+        received.push({ url: String(url), logoutToken: form.get("logout_token") ?? "" });
         return new Response(null, { status: 200 });
       },
     });
@@ -531,7 +531,7 @@ describe("global logout", () => {
     const confirm = await harness.app.request(`${ISSUER}/logout?client_id=crm&tenant=tanaka`, {
       headers: { Cookie: first.cookie },
     });
-    const csrf = /name="csrf" value="([^"]+)"/.exec(await confirm.text())?.[1] ?? "";
+    const csrf = extractCsrf(await confirm.text());
     const cookie = cookieHeaderFrom(confirm, first.cookie);
 
     // Act
@@ -560,7 +560,7 @@ describe("global logout", () => {
     const claims = await verifyJwt(logoutToken, toJwks([harness.deps.signingKey]), {
       issuer: ISSUER,
       audience: "crm",
-      currentDate: new Date(harness.clock.nowSeconds() * 1000),
+      clock: harness.clock,
     });
     expect(claims.ok).toBe(true);
     if (!claims.ok) return;
@@ -623,7 +623,7 @@ describe("portal", () => {
     // Arrange
     const harness = await createHarness();
     const loginPage = await harness.app.request(`${ISSUER}/login`);
-    const csrf = /name="csrf" value="([^"]+)"/.exec(await loginPage.text())?.[1] ?? "";
+    const csrf = extractCsrf(await loginPage.text());
     const csrfCookie = cookieHeaderFrom(loginPage);
 
     // Act
@@ -698,17 +698,16 @@ describe("service and tenant separation", () => {
       }),
     );
     const jwks = toJwks([harness.deps.signingKey]);
-    const now = new Date(harness.clock.nowSeconds() * 1000);
 
     const forCrm = await verifyJwt(tokens.access_token, jwks, {
       issuer: ISSUER,
       audience: CRM_AUDIENCE,
-      currentDate: now,
+      clock: harness.clock,
     });
     const forCms = await verifyJwt(tokens.access_token, jwks, {
       issuer: ISSUER,
       audience: CMS_AUDIENCE,
-      currentDate: now,
+      clock: harness.clock,
     });
 
     expect(forCrm.ok).toBe(true);
@@ -734,7 +733,7 @@ describe("service and tenant separation", () => {
     const claims = await verifyJwt(suzukiTokens.access_token, toJwks([harness.deps.signingKey]), {
       issuer: ISSUER,
       audience: CRM_AUDIENCE,
-      currentDate: new Date(harness.clock.nowSeconds() * 1000),
+      clock: harness.clock,
     });
 
     expect(claims.ok).toBe(true);

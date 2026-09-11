@@ -8,7 +8,7 @@ Sandbox 認証・マルチサービス・マルチテナントSSO基盤の設計
 - サービスは Auth Server を利用するプロダクト。OIDC Client 1 件に対応する。サンドボックスでは `crm` と `cms`
 - テナントは顧客企業。サービスをまたいで共有される。サンドボックスでは `tanaka` と `suzuki`
 - 契約は `identity.tenant_services` で表し、テナントがどのサービスを使えるかを決める
-- ホストは `<tenant>.<service>.<domain>`。認可リクエストのテナントは `client_id` と登録済み `redirect_uri` の組で決まる
+- ホストは `<tenant>.<service>.<domain>`。認可リクエストのテナントは `client_id` と `redirect_uri` の組で決まる。サービスごとの `redirect_uri_template` に `redirect_uri` を当てて取り出した slug で `tenants` を引く
 
 ## 構成
 
@@ -32,7 +32,7 @@ Sandbox 認証・マルチサービス・マルチテナントSSO基盤の設計
 
 ## 実装状況
 
-設計に対応する検証実装を `apps/` と `packages/` に置いている。`apps/` は auth-api / crm-web / crm-api / cms-web / cms-api で、web と api の実装は `packages/service-web` と `packages/service-api` に共有する。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。
+設計に対応する検証実装を `apps/` と `packages/` に置いている。`apps/` は auth-api / crm-web / crm-api / cms-web / cms-api で、web と api の実装は `packages/service-web` と `packages/service-api` に共有する。crm-web / crm-api / cms-web / cms-api の `main.ts` は packages の起動関数を呼ぶだけで、設定スキーマも packages 側にある。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。
 サービスとテナントを分けたモデルは `apps/` と `db/init` に反映済み。AWS の Terraform 構成はテナントごとに Client を持つ旧構成のままで、[deploy.md](./deploy.md) に記載のとおり別作業で移行する。
 
 ## 前提

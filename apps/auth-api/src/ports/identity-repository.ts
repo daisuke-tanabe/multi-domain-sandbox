@@ -3,13 +3,16 @@
  * docs/design/05-data-model.md に対応する。
  *
  * サービス (OidcClient) とテナント (Tenant) は別の軸。テナントは顧客企業であり複数のサービスを契約できる。
- * 認可リクエストのテナントは登録済み redirect_uri から決める。
+ * 認可リクエストのテナントは redirect_uri をサービスのテンプレートに当てて slug を取り出し、tenants から引く。
  */
-export type UserStatus = "active" | "disabled";
-export type TenantStatus = "active" | "suspended";
-export type MembershipStatus = "active" | "invited" | "disabled";
-export type ContractStatus = "active" | "suspended";
-export type Role = "owner" | "admin" | "member" | "viewer";
+import type {
+  ClientStatus,
+  ContractStatus,
+  MembershipStatus,
+  Role,
+  TenantStatus,
+  UserStatus,
+} from "@sandbox/shared";
 
 export interface User {
   readonly id: string;
@@ -26,21 +29,20 @@ export interface Tenant {
   readonly status: TenantStatus;
 }
 
-/** 登録済みの戻り先。tenant が null の行はテナントに紐付かない戻り先 */
-export interface RedirectTarget {
-  readonly uri: string;
-  readonly tenant: Tenant | null;
-}
-
 export interface OidcClient {
+  /** 内部参照用のサロゲート ID。契約や secret はこれで紐付く */
+  readonly id: string;
+  /** OAuth の公開識別子 */
   readonly clientId: string;
-  readonly clientSecretHash: string;
   readonly name: string;
   /** このサービスの API の識別子。Access Token の aud になる */
   readonly audience: string;
-  readonly redirectTargets: ReadonlyArray<RedirectTarget>;
+  /** {tenant} を含む redirect_uri。展開後の完全一致で検証する */
+  readonly redirectUriTemplate: string;
+  /** 有効な client_secret のハッシュ。ローテーション中は複数 */
+  readonly secretHashes: ReadonlyArray<string>;
   readonly allowedScopes: ReadonlyArray<string>;
-  readonly status: "active" | "disabled";
+  readonly status: ClientStatus;
   /** Back-Channel Logout の通知先。未設定なら通知しない */
   readonly backchannelLogoutUri: string | null;
 }
@@ -65,7 +67,7 @@ export interface NewUser {
 export interface PortalService {
   readonly clientId: string;
   readonly name: string;
-  /** そのテナント向けに登録された戻り先の origin。ログイン導線に使う */
+  /** そのテナント向けの redirect_uri から導いた origin。ログイン導線に使う */
   readonly origin: string;
 }
 
@@ -81,8 +83,10 @@ export interface IdentityRepository {
   findUserById(id: string): Promise<User | undefined>;
   createUser(user: NewUser): Promise<User>;
   findTenantById(id: string): Promise<Tenant | undefined>;
+  findTenantBySlug(slug: string): Promise<Tenant | undefined>;
   findMembership(tenantId: string, userId: string): Promise<Membership | undefined>;
-  findContract(tenantId: string, clientId: string): Promise<Contract | undefined>;
+  /** oidcClientId は OidcClient.id */
+  findContract(tenantId: string, oidcClientId: string): Promise<Contract | undefined>;
   /** ユーザーが active で所属する active なテナントと、そのテナントが契約中のサービス */
   listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>>;
 }

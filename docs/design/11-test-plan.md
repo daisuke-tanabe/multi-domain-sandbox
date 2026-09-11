@@ -5,13 +5,13 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / service-api / service-web / oidc-client / shared で 112 件が通っている。crm-web / crm-api / cms-web / cms-api は `packages/service-web` と `packages/service-api` を環境変数で起動するだけの薄い構成のため、テストは共有パッケージ側に置く。
+現在の自動テストは auth-api / service-api / service-web / shared で 121 件が通っている。oidc-client は service-web のテストを通して検証する。crm-web / crm-api / cms-web / cms-api の `main.ts` は `packages/service-web` と `packages/service-api` の起動関数を呼ぶだけのため、テストは共有パッケージ側に置く。
 
 ## テストピラミッド
 
 | 層 | 対象 | ツール | 実行タイミング |
 | --- | --- | --- | --- |
-| Unit | PKCE 計算、JWT 生成と検証、Cookie 属性、redirect_uri 比較、Host 解決、return_to 検証、Role→Permission | Vitest | 毎コミット |
+| Unit | PKCE 計算、JWT 生成と検証、Cookie 属性、redirect_uri テンプレート照合、secret ハッシュ、Host 解決、return_to 検証、Role→Permission | Vitest | 毎コミット |
 | Integration | Auth / Tenant / API の各エンドポイント。ストアと Cognito はモック | Vitest + Hono テストクライアント | 毎コミット |
 | E2E | 5種のプロセスと7ホストをまたぐフロー。ブラウザ相当のクライアントで Cookie を追う | Vitest。ブラウザ確認は Chrome DevTools スクリプト | PR ごと |
 | Security | 攻撃シナリオの再現 | Vitest | PR ごと |
@@ -23,9 +23,11 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | 対象 | ケース |
 | --- | --- |
 | PKCE | S256 の計算。verifier 長の下限上限。plain の拒否 |
-| redirect_uri 比較 | 完全一致のみ true。末尾スラッシュ、クエリ、大文字小文字、ポートの差異で false |
-| テナント解決 | (client_id, redirect_uri) から tenant_id を引く。tenant_id NULL の行はテナントなし |
-| アクセス判定 | user_disabled → tenant_suspended → not_contracted → no_membership / membership_inactive の順で最初の理由を返す |
+| redirect_uri テンプレート照合 `matchRedirectUriTemplate` | 展開結果と完全一致する redirect_uri から slug を返す。末尾スラッシュ、クエリ追加、大文字、空 slug、多段ラベル `evil.tanaka.crm`、ホスト後ろへの付け足し `…:3001.evil.example` はすべて undefined。`expandRedirectUriTemplate` の展開結果を照合すると元の slug に戻る |
+| テナント解決 | テンプレートから取り出した slug で tenants を引く。slug が未知なら invalid_redirect_uri。テナントなしの認可は存在しない |
+| secret ハッシュ `hashSecret` / `verifySecret` | `sha256$` で始まる。元の secret で true、別の secret で false。`plain` や `scrypt$a$b` のような形式外の保存値は false |
+| secret ローテーション `verifySecretAgainstAny` | active なハッシュが複数あるとき、いずれかに一致すれば true。どれにも一致しない、または一覧が空なら false |
+| アクセス判定 | user_disabled → tenant_suspended → not_contracted → no_membership / membership_inactive の順で最初の理由を返す。user、契約、Membership は並列取得 |
 | ID Token 生成 | 必須 claims の存在。aud=client_id。nonce / sid / tenant_id / tenant_slug の反映 |
 | Access Token 生成 | aud に client.audience と issuer。role を含まない。tenant_id と client_id の反映 |
 | logout_token 生成 | aud=client_id。sid と events。nonce なし |
@@ -42,15 +44,15 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | return_to 検証 | 相対パス許可。絶対 URL / `//` / `javascript:` / `\` 拒否 |
 | ID Token 検証 | 署名 / iss / aud / exp / nonce / alg 固定 / tenant_slug と Host の一致 |
 | Cookie 生成 | HttpOnly / Secure / SameSite=Lax / `__Host-` / Domain なし |
-| Session キー | `<clientId>:<tenantSlug>:<id>`。同じ Cookie 値でも別ホストから引けない |
-| sid 逆引き | `<clientId>:sid:<sid>` に複数テナントのセッションが入り、まとめて削除できる |
+| Session キー | ストア `<clientId>:sess` のキー `<tenantSlug>:<id>`。同じ Cookie 値でも別ホストから引けない |
+| sid 逆引き | ストア `<clientId>:sid` のキー `sid:<sid>` に複数テナントのセッションが入り、まとめて削除できる |
 | Token 更新判定 | 残り60秒未満で Refresh を発火 |
 
 ### API Server
 
 | 対象 | ケース |
 | --- | --- |
-| Host → aud | API_HOST が `<PUBLIC_SCHEME>://<API_HOST>` に写像される |
+| Host → aud | API_BASE_URL がそのまま aud になり、URL のホストだけを受け付ける |
 | Access Token 検証 | aud 不一致で拒否。ID Token を渡すと拒否。alg=none 拒否 |
 | Role→Permission | 4 role の permission 集合 |
 | Repository | tenant_id 引数の必須性。省略で型エラーになること |
@@ -63,12 +65,13 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 
 | 番号 | テスト |
 | --- | --- |
-| A1-A4 | リダイレクトせず 400 を返し、Location ヘッダがないこと。A3 は未登録テナントのホストを含む |
+| A1-A4 | リダイレクトせず 400 を返し、Location ヘッダがないこと。A3 はテンプレート不一致、A3b はテンプレートに一致するが slug が tenants にないホスト |
 | A5-A10 | redirect_uri へ error と state 付きで 302 |
 | A11-A13, A17, A18 | access_denied と error_description の理由。SSO Session は維持される |
 | A14-A15 | ログイン画面へ遷移し Cookie が削除される |
 | L1-L12 | 各エラーの応答と文言。L3-L5 が同一文言 |
-| T1-T16 | 各エラーの OAuth エラーコード。T4 で Refresh Token 系列が失効。T15 で契約解除後の Refresh が invalid_grant |
+| T1-T16 | 各エラーの OAuth エラーコード。T1 は誤った secret と revoked 済みの secret の両方で invalid_client。T4 で Refresh Token 系列が失効。T15 で契約解除後の Refresh が invalid_grant |
+| M2 | secret ローテーション。新 secret を active で追加した直後は新旧どちらの Basic 認証でも /token が 200。旧行を revoked にすると旧 secret だけ invalid_client |
 | 正常 | code 交換で id_token / access_token / refresh_token が返る。expires_in=900 |
 | 正常 | id_token の aud が client_id、tenant_slug が redirect_uri のテナント |
 | 正常 | access_token の aud が client.audience。crm と cms で異なる |
@@ -76,7 +79,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | 正常 | /revoke が冪等 |
 | 正常 | /.well-known/openid-configuration と /jwks の内容 |
 | ポータル | alice で「Tanaka Inc. (tanaka / owner)」に CRM と CMS、「Suzuki Ltd. (suzuki / viewer)」に CRM のみ。リンクは `<tenant>.<service>` の /auth/login |
-| Global Logout | authorized_clients のサービスごとに1通の logout_token。aud がサービス。完了画面に「CRM (tanaka) に戻る」 |
+| Global Logout | authorized_clients のサービスごとに1通の logout_token。aud がサービス。完了画面に「CRM (tanaka) に戻る」。リンク先は redirect_uri_template を tenant で展開した origin |
 
 ### Tenant Web Application
 
@@ -97,7 +100,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | --- | --- |
 | P1-P14 | 各エラー応答 |
 | P5 | crm 向け Access Token を cms-api の Host api.cms.localhost:3004 に送ると 401 |
-| P16 | API_HOST と一致しない Host は 404。Token の有無に関わらず |
+| P16 | API_BASE_URL のホストと一致しない Host は 404。Token の有無に関わらず |
 | 正常 | cms 向け Access Token を cms-api の Host api.cms.localhost:3004 に送ると 200 |
 | 正常 | 有効な Token で自テナントのデータのみ返る |
 | P12 | 他テナントのリソース ID で 404 |
@@ -137,7 +140,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | --- | --- | --- |
 | S1 | code 再利用 | 2回目が invalid_grant。1回目で得た Refresh Token が失効 |
 | S2 | state 改ざん | Tenant が 400。/token が呼ばれない |
-| S3 | redirect_uri 改ざん。別ホスト / パス違い / クエリ追加 / 未登録テナント | Auth が 400。Location なし |
+| S3 | redirect_uri 改ざん。別ホスト / パス違い / クエリ追加 / 末尾スラッシュ / 大文字 / 多段ラベル / 未登録テナントの slug | Auth が 400。Location なし |
 | S4 | 別ブラウザへの code 注入 | nonce 不一致で 401 |
 | S5 | crm の code を cms の secret で交換 | invalid_grant |
 | S6 | Refresh Token 再利用 | 系列全体が失効し、正規の次回 Refresh も失敗する |
@@ -162,8 +165,8 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | Session Store | インメモリ実装。TTL を進めるためのテスト用クロック |
 | Identity DB | ローカル PostgreSQL。RLS テストは PostgreSQL 必須 |
 | web インスタンス | crm と cms の2サービス。`packages/service-web/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003 |
-| api インスタンス | サービスごとに別インスタンス。API_HOST は api.crm.localhost:3002 / api.cms.localhost:3004 |
-| テストファイル | `apps/auth-api/src/app.test.ts`、`packages/service-web/src/app.test.ts`、`packages/service-api/src/app.test.ts` |
+| api インスタンス | サービスごとに別インスタンス。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
+| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`packages/service-web/src/app.test.ts`、`packages/service-api/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |
 | 時刻 | 注入可能なクロックで期限切れを再現 |
 

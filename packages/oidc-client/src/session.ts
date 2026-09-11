@@ -1,4 +1,4 @@
-import { randomToken } from "@sandbox/shared";
+import { createSessionExpiry, randomToken } from "@sandbox/shared";
 import type { TokenResponse } from "./provider.ts";
 import {
   SESSION_ABSOLUTE_SECONDS,
@@ -8,20 +8,22 @@ import {
   type TenantSession,
 } from "./types.ts";
 
-function sessionKey(clientId: string, tenantSlug: string, id: string): string {
-  return `${clientId}:${tenantSlug}:${id}`;
+const expiry = createSessionExpiry({
+  idleSeconds: SESSION_IDLE_SECONDS,
+  absoluteSeconds: SESSION_ABSOLUTE_SECONDS,
+});
+
+/** 1 プロセス 1 サービスなので、キーはテナントとセッション ID で分ける */
+function sessionKey(tenantSlug: string, id: string): string {
+  return `${tenantSlug}:${id}`;
 }
 
-function sidKey(clientId: string, sid: string): string {
-  return `${clientId}:sid:${sid}`;
-}
-
-function remainingAbsoluteTtl(session: TenantSession, now: number): number {
-  return session.createdAt + SESSION_ABSOLUTE_SECONDS - now;
+function sidKey(sid: string): string {
+  return `sid:${sid}`;
 }
 
 /**
- * Cookie の値から Tenant Session を取得する。サービスやテナントをまたいだ参照はキー空間で防ぐ。
+ * Cookie の値から Tenant Session を取得する。テナントをまたいだ参照はキー空間で防ぐ。
  */
 export async function loadSession(
   deps: OidcClientDeps,
@@ -29,20 +31,9 @@ export async function loadSession(
   sessionId: string | undefined,
 ): Promise<TenantSession | undefined> {
   if (sessionId === undefined || sessionId === "") return undefined;
-  const session = await deps.sessions.get(
-    sessionKey(client.clientId, client.tenantSlug, sessionId),
-  );
-  if (
-    session === undefined ||
-    session.clientId !== client.clientId ||
-    session.tenantSlug !== client.tenantSlug
-  ) {
-    return undefined;
-  }
-
-  const now = deps.clock.nowSeconds();
-  const idleExpired = session.lastSeenAt + SESSION_IDLE_SECONDS <= now;
-  if (idleExpired || remainingAbsoluteTtl(session, now) <= 0) {
+  const session = await deps.sessions.get(sessionKey(client.tenantSlug, sessionId));
+  if (session === undefined) return undefined;
+  if (expiry.isExpired(session, deps.clock.nowSeconds())) {
     await destroySession(deps, session);
     return undefined;
   }
@@ -52,7 +43,7 @@ export async function loadSession(
 export interface NewSessionInput {
   readonly client: OidcClientConfig;
   readonly userId: string;
-  readonly tenantId: string | null;
+  readonly tenantId: string;
   readonly sid: string;
   readonly email: string | null;
   readonly name: string | null;
@@ -69,7 +60,6 @@ export async function createSession(
   const now = deps.clock.nowSeconds();
   const session: TenantSession = {
     id: randomToken(),
-    clientId: input.client.clientId,
     tenantSlug: input.client.tenantSlug,
     userId: input.userId,
     tenantId: input.tenantId,
@@ -83,20 +73,20 @@ export async function createSession(
     createdAt: now,
     lastSeenAt: now,
   };
-  await deps.sessions.set(
-    sessionKey(session.clientId, session.tenantSlug, session.id),
-    session,
-    SESSION_ABSOLUTE_SECONDS,
-  );
-  const existing = (await deps.sessionsBySid.get(sidKey(session.clientId, session.sid))) ?? [];
+  const key = sessionKey(session.tenantSlug, session.id);
+  const [, existing] = await Promise.all([
+    deps.sessions.set(key, session, SESSION_ABSOLUTE_SECONDS),
+    deps.sessionsBySid.get(sidKey(session.sid)),
+  ]);
   await deps.sessionsBySid.set(
-    sidKey(session.clientId, session.sid),
-    [...existing, sessionKey(session.clientId, session.tenantSlug, session.id)],
+    sidKey(session.sid),
+    [...(existing ?? []), key],
     SESSION_ABSOLUTE_SECONDS,
   );
   return session;
 }
 
+/** Token などの内容が変わったときに保存する。lastSeenAt も進める */
 export async function saveSession(
   deps: OidcClientDeps,
   session: TenantSession,
@@ -104,29 +94,33 @@ export async function saveSession(
   const now = deps.clock.nowSeconds();
   const updated: TenantSession = { ...session, lastSeenAt: now };
   await deps.sessions.set(
-    sessionKey(updated.clientId, updated.tenantSlug, updated.id),
+    sessionKey(updated.tenantSlug, updated.id),
     updated,
-    remainingAbsoluteTtl(updated, now),
+    expiry.remainingTtl(updated, now),
   );
   return updated;
 }
 
+/**
+ * リクエストごとの lastSeenAt 更新。前回から間隔が空いていなければ書き込まない。
+ */
+export function touchSession(deps: OidcClientDeps, session: TenantSession): Promise<TenantSession> {
+  if (!expiry.shouldTouch(session, deps.clock.nowSeconds())) return Promise.resolve(session);
+  return saveSession(deps, session);
+}
+
 export function destroySession(deps: OidcClientDeps, session: TenantSession): Promise<void> {
-  return deps.sessions.delete(sessionKey(session.clientId, session.tenantSlug, session.id));
+  return deps.sessions.delete(sessionKey(session.tenantSlug, session.id));
 }
 
 /**
  * Back-Channel Logout。同じ sid で作られたこのサービスのセッションを、テナントを問わずすべて削除する。
  */
-export async function destroySessionsBySid(
-  deps: OidcClientDeps,
-  clientId: string,
-  sid: string,
-): Promise<number> {
-  const keys = (await deps.sessionsBySid.get(sidKey(clientId, sid))) ?? [];
-  for (const key of keys) {
-    await deps.sessions.delete(key);
-  }
-  await deps.sessionsBySid.delete(sidKey(clientId, sid));
+export async function destroySessionsBySid(deps: OidcClientDeps, sid: string): Promise<number> {
+  const keys = (await deps.sessionsBySid.get(sidKey(sid))) ?? [];
+  await Promise.all([
+    ...keys.map((key) => deps.sessions.delete(key)),
+    deps.sessionsBySid.delete(sidKey(sid)),
+  ]);
   return keys.length;
 }

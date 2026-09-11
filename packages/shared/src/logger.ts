@@ -70,6 +70,6 @@ export const silentLogger: Logger = {
   error: () => {},
 };
 
-export function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unexpected error";
+export function getErrorMessage(error: unknown, fallback = "unknown"): string {
+  return error instanceof Error ? error.message : fallback;
 }

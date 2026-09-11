@@ -13,7 +13,7 @@ API はサービスごとに `api.<service>.sandbox.com` のホストを持ち�
 
 ```mermaid
 flowchart TD
-    A["Request"] --> A0["0. Host → aud<br/>API_HOST と一致する Host か"]
+    A["Request"] --> A0["0. Host → aud<br/>API_BASE_URL のホストと一致する Host か"]
     A0 -- 未知の Host --> E0["404 not_found"]
     A0 --> B["1. Authentication<br/>Bearer Token 抽出と JWT 検証<br/>aud が Host 由来の値と一致"]
     B -- 失敗 --> E1["401 unauthorized"]
@@ -28,17 +28,20 @@ flowchart TD
     H --> I["Response"]
 ```
 
+0 から 3 までは `packages/service-api/src/usecases/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `IdentityReader.findAccessContext(userId, tenantId)` で user / tenant / membership を 1 回の JOIN で取得 → user → tenant → membership の順に判定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
+
 ## 0. Host → aud
 
-API はサービスごとに別プロセスで、1 プロセスは 1 つの Host だけを受ける。環境変数 `API_HOST` の Host から `<PUBLIC_SCHEME>://<API_HOST>` を aud とする。
+API はサービスごとに別プロセスで、1 プロセスは 1 つの Host だけを受ける。環境変数 `API_BASE_URL` の値をそのまま aud とし、リクエストの Host が `API_BASE_URL` のホストと一致することを要求する。`ApiAppOptions.audience` は文字列 1 つで、Host から aud を引く表は持たない。
+環境変数は `packages/service-api/src/config.ts` の `loadServiceApiConfig` が `parseEnv` で検証する。`PORT` `API_BASE_URL` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` のみで、`PUBLIC_SCHEME` は持たない。
 
-| プロセス | API_HOST | aud |
-| --- | --- | --- |
-| crm-api | api.crm.localhost:3002 | http://api.crm.localhost:3002 |
-| cms-api | api.cms.localhost:3004 | http://api.cms.localhost:3004 |
-| それ以外の Host | | 404 not_found。Token 検証に進まない |
+| プロセス | API_BASE_URL | aud | 受け付ける Host |
+| --- | --- | --- | --- |
+| crm-api | http://api.crm.localhost:3002 | http://api.crm.localhost:3002 | api.crm.localhost:3002 |
+| cms-api | http://api.cms.localhost:3004 | http://api.cms.localhost:3004 | api.cms.localhost:3004 |
+| それ以外の Host | | | 404 not_found。Token 検証に進まない |
 
-aud は oidc_clients.audience と完全一致させる。crm-api に届いた cms 向けの Token は aud 不一致で 401 になる。
+aud は oidc_clients.audience と完全一致させる。provision は `SERVICES[].apiBaseUrl` を oidc_clients.audience に書くため、同じ値を `API_BASE_URL` に与えれば一致する。crm-api に届いた cms 向けの Token は aud 不一致で 401 になる。
 
 ## 1. Authentication
 
@@ -47,11 +50,11 @@ aud は oidc_clients.audience と完全一致させる。crm-api に届いた cm
 | ヘッダ | `Authorization: Bearer <jwt>`。Cookie は受け付けない |
 | 署名 | Auth Server の JWKS。RS256 のみ。kid で鍵選択 |
 | iss | `https://auth.sandbox.com` |
-| aud | Host から導いた値が aud に含まれること。CRM の Token を api.cms に送ると 401。ID Token を誤って送られても拒否 |
+| aud | `API_BASE_URL` が aud に含まれること。CRM の Token を api.cms に送ると 401。ID Token を誤って送られても拒否 |
 | exp / iat | 許容スキュー 30秒 |
-| 必須 claims | sub, tenant_id, sid, scope |
+| 必須 claims | sub, tenant_id, sid, client_id。sid と client_id は Auth Server 発行の Access Token であることの確認に使い、ハンドラへ渡すのは sub と tenant_id だけ |
 
-失敗時は `401` と `WWW-Authenticate: Bearer error="invalid_token"` を返す。
+失敗時は `401` と `WWW-Authenticate: Bearer error="invalid_token"` を返す。期限切れは `error_description="expired"` を付け、Tenant Web Application が Refresh を判断できるようにする。この文字列は `packages/shared/src/oidc-protocol.ts` の `TOKEN_EXPIRED_DESCRIPTION` で両者が共有する。
 
 ## 2. User Identity
 
@@ -61,15 +64,20 @@ aud は oidc_clients.audience と完全一致させる。crm-api に届いた cm
 
 ## 3. Tenant Membership
 
+2 と 3 は 1 回のクエリで引く。`findAccessContext` は sub と tenant_id を起点に users / tenants / tenant_members を LEFT JOIN し、存在しない行は undefined として返す。
+
 ```sql
-SELECT role
-FROM tenant_members
-WHERE tenant_id = :token_tenant_id
-  AND user_id   = :token_sub
-  AND status    = 'active';
+SELECT u.id, u.email, u.name, u.status AS user_status,
+       t.id, t.slug, t.status AS tenant_status,
+       m.role, m.status AS membership_status
+  FROM (SELECT :token_sub AS user_id, :token_tenant_id AS tenant_id) p
+  LEFT JOIN users u ON u.id = p.user_id
+  LEFT JOIN tenants t ON t.id = p.tenant_id
+  LEFT JOIN tenant_members m ON m.user_id = p.user_id AND m.tenant_id = p.tenant_id;
 ```
 
-- 見つからなければ 403
+- user が存在しないか active でなければ 401。tenant が存在しないか active でなければ 403
+- membership が見つからないか active でなければ 403
 - Token の tenant_id は Auth Server が発行時に契約と Membership を検証済みだが、発行後の Membership 削除を反映するため毎回再検証する
 - 契約 tenant_services は API では再検証しない。契約解除は Refresh 時に Auth Server が拒否し、最大 15 分で Token が失効する
 - 短時間キャッシュを入れる場合は Access Token 寿命以下にする。推奨は 60 秒以内

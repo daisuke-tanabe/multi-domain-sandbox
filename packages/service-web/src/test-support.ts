@@ -4,10 +4,15 @@ import {
   createHarness as createAuthHarness,
   type TestHarness as AuthHarness,
 } from "@sandbox/auth-api/test-support";
-import { OidcProvider, type OidcClientDeps, type OidcEnv } from "@sandbox/oidc-client";
+import {
+  OidcProvider,
+  type OidcClientDeps,
+  type OidcEnv,
+  type ServiceConfig,
+} from "@sandbox/oidc-client";
 import { MemoryKeyValueStore, silentLogger } from "@sandbox/shared";
 import { createServiceWebApp } from "./app.ts";
-import { createClientResolvers, type ServiceEntry } from "./config.ts";
+import { createClientResolvers } from "./config.ts";
 
 /**
  * SANDBOX_DOMAIN を設定すると smoke / chrome-check を AWS 上の環境に向けられる。
@@ -70,7 +75,10 @@ export async function createSandbox(): Promise<SandboxHarness> {
 
   const auth = await createAuthHarness({ fetch: (input, init) => dispatch(new URL(input), init) });
 
-  const createService = async (service: ServiceEntry): Promise<ServiceHarness> => {
+  const createService = async (
+    service: ServiceConfig,
+    baseHost: string,
+  ): Promise<ServiceHarness> => {
     const api = await createApiHarness({
       signingKey: auth.deps.signingKey,
       clock: auth.clock,
@@ -81,7 +89,7 @@ export async function createSandbox(): Promise<SandboxHarness> {
         issuer: `http://${AUTH_HOST}`,
         backchannelBaseUrl: `http://${AUTH_BACKCHANNEL_HOST}`,
       },
-      ...createClientResolvers({ publicScheme: "http", service }),
+      ...createClientResolvers({ publicScheme: "http", baseHost, service }),
       sessions: new MemoryKeyValueStore(auth.clock),
       sessionsBySid: new MemoryKeyValueStore(auth.clock),
       preAuth: new MemoryKeyValueStore(auth.clock),
@@ -94,25 +102,32 @@ export async function createSandbox(): Promise<SandboxHarness> {
     const web = createServiceWebApp({ deps: webDeps, provider });
     apps.set(new URL(service.apiBaseUrl).host, api.app);
     // Back-Channel Logout はサービス単位の URI (crm.localhost:3001 など) に届く
-    apps.set(service.baseHost, web);
-    for (const slug of ["tanaka", "suzuki"]) apps.set(`${slug}.${service.baseHost}`, web);
+    apps.set(baseHost, web);
+    for (const slug of ["tanaka", "suzuki"]) apps.set(`${slug}.${baseHost}`, web);
     return { web, webDeps, api };
   };
 
-  const crm = await createService({
-    clientId: "crm",
-    clientSecret: "service-secret",
-    name: "CRM",
-    baseHost: CRM_BASE_HOST,
-    apiBaseUrl: CRM_API_ORIGIN,
-  });
-  const cms = await createService({
-    clientId: "cms",
-    clientSecret: "service-secret",
-    name: "CMS",
-    baseHost: CMS_BASE_HOST,
-    apiBaseUrl: CMS_API_ORIGIN,
-  });
+  const scopes = ["openid", "profile", "email"];
+  const crm = await createService(
+    {
+      clientId: "crm",
+      clientSecret: "service-secret",
+      name: "CRM",
+      scopes,
+      apiBaseUrl: CRM_API_ORIGIN,
+    },
+    CRM_BASE_HOST,
+  );
+  const cms = await createService(
+    {
+      clientId: "cms",
+      clientSecret: "service-secret",
+      name: "CMS",
+      scopes,
+      apiBaseUrl: CMS_API_ORIGIN,
+    },
+    CMS_BASE_HOST,
+  );
 
   apps.set(AUTH_HOST, auth.app);
   apps.set(AUTH_BACKCHANNEL_HOST, auth.app);

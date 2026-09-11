@@ -1,28 +1,34 @@
+import type { MembershipStatus, Role, TenantStatus, UserStatus } from "@sandbox/shared";
+
 /**
  * Identity DB の読み取り専用ポート。API Server は書き込まない。
  */
-export type Role = "owner" | "admin" | "member" | "viewer";
-
 export interface IdentityUser {
   readonly id: string;
   readonly email: string;
   readonly name: string | null;
-  readonly status: "active" | "disabled";
+  readonly status: UserStatus;
 }
 
 export interface IdentityTenant {
   readonly id: string;
   readonly slug: string;
-  readonly status: "active" | "suspended";
+  readonly status: TenantStatus;
 }
 
 export interface IdentityMembership {
   readonly role: Role;
-  readonly status: "active" | "invited" | "disabled";
+  readonly status: MembershipStatus;
+}
+
+/** Access Token の sub と tenant_id に対応する行。存在しないものは undefined */
+export interface AccessContext {
+  readonly user: IdentityUser | undefined;
+  readonly tenant: IdentityTenant | undefined;
+  readonly membership: IdentityMembership | undefined;
 }
 
 export interface IdentityReader {
-  findUserById(id: string): Promise<IdentityUser | undefined>;
-  findTenantById(id: string): Promise<IdentityTenant | undefined>;
-  findMembership(tenantId: string, userId: string): Promise<IdentityMembership | undefined>;
+  /** 1 リクエストにつき 1 回、user / tenant / membership をまとめて引く */
+  findAccessContext(userId: string, tenantId: string): Promise<AccessContext>;
 }

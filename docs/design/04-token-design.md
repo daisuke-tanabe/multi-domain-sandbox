@@ -51,12 +51,12 @@ Tenant Web App がユーザーを識別するための Token。API へは送ら�
 | `aud` | client_id。サービスごとのClient。`crm` または `cms` |
 | `nonce` | pre-auth の nonce と一致を検証 |
 | `sid` | SSO Session を表す公開識別子。Back-Channel Logout用。SSO Session ID とは別値 |
-| `tenant_id` | redirect_uri から解決したテナントID。表示と整合性確認用。認可根拠には使わない |
-| `tenant_slug` | 同テナントの slug。Tenant Web App が Host から得たテナントと一致することを検証する |
+| `tenant_id` | redirect_uri をテンプレートに当てて解決したテナントID。表示と整合性確認用。認可根拠には使わない。常に載る |
+| `tenant_slug` | 同テナントの slug。Tenant Web App が Host から得たテナントと一致することを検証する。常に載る |
 | `auth_time` | Cognito で実際に認証した時刻。SSO で code を発行した時刻ではない |
 | `email` `name` | scope に応じて提供。最小限 |
 
-`cognito:groups` や `cognito:username` などCognito固有claimは載せない。テナントに紐付かない redirect_uri では `tenant_id` と `tenant_slug` を載せない。
+`cognito:groups` や `cognito:username` などCognito固有claimは載せない。すべての認可はテナントに紐付くため、`tenant_id` と `tenant_slug` を持たない ID Token は発行しない。
 
 ### Tenant Web App 側の検証
 
@@ -91,7 +91,7 @@ API Server 向けの Token。JWT 形式で自己完結検証できるように�
 | --- | --- |
 | `aud` | サービスの API origin と issuer の配列。API origin は oidc_clients.audience。issuer を含めるのは `/userinfo` で同じ Token を受け付けるため。Tenant Web App 宛ての ID Token と取り違えない |
 | `client_id` | 発行先のサービス |
-| `tenant_id` | この Token が有効なテナント。1 Token = 1 テナント |
+| `tenant_id` | この Token が有効なテナント。1 Token = 1 テナント。常に載る |
 | `sid` | Global Logout 時の失効判定に使える識別子 |
 | `jti` | 失効リストを導入する場合のキー。初期は未使用 |
 
@@ -101,7 +101,7 @@ aud はサービスごとに異なる。CRM 向けに発行した Token を api.
 
 ### API Server 側の検証
 
-1. リクエストの Host から `<scheme>://<host>` を導き、受け付ける aud とする。未知の Host は 404
+1. 環境変数 `API_BASE_URL` を受け付ける aud とする。リクエストの Host が `API_BASE_URL` のホストと異なれば 404
 2. 署名。Auth JWKS。RS256 のみ
 3. `iss` 一致
 4. `aud` に 1 で導いた値が含まれる

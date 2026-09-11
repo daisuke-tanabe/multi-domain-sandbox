@@ -3,33 +3,28 @@ import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
 import {
   apiFetch,
+  backchannelRoutes,
   oidcRoutes,
   requireSession,
   tenantContext,
-  type OidcClientConfig,
   type OidcClientDeps,
   type OidcEnv,
   type OidcProvider,
+  type RenderError,
   type TenantSession,
 } from "@sandbox/oidc-client";
-import { errorPage, homePage, projectsPage, type Viewer } from "./views/pages.ts";
+import { errorPage, homePage, projectsPage, type PageLabels, type Viewer } from "./views/pages.ts";
 
 export interface ServiceWebAppOptions {
   readonly deps: OidcClientDeps;
   readonly provider: OidcProvider;
 }
 
-const meSchema = z.object({
-  user: z.object({ id: z.string(), email: z.string() }),
-  tenant: z.object({ id: z.string(), slug: z.string() }),
-  role: z.string(),
-});
+const meSchema = z.object({ role: z.string() });
 
 const projectsSchema = z.object({
   projects: z.array(z.object({ id: z.string(), name: z.string() })),
 });
-
-type ErrorStatus = 400 | 401 | 403 | 500 | 503;
 
 function toViewer(session: TenantSession): Viewer {
   return { name: session.name, email: session.email, csrfToken: session.csrfToken };
@@ -42,12 +37,8 @@ export function createServiceWebApp(options: ServiceWebAppOptions): Hono<OidcEnv
   const { deps, provider } = options;
   const app = new Hono<OidcEnv>();
 
-  const renderError = (
-    c: Context,
-    title: string,
-    message: string,
-    status: ErrorStatus,
-  ): Response | Promise<Response> => c.html(errorPage(...hostLabels(c), title, message), status);
+  const renderError: RenderError = (c, title, message, status) =>
+    c.html(errorPage(hostLabels(c), title, message), status);
 
   app.use(
     secureHeaders({
@@ -61,12 +52,14 @@ export function createServiceWebApp(options: ServiceWebAppOptions): Hono<OidcEnv
       },
     }),
   );
+  // Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、tenantContext の前に受ける
+  app.route("/", backchannelRoutes(deps, provider));
   app.use(
     tenantContext(deps, (c) =>
       renderError(c, "不明なテナントです", "このホストは登録されていません。", 400),
     ),
   );
-  app.route("/", oidcRoutes(deps, provider, { renderError }));
+  app.route("/", oidcRoutes(deps, provider, renderError));
 
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
@@ -189,14 +182,14 @@ export function createServiceWebApp(options: ServiceWebAppOptions): Hono<OidcEnv
 
   app.notFound((c) =>
     c.html(
-      errorPage(...hostLabels(c), "ページが見つかりません", "指定されたページは存在しません。"),
+      errorPage(hostLabels(c), "ページが見つかりません", "指定されたページは存在しません。"),
       404,
     ),
   );
   app.onError((error, c) => {
     deps.logger.error("unhandled error", { path: c.req.path, message: error.message });
     return c.html(
-      errorPage(...hostLabels(c), "一時的なエラーです", "しばらくしてから再試行してください。"),
+      errorPage(hostLabels(c), "一時的なエラーです", "しばらくしてから再試行してください。"),
       500,
     );
   });
@@ -204,10 +197,10 @@ export function createServiceWebApp(options: ServiceWebAppOptions): Hono<OidcEnv
   return app;
 }
 
-/** tenantContext を通っていないエラー画面向け。[serviceName, tenantSlug] を返す */
-function hostLabels(c: Context): [string, string] {
-  const client = c.get("tenantClient") as OidcClientConfig | undefined;
-  if (client !== undefined) return [client.name, client.tenantSlug];
+/** tenantContext を通っていないエラー画面でも表示できるよう、未解決なら Host から補う */
+function hostLabels(c: Context<OidcEnv>): PageLabels {
+  const client = c.get("tenantClient");
+  if (client !== undefined) return { serviceName: client.name, tenantSlug: client.tenantSlug };
   const host = c.req.header("host") ?? "";
-  return ["Sandbox", host.split(".")[0] ?? "unknown"];
+  return { serviceName: "Sandbox", tenantSlug: host.split(".")[0] ?? "unknown" };
 }
