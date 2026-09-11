@@ -10,11 +10,11 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
 });
 
-export type ServiceApiConfig = z.infer<typeof envSchema>;
+export type ResourceServerConfig = z.infer<typeof envSchema>;
 
-export function loadServiceApiConfig(
+export function loadResourceServerConfig(
   component: string,
   env: NodeJS.ProcessEnv = process.env,
-): ServiceApiConfig {
+): ResourceServerConfig {
   return parseEnv(component, envSchema, env);
 }

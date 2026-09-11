@@ -122,7 +122,7 @@ flowchart TB
 
 Front Channel を通る認証関連の値は Authorization Code と state のみ。JWT と Cognito Token は Front Channel に載せない。
 
-サンドボックスではサービスごとに web と api のプロセスを分けている。crm-web が `<tenant>.crm` の全テナント、crm-api が `api.crm`、cms-web が `<tenant>.cms` の全テナント、cms-api が `api.cms` を受ける。実装は `packages/service-web` と `packages/service-api` で共有し、各プロセスは環境変数でサービスを決める。本番でサービスごとにリポジトリを分けても、Auth Server から見た構成は変わらない。
+サンドボックスではサービスごとに web と api のプロセスを分けている。crm-web が `<tenant>.crm` の全テナント、crm-api が `api.crm`、cms-web が `<tenant>.cms` の全テナント、cms-api が `api.cms` を受ける。実装は `packages/bff` と `packages/resource-server` で共有し、各プロセスは環境変数でサービスを決める。本番でサービスごとにリポジトリを分けても、Auth Server から見た構成は変わらない。
 
 ## 4. 異なるドメインでも動く理由
 
@@ -1017,8 +1017,8 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `packages/shared/src/oidc-protocol.ts` | Auth Server と OIDC Client の間のワイヤ契約。access_denied の理由一覧、期限切れを表す `error_description`、Bearer ヘッダの読み書き |
 | `packages/oidc-client` | サービス側に移植する OIDC Client 実装。Host からのサービス / テナント解決、tenant_slug 照合を含む |
 | `apps/auth-api/src/usecases` | Auth Server の判定ロジック。契約と Membership の確認順序はここ |
-| `packages/service-web` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、画面、API 呼び出し |
-| `packages/service-api/src/usecases/resolve-tenant-context.ts` | API 側の Host → aud 確認、Token 検証、user / tenant / membership の 1 回の JOIN による認可。crm-api / cms-api が共有する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
+| `packages/bff` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、画面、API 呼び出し |
+| `packages/resource-server/src/usecases/resolve-tenant-context.ts` | API 側の Host → aud 確認、Token 検証、user / tenant / membership の 1 回の JOIN による認可。crm-api / cms-api が共有する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
 | `scripts/smoke.ts` | 実 HTTP での受け入れ確認。別サービス SSO と未契約サービスの拒否まで通す |
 | `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。CSP のような fetch では見えない問題を検出する |
 

@@ -138,11 +138,11 @@ POST /auth/backchannel-logout
 - `backchannelRoutes(deps, provider)` は `tenantContext` ミドルウェアより前に mount する。Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、ミドルウェア側にパスの特別扱いを持たせない
 - `oidcRoutes(deps, provider, renderError)` は `tenantContext` の後に mount し、Client を `c.get("tenantClient")` から受け取る
 - Cookie の読み書きは `cookies.ts` にまとめる。セッション Cookie と pre-auth Cookie の読み取り、書き込み、削除
-- ストアは `startServiceWeb` がサービスごとに `<clientId>:sess` `<clientId>:sid` `<clientId>:pre` のプレフィックスで作る。1 プロセス 1 サービスのため、ストア内のキーは `<tenantSlug>:<sessionId>`、`sid:<sid>`、`<tenantSlug>:<preAuthId>` とし clientId を含めない
+- ストアは `startBff` がサービスごとに `<clientId>:sess` `<clientId>:sid` `<clientId>:pre` のプレフィックスで作る。1 プロセス 1 サービスのため、ストア内のキーは `<tenantSlug>:<sessionId>`、`sid:<sid>`、`<tenantSlug>:<preAuthId>` とし clientId を含めない
 - `PreAuthState` は state / nonce / codeVerifier / returnTo の 4 項目。id と作成時刻は持たず、寿命はストアの TTL で管理する
 - `TenantSession.tenantId` は常に文字列。null にならない
 
-設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。スキーマは `packages/service-web/src/config.ts` の `loadServiceWebConfig`。
+設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。スキーマは `packages/bff/src/config.ts` の `loadBffConfig`。
 
 ```typescript
 type ServiceConfig = {

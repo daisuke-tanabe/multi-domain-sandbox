@@ -1,5 +1,5 @@
 {
-  "name": "@sandbox/service-web",
+  "name": "@sandbox/bff",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@sandbox/auth-api": "workspace:*",
-    "@sandbox/service-api": "workspace:*",
+    "@sandbox/resource-server": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

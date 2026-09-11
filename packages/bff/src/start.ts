@@ -1,15 +1,15 @@
 import { serve } from "@hono/node-server";
 import { OidcProvider, type OidcClientDeps } from "@sandbox/oidc-client";
 import { createLogger, createStoreFactory, nodeFetch, systemClock } from "@sandbox/shared";
-import { createServiceWebApp } from "./app.ts";
-import { createClientResolvers, loadServiceWebConfig } from "./config.ts";
+import { createBffApp } from "./app.ts";
+import { createClientResolvers, loadBffConfig } from "./config.ts";
 
 /**
  * サービスの Web を起動する。apps/<service>-web/src/main.ts はこれを呼ぶだけ。
  */
-export function startServiceWeb(component: string): void {
+export function startBff(component: string): void {
   const logger = createLogger(component);
-  const config = loadServiceWebConfig(component);
+  const config = loadBffConfig(component);
   const store = createStoreFactory({ redisUrl: config.redisUrl, clock: systemClock, logger });
   const prefix = config.service.clientId;
 
@@ -30,7 +30,7 @@ export function startServiceWeb(component: string): void {
     fetch: nodeFetch,
   };
   const provider = new OidcProvider(deps.provider, deps.fetch, systemClock);
-  const app = createServiceWebApp({ deps, provider });
+  const app = createBffApp({ deps, provider });
 
   serve({ fetch: app.fetch, port: config.port }, (info) => {
     logger.info(`${component} listening`, {

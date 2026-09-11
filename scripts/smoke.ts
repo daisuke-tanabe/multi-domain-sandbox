@@ -10,7 +10,7 @@ import {
   TANAKA_CMS_ORIGIN,
   TANAKA_CRM_ORIGIN,
   visitedPaths,
-} from "../packages/service-web/src/test-support.ts";
+} from "../packages/bff/src/test-support.ts";
 import { createReporter } from "./check-reporter.ts";
 
 /**

@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@sandbox/service-web": "workspace:*",
+    "@sandbox/bff": "workspace:*",
     "tsx": "catalog:"
   },
   "devDependencies": {

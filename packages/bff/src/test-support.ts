@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { createApiHarness, type ApiHarness } from "@sandbox/service-api/test-support";
+import { createApiHarness, type ApiHarness } from "@sandbox/resource-server/test-support";
 import {
   createHarness as createAuthHarness,
   type TestHarness as AuthHarness,
@@ -11,7 +11,7 @@ import {
   type ServiceConfig,
 } from "@sandbox/oidc-client";
 import { MemoryKeyValueStore, silentLogger } from "@sandbox/shared";
-import { createServiceWebApp } from "./app.ts";
+import { createBffApp } from "./app.ts";
 import { createClientResolvers } from "./config.ts";
 
 /**
@@ -99,7 +99,7 @@ export async function createSandbox(): Promise<SandboxHarness> {
       fetch: (input, init) => dispatch(new URL(input), init),
     };
     const provider = new OidcProvider(webDeps.provider, webDeps.fetch, auth.clock);
-    const web = createServiceWebApp({ deps: webDeps, provider });
+    const web = createBffApp({ deps: webDeps, provider });
     apps.set(new URL(service.apiBaseUrl).host, api.app);
     // Back-Channel Logout はサービス単位の URI (crm.localhost:3001 など) に届く
     apps.set(baseHost, web);

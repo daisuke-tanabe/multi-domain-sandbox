@@ -1,3 +1,3 @@
-import { startServiceWeb } from "@sandbox/service-web";
+import { startBff } from "@sandbox/bff";
 
-startServiceWeb("cms-web");
+startBff("cms-web");

@@ -5,7 +5,7 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / service-api / service-web / shared で 121 件が通っている。oidc-client は service-web のテストを通して検証する。crm-web / crm-api / cms-web / cms-api の `main.ts` は `packages/service-web` と `packages/service-api` の起動関数を呼ぶだけのため、テストは共有パッケージ側に置く。
+現在の自動テストは auth-api / resource-server / bff / shared で 121 件が通っている。oidc-client は bff のテストを通して検証する。crm-web / crm-api / cms-web / cms-api の `main.ts` は `packages/bff` と `packages/resource-server` の起動関数を呼ぶだけのため、テストは共有パッケージ側に置く。
 
 ## テストピラミッド
 
@@ -164,9 +164,9 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | Cognito | `CognitoAuthenticator` インターフェースのモック実装。固定ユーザー alice / bob / carol と失敗パターンを設定できる |
 | Session Store | インメモリ実装。TTL を進めるためのテスト用クロック |
 | Identity DB | ローカル PostgreSQL。RLS テストは PostgreSQL 必須 |
-| web インスタンス | crm と cms の2サービス。`packages/service-web/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003 |
+| web インスタンス | crm と cms の2サービス。`packages/bff/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003 |
 | api インスタンス | サービスごとに別インスタンス。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
-| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`packages/service-web/src/app.test.ts`、`packages/service-api/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
+| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`packages/bff/src/app.test.ts`、`packages/resource-server/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |
 | 時刻 | 注入可能なクロックで期限切れを再現 |
 

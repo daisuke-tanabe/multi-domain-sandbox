@@ -20,12 +20,12 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | ディレクトリ | 役割 | ローカルホスト |
 | --- | --- | --- |
 | `apps/auth-api` | OpenID Provider。ログイン画面、認可、Token 発行、SSO Session、ポータル。画面は当面ここで配信し、React の auth-web は次段階で分離する | http://auth.localhost:3000 |
-| `apps/crm-web` | CRM の Tenant Web Application。BFF。1 プロセスで CRM の全テナントのホストを受ける。`main.ts` は `startServiceWeb("crm-web")` を呼ぶだけ | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
-| `apps/crm-api` | CRM の Resource Server。Bearer 検証、Membership 認可、RLS。`main.ts` は `startServiceApi("crm-api")` を呼ぶだけ | http://api.crm.localhost:3002 |
+| `apps/crm-web` | CRM の Tenant Web Application。BFF。1 プロセスで CRM の全テナントのホストを受ける。`main.ts` は `startBff("crm-web")` を呼ぶだけ | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
+| `apps/crm-api` | CRM の Resource Server。Bearer 検証、Membership 認可、RLS。`main.ts` は `startResourceServer("crm-api")` を呼ぶだけ | http://api.crm.localhost:3002 |
 | `apps/cms-web` | CMS の Tenant Web Application。crm-web と同じ実装をサービス設定だけ変えて起動する | http://tanaka.cms.localhost:3003 / http://suzuki.cms.localhost:3003 |
 | `apps/cms-api` | CMS の Resource Server。crm-api と同じ実装 | http://api.cms.localhost:3004 |
-| `packages/service-web` | `*-web` が共有する Hono アプリ。画面、API 呼び出し、設定スキーマ `config.ts`、起動関数 `start.ts`、テスト | |
-| `packages/service-api` | `*-api` が共有する Hono アプリ。テナントコンテキスト解決の usecase、認証ミドルウェア、権限、ルート、アダプタ、設定スキーマ、起動関数、テスト | |
+| `packages/bff` | crm-web と cms-web の実装本体。BFF として画面、`/auth/*` の受け口、API 中継、設定スキーマ `config.ts`、起動関数 `start.ts`、テストを持つ | |
+| `packages/resource-server` | crm-api と cms-api の実装本体。Resource Server としてテナントコンテキスト解決の usecase、認証ミドルウェア、権限、ルート、アダプタ、設定スキーマ、起動関数、テストを持つ | |
 | `packages/shared` | Result 型、KV ストアと StoreFactory、PKCE、AES-GCM、secret の SHA-256 ハッシュ、redirect_uri テンプレート、JWT と JWKS 取得、Cookie、ロガー、環境変数の検証、pg 接続、識別子の enum、セッション期限、OIDC のワイヤ契約 | |
 | `packages/oidc-client` | Tenant Web Application 向け OIDC Client 共通モジュール | |
 | `db/init` | PostgreSQL のロール、スキーマ、RLS、シード | |
@@ -59,7 +59,7 @@ cp apps/cms-web/.env.example apps/cms-web/.env
 cp apps/cms-api/.env.example apps/cms-api/.env
 ```
 
-サービスとホストに関わる環境変数は次のとおり。`*-web` と `*-api` は 1 プロセス 1 サービスで、担当するサービスを環境変数で与える。スキーマは `packages/service-web/src/config.ts` と `packages/service-api/src/config.ts` にあり、apps 側には設定コードを置かない。
+サービスとホストに関わる環境変数は次のとおり。`*-web` と `*-api` は 1 プロセス 1 サービスで、担当するサービスを環境変数で与える。スキーマは `packages/bff/src/config.ts` と `packages/resource-server/src/config.ts` にあり、apps 側には設定コードを置かない。
 
 | アプリ | 変数 | 内容 |
 | --- | --- | --- |
@@ -152,7 +152,7 @@ pnpm lint
 pnpm test
 ```
 
-テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/service-web/src/app.test.ts` は auth-api とサービスごとの web / api インスタンスをプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、Logout までを通す。テストは 121 件。
+テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/bff/src/app.test.ts` は auth-api とサービスごとの web / api インスタンスをプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、Logout までを通す。テストは 121 件。
 
 起動中のサーバーと PostgreSQL に対する実 HTTP の確認は次で行う。tanaka.crm でのログイン、suzuki.crm と tanaka.cms への SSO、suzuki.cms の拒否、Tenant Logout、Global Logout を順に確認する。
 

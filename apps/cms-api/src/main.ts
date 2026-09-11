@@ -1,3 +1,3 @@
-import { startServiceApi } from "@sandbox/service-api";
+import { startResourceServer } from "@sandbox/resource-server";
 
-startServiceApi("cms-api");
+startResourceServer("cms-api");
