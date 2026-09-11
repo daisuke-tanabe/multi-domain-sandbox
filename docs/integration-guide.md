@@ -122,7 +122,7 @@ flowchart TB
 
 Front Channel を通る認証関連の値は Authorization Code と state のみ。JWT と Cognito Token は Front Channel に載せない。
 
-サンドボックスでは tenant-web 1 プロセスが crm と cms の全ホストを受け、api-server 1 プロセスが `api.crm` と `api.cms` を受けている。本番でサービスごとにプロセスやリポジトリを分けても、Auth Server から見た構成は変わらない。
+サンドボックスではサービスごとに web と api のプロセスを分けている。crm-web が `<tenant>.crm` の全テナント、crm-api が `api.crm`、cms-web が `<tenant>.cms` の全テナント、cms-api が `api.cms` を受ける。実装は `packages/service-web` と `packages/service-api` で共有し、各プロセスは環境変数でサービスを決める。本番でサービスごとにリポジトリを分けても、Auth Server から見た構成は変わらない。
 
 ## 4. 異なるドメインでも動く理由
 
@@ -431,7 +431,7 @@ Cookie の値はすべてサーバー側ストアを指す乱数で、JWT やユ
 | pre-auth | `<client_id>:<tenant_slug>:<id>` | state、nonce、code_verifier、return_to | 30 分 |
 | sid 逆引き | `<client_id>:sid:<sid>` | そのサービスの Tenant Session ID の一覧。テナントをまたぐ | 12 時間 |
 
-Tenant Session のキーにサービスとテナントを含めるため、1 プロセスで複数ホストを受けてもセッションが混ざらない。sid 逆引きはサービス単位で、Back-Channel Logout がテナントをまたいで全セッションを消せるようにしている。Redis の `GETDEL` で Authorization Code を取得と同時に削除し、二重交換を排除する。
+Tenant Session のキーにサービスとテナントを含めるため、1 プロセスで複数テナントのホストを受けてもセッションが混ざらない。sid 逆引きはサービス単位で、Back-Channel Logout がテナントをまたいで全セッションを消せるようにしている。Redis の `GETDEL` で Authorization Code を取得と同時に削除し、二重交換を排除する。
 
 ### 5.6 Identity DB
 
@@ -1000,8 +1000,9 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `docs/deploy.md` | AWS 構成と手順 |
 | `db/init/002_identity.sql` `db/init/004_seed.sql` | サービス、テナント、契約、redirect_uri のスキーマとシード |
 | `packages/oidc-client` | サービス側に移植する OIDC Client 実装。Host からのサービス / テナント解決、tenant_slug 照合を含む |
-| `apps/auth-server/src/usecases` | Auth Server の判定ロジック。契約と Membership の確認順序はここ |
-| `apps/api-server/src/auth` | API 側の Host → aud 解決、Token 検証、Membership 認可 |
+| `apps/auth-api/src/usecases` | Auth Server の判定ロジック。契約と Membership の確認順序はここ |
+| `packages/service-web` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、画面、API 呼び出し |
+| `packages/service-api/src/auth` | API 側の Host → aud 解決、Token 検証、Membership 認可。crm-api / cms-api が共有する |
 | `scripts/smoke.ts` | 実 HTTP での受け入れ確認。別サービス SSO と未契約サービスの拒否まで通す |
 | `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。CSP のような fetch では見えない問題を検出する |
 

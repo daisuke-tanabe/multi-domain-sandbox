@@ -13,7 +13,7 @@ API はサービスごとに `api.<service>.sandbox.com` のホストを持ち�
 
 ```mermaid
 flowchart TD
-    A["Request"] --> A0["0. Host → aud<br/>API_HOSTS に含まれる Host か"]
+    A["Request"] --> A0["0. Host → aud<br/>API_HOST と一致する Host か"]
     A0 -- 未知の Host --> E0["404 not_found"]
     A0 --> B["1. Authentication<br/>Bearer Token 抽出と JWT 検証<br/>aud が Host 由来の値と一致"]
     B -- 失敗 --> E1["401 unauthorized"]
@@ -30,15 +30,15 @@ flowchart TD
 
 ## 0. Host → aud
 
-1プロセスで複数サービスの API ホストを受ける。環境変数 `API_HOSTS` に列挙した Host ごとに `<PUBLIC_SCHEME>://<host>` を aud とする。
+API はサービスごとに別プロセスで、1 プロセスは 1 つの Host だけを受ける。環境変数 `API_HOST` の Host から `<PUBLIC_SCHEME>://<API_HOST>` を aud とする。
 
-| Host | aud |
-| --- | --- |
-| api.crm.localhost:3002 | http://api.crm.localhost:3002 |
-| api.cms.localhost:3002 | http://api.cms.localhost:3002 |
-| それ以外 | 404 not_found。Token 検証に進まない |
+| プロセス | API_HOST | aud |
+| --- | --- | --- |
+| crm-api | api.crm.localhost:3002 | http://api.crm.localhost:3002 |
+| cms-api | api.cms.localhost:3004 | http://api.cms.localhost:3004 |
+| それ以外の Host | | 404 not_found。Token 検証に進まない |
 
-aud は oidc_clients.audience と完全一致させる。サービスごとに API を別プロセスに分ける場合は `API_HOSTS` を1つにする。
+aud は oidc_clients.audience と完全一致させる。crm-api に届いた cms 向けの Token は aud 不一致で 401 になる。
 
 ## 1. Authentication
 

@@ -6,6 +6,7 @@
 したがって仕様書22章の調査対象はなく、24章の「現状分析 / 現在の認証フロー / 現在の問題点 / 移行計画」はグリーンフィールド前提で記述する。
 推奨アーキテクチャは OIDC Authorization Code Flow + PKCE を用いた独立OpenID Provider方式とし、Tenant Web ApplicationはBFF構成とする。
 OIDC Client はサービス単位で登録し、テナントは顧客としてサービス横断で共有する。テナントがサービスを使えるかは契約で判定する。判断事項D13。
+検証実装はサービスごとに web と api のプロセスを持ち、実装は共有パッケージに置く。判断事項D14。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -75,6 +76,7 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 | 追加 | 検証実装の DB は PostgreSQL on Docker。RLS を検証する |
 | 追加 | MFA はフェーズ2。Global Logout は当初フェーズ2としたが、Tenant Logout 後に再ログインされる挙動が分かりにくいため 2026-09-09 に前倒しで実装 |
 | D13 | OIDC Client はサービス単位。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定。2026-09-11 決定 |
+| D14 | apps はサービスごとに web と api を 1 組ずつ持ち、実装は packages/service-web と packages/service-api に共有する。auth は auth-api に改名。2026-09-11 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -173,6 +175,26 @@ OIDC Client はサービス単位で登録し、テナントは顧客として�
 - `identity.tenant_services(tenant_id, client_id, status)` が契約。`/authorize` と refresh_token grant で user → tenant → 契約 → Membership の順に検証する
 - ホストは `<tenant>.<service>.<domain>`。Tenant Web Applicationは Host からサービスとテナントを解決する
 - Back-Channel Logout URIはサービス単位。logout_tokenのsidでそのサービスの全テナントのセッションを削除する
+
+### D14. apps の分割単位とプロセス構成
+
+問題点。当初の検証実装は Tenant Web Application と API Server がそれぞれ1プロセスで、`SERVICES` と `API_HOSTS` の設定で crm と cms の全ホストを受けていた。この構成では別サービスが同じ Auth Server を使う姿を実物で示せず、サービスごとにデプロイする実運用ともデプロイ単位が合わない。
+
+| 選択肢 | メリット | デメリット |
+| --- | --- | --- |
+| A. サービスごとに web と api を1組ずつ持つ。実装は packages/service-web と packages/service-api に共有し、apps 側は環境変数で自サービスを決める薄い起動口にする | 別サービスが同じ Auth Server に接続する構成を実物で示せる。デプロイ単位が実運用と一致する。共有パッケージを持つため実装の重複はない | プロセス数とポート数が増える。サービス追加時に apps を2つ足す |
+| B. 1プロセスで複数サービスを設定で切り替える。従来の構成 | プロセス数が少ない | 別サービスが同じ Auth を使う姿を実物で示せない。デプロイ単位が実運用と合わない |
+
+決定はA。理由は、サンドボックスの目的が他プロジェクトへ展開するための実物を示すことにあり、サービスの独立性をプロセス構成として見せる必要があるため。Bは以前の構成であり、本決定で置き換える。
+
+具体化。
+
+- `apps/auth-api` は OpenID Provider。旧 auth-server の改名で、ログイン画面、ポータル、ログアウト画面の HTML は当面ここで配信する
+- `apps/crm-web` と `apps/cms-web` は Tenant Web Application。`packages/service-web` の Hono アプリを `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で起動する
+- `apps/crm-api` と `apps/cms-api` は API Server。`packages/service-api` の Hono アプリを `API_HOST` で起動する。aud は `<PUBLIC_SCHEME>://<API_HOST>` の1つだけ
+- `tools/provision` は AWS 向けの一回限りタスクで、全サービスの `SERVICES` を引き続き受け取る
+- `*-web` はクライアントを意味するが、Token と Cookie をブラウザへ出さない BFF 方式のため薄いサーバーは残す。判断事項D1
+- 次の段階で `*-web` の画面を React Router v7 の SPA に置き換え、auth-api から画面を `auth-web` として分離する予定
 
 ## 5. 移行計画
 

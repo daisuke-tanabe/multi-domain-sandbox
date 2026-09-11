@@ -19,13 +19,17 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 
 | ディレクトリ | 役割 | ローカルホスト |
 | --- | --- | --- |
-| `apps/auth-server` | OpenID Provider。ログイン画面、認可、Token 発行、SSO Session、ポータル | http://auth.localhost:3000 |
-| `apps/tenant-web` | Tenant Web Application。BFF。1 プロセスで複数サービス × 複数テナントのホストを受ける | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 / http://tanaka.cms.localhost:3001 / http://suzuki.cms.localhost:3001 |
-| `apps/api-server` | Resource Server。Bearer 検証、Membership 認可、RLS。1 プロセスでサービスごとの API ホストを受ける | http://api.crm.localhost:3002 / http://api.cms.localhost:3002 |
+| `apps/auth-api` | OpenID Provider。ログイン画面、認可、Token 発行、SSO Session、ポータル。画面は当面ここで配信し、React の auth-web は次段階で分離する | http://auth.localhost:3000 |
+| `apps/crm-web` | CRM の Tenant Web Application。BFF。1 プロセスで CRM の全テナントのホストを受ける | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
+| `apps/crm-api` | CRM の Resource Server。Bearer 検証、Membership 認可、RLS | http://api.crm.localhost:3002 |
+| `apps/cms-web` | CMS の Tenant Web Application。crm-web と同じ実装をサービス設定だけ変えて起動する | http://tanaka.cms.localhost:3003 / http://suzuki.cms.localhost:3003 |
+| `apps/cms-api` | CMS の Resource Server。crm-api と同じ実装 | http://api.cms.localhost:3004 |
+| `packages/service-web` | `*-web` が共有する Hono アプリ。画面、API 呼び出し、設定スキーマ、テスト | |
+| `packages/service-api` | `*-api` が共有する Hono アプリ。認証ミドルウェア、権限、ルート、アダプタ、テスト | |
 | `packages/shared` | Result 型、KV ストア、PKCE、AES-GCM、scrypt、JWT、Cookie、ロガー | |
 | `packages/oidc-client` | Tenant Web Application 向け OIDC Client 共通モジュール | |
 | `db/init` | PostgreSQL のロール、スキーマ、RLS、シード | |
-| `apps/provision` | RDS のスキーマ作成、Cognito テストユーザー作成、シード投入。ECS の一回限りタスク | |
+| `tools/provision` | RDS のスキーマ作成、Cognito テストユーザー作成、シード投入。ECS の一回限りタスク | |
 | `terraform` | AWS 構成。ECS Fargate + ALB、RDS、ElastiCache、Cognito、Route 53、ACM | |
 | `scripts/smoke.ts` | 起動中のサーバーに対する実 HTTP の疎通確認。別サービスへの SSO と未契約サービスの拒否まで確認する | |
 | `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。smoke と同じシナリオをブラウザで通す | |
@@ -36,7 +40,7 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 - Node.js 24 と pnpm 10。`.tool-versions` で固定
 - Docker。PostgreSQL 16 をコンテナで起動する
 - ブラウザは `*.localhost` を 127.0.0.1 に解決する。Chrome / Firefox / Safari はそのまま動く
-- Node.js 24 も `*.localhost` をループバックに解決する。tenant-web から api.crm.localhost を呼ぶためのホストファイル編集は不要
+- Node.js 24 も `*.localhost` をループバックに解決する。crm-web から api.crm.localhost を呼ぶためのホストファイル編集は不要
 
 ## セットアップ
 
@@ -48,19 +52,23 @@ pnpm db:up
 各アプリの `.env.example` をコピーして `.env` を作る。ローカル検証用の値がそのまま入っている。
 
 ```bash
-cp apps/auth-server/.env.example apps/auth-server/.env
-cp apps/tenant-web/.env.example apps/tenant-web/.env
-cp apps/api-server/.env.example apps/api-server/.env
+cp apps/auth-api/.env.example apps/auth-api/.env
+cp apps/crm-web/.env.example apps/crm-web/.env
+cp apps/crm-api/.env.example apps/crm-api/.env
+cp apps/cms-web/.env.example apps/cms-web/.env
+cp apps/cms-api/.env.example apps/cms-api/.env
 ```
 
-サービスとホストに関わる環境変数は次のとおり。
+サービスとホストに関わる環境変数は次のとおり。`*-web` と `*-api` は 1 プロセス 1 サービスで、担当するサービスを環境変数で与える。
 
 | アプリ | 変数 | 内容 |
 | --- | --- | --- |
-| tenant-web | `SERVICES` | サービスごとの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` の JSON 配列。Host `<tenant>.<baseHost>` からサービスとテナント slug を決め、`<scheme>://<host>/auth/callback` を redirect_uri にする |
-| api-server | `API_HOSTS` | 受け付ける API ホストのカンマ区切り。`api.crm.localhost:3002,api.cms.localhost:3002` |
-| api-server | `PUBLIC_SCHEME` | aud を `<PUBLIC_SCHEME>://<host>` として組み立てる |
-| provision | `SERVICES` | tenant-web と同じ形式。本番ホストで oidc_clients と redirect_uri を投入する |
+| crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。oidc_clients の登録値と一致させる |
+| crm-web / cms-web | `BASE_HOST` | テナントのサブドメインを除いたホスト。`crm.localhost:3001` / `cms.localhost:3003`。Host `<tenant>.<BASE_HOST>` からテナント slug を決め、`<PUBLIC_SCHEME>://<host>/auth/callback` を redirect_uri にする |
+| crm-web / cms-web | `API_BASE_URL` | 呼び出す API の公開 URL。`http://api.crm.localhost:3002` / `http://api.cms.localhost:3004` |
+| crm-api / cms-api | `API_HOST` | この API の公開ホスト。`api.crm.localhost:3002` / `api.cms.localhost:3004` |
+| crm-api / cms-api | `PUBLIC_SCHEME` | aud を `<PUBLIC_SCHEME>://<API_HOST>` として組み立てる |
+| provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` の JSON 配列。本番ホストで oidc_clients と redirect_uri を投入する |
 
 ## 起動
 
@@ -68,25 +76,25 @@ cp apps/api-server/.env.example apps/api-server/.env
 pnpm dev
 ```
 
-3 アプリが同時に起動する。ブラウザで http://tanaka.crm.localhost:3001/projects を開く。
+auth-api / crm-web / crm-api / cms-web / cms-api の 5 アプリが同時に起動する。ブラウザで http://tanaka.crm.localhost:3001/projects を開く。
 
 ## ローカルのサービスとテナント
 
 | サービス | client_id | client_secret | ホスト | API |
 | --- | --- | --- | --- | --- |
 | CRM | `crm` | `crm-secret` | `<tenant>.crm.localhost:3001` | http://api.crm.localhost:3002 |
-| CMS | `cms` | `cms-secret` | `<tenant>.cms.localhost:3001` | http://api.cms.localhost:3002 |
+| CMS | `cms` | `cms-secret` | `<tenant>.cms.localhost:3003` | http://api.cms.localhost:3004 |
 
 | テナント | 名前 | 契約サービス |
 | --- | --- | --- |
 | tanaka | Tanaka Inc. | crm、cms |
 | suzuki | Suzuki Ltd. | crm |
 
-suzuki.cms.localhost:3001 の redirect_uri は登録済みだが契約がないため、開いても `access_denied` になる。
+suzuki.cms.localhost:3003 の redirect_uri は登録済みだが契約がないため、開いても `access_denied` になる。
 
 ## ローカルユーザー
 
-Cognito はモックアダプタで代替している。`apps/auth-server/.env.example` の `MOCK_COGNITO_USERS` と `db/init/004_seed.sql` が対応する。
+Cognito はモックアダプタで代替している。`apps/auth-api/.env.example` の `MOCK_COGNITO_USERS` と `db/init/004_seed.sql` が対応する。
 
 | ユーザー | パスワード | tanaka | suzuki |
 | --- | --- | --- | --- |
@@ -117,7 +125,7 @@ Sandbox 全体からログアウトしたい場合は、ログアウト後の画
 
 ## アクセス拒否の理由
 
-`/authorize` は user → tenant → 契約 → Membership の順に確認し、失敗すると `redirect_uri` へ `error=access_denied&error_description=<reason>` で戻す。tenant-web は 403 画面を出し、SSO Session は残る。Refresh 時も同じ確認を行う。
+`/authorize` は user → tenant → 契約 → Membership の順に確認し、失敗すると `redirect_uri` へ `error=access_denied&error_description=<reason>` で戻す。`*-web` は 403 画面を出し、SSO Session は残る。Refresh 時も同じ確認を行う。
 
 | reason | 意味 |
 | --- | --- |
@@ -132,7 +140,7 @@ Sandbox 全体からログアウトしたい場合は、ログアウト後の画
 - SSO Session、認可リクエスト、Tenant Session はインメモリに保持している。`pnpm dev` を再起動するとすべて消えるため、再起動後はサービスの URL を開き直してログインする
 - ログイン画面を開いたまま 30 分以上放置すると「ログイン画面を開いてから時間が経ちすぎた」旨のエラーになる。サービスの URL を開き直せばよい
 - 署名鍵は起動ごとに生成される。再起動前に発行された Access Token は API Server で検証に失敗し、Tenant Session が破棄されて再ログインになる
-- api-server は Host ヘッダから aud を決める。`API_HOSTS` にないホストは 404、crm 向けの Access Token を api.cms.localhost に送ると 401 になる
+- `*-api` は Host ヘッダから aud を決める。`API_HOST` 以外のホストは 404、crm 向けの Access Token を api.cms.localhost:3004 に送ると 401 になる
 
 ## 検証
 
@@ -142,7 +150,7 @@ pnpm lint
 pnpm test
 ```
 
-テストはサーバーを起動せずに Hono の `app.request()` で実行する。tenant-web のテストは auth-server / api-server をプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、Logout までを通す。テストは 112 件。
+テストはサーバーを起動せずに Hono の `app.request()` で実行する。`packages/service-web/src/app.test.ts` は auth-api とサービスごとの web / api インスタンスをプロセス内で接続し、Cookie ジャー付きの簡易ブラウザでログインから別テナント SSO、別サービス SSO、未契約サービスの拒否、Logout までを通す。テストは 112 件。
 
 起動中のサーバーと PostgreSQL に対する実 HTTP の確認は次で行う。tanaka.crm でのログイン、suzuki.crm と tanaka.cms への SSO、suzuki.cms の拒否、Tenant Logout、Global Logout を順に確認する。
 
@@ -167,8 +175,8 @@ AWS 側はまだテナントごとに Client を持つ旧構成のままで、�
 | Session / Code Store | `REDIS_URL` 未設定でインメモリ | `REDIS_URL` で ElastiCache Redis |
 | 署名鍵 | 起動ごとに生成 | `SIGNING_KEY_PEM` を Secrets Manager から注入 |
 | Cookie | プレフィックスなし | `COOKIE_SECURE=true` で `__Host-` / `__Secure-` |
-| client_secret | `SERVICES` のローカル固定値。`crm-secret` / `cms-secret` | Terraform が生成し Secrets Manager に保存 |
-| API の aud | `API_HOSTS` と `PUBLIC_SCHEME` から `http://api.<service>.localhost:3002` | 同じ仕組みで `https://api.<service>.<domain>` |
+| client_secret | `CLIENT_SECRET` のローカル固定値。`crm-secret` / `cms-secret` | Terraform が生成し Secrets Manager に保存 |
+| API の aud | `API_HOST` と `PUBLIC_SCHEME` から `http://api.crm.localhost:3002` / `http://api.cms.localhost:3004` | 同じ仕組みで `https://api.<service>.<domain>` |
 | DB | docker compose の初期化 SQL | provision タスクがスキーマとシードを投入 |
 
 ## フェーズ2

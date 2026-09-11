@@ -10,7 +10,7 @@ import {
   TANAKA_CMS_ORIGIN,
   TANAKA_CRM_ORIGIN,
   visitedPaths,
-} from "../apps/tenant-web/src/test-support.ts";
+} from "../packages/service-web/src/test-support.ts";
 
 /**
  * 起動中の 3 サーバーと PostgreSQL に対して、実 HTTP でログインから SSO、Tenant Logout までを通す。

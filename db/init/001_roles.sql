@@ -1,5 +1,5 @@
 -- ロール設計
---   sandbox_auth : Identity スキーマの所有者。auth-server が使う
+--   sandbox_auth : Identity スキーマの所有者。auth-api が使う
 --   sandbox_api  : Identity スキーマは SELECT のみ。business スキーマの読み書き。RLS をバイパスしない
 -- ローカル検証用の固定パスワード。本番では Secret Store から注入する
 

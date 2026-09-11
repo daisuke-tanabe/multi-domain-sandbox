@@ -9,7 +9,7 @@ import {
   SUZUKI_CRM_ORIGIN,
   TANAKA_CMS_ORIGIN,
   TANAKA_CRM_ORIGIN,
-} from "../apps/tenant-web/src/test-support.ts";
+} from "../packages/service-web/src/test-support.ts";
 
 /**
  * 実際の Chrome を headless で起動し、CDP 経由でログインから別テナント・別サービスへの SSO までを操作する。

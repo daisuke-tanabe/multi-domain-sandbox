@@ -159,7 +159,7 @@ CREATE TABLE tenant_services (
 | client_id | name | audience | backchannel_logout_uri |
 | --- | --- | --- | --- |
 | crm | CRM | http://api.crm.localhost:3002 | http://crm.localhost:3001/auth/backchannel-logout |
-| cms | CMS | http://api.cms.localhost:3002 | http://cms.localhost:3001/auth/backchannel-logout |
+| cms | CMS | http://api.cms.localhost:3004 | http://cms.localhost:3003/auth/backchannel-logout |
 
 テナント。
 
@@ -182,8 +182,8 @@ redirect_uri。
 | --- | --- | --- |
 | crm | http://tanaka.crm.localhost:3001/auth/callback | tanaka |
 | crm | http://suzuki.crm.localhost:3001/auth/callback | suzuki |
-| cms | http://tanaka.cms.localhost:3001/auth/callback | tanaka |
-| cms | http://suzuki.cms.localhost:3001/auth/callback | suzuki。契約なし |
+| cms | http://tanaka.cms.localhost:3003/auth/callback | tanaka |
+| cms | http://suzuki.cms.localhost:3003/auth/callback | suzuki。契約なし |
 
 Membership tenant_members。
 
@@ -338,7 +338,7 @@ type TenantSession = {
 };
 ```
 
-- 1プロセスで複数サービス × 複数テナントの Host を受けるため、キーに clientId と tenantSlug を含めて空間を分ける。Cookie 値が同じでも別ホストのセッションを引けない
+- 1プロセスで複数テナントの Host を受け、複数サービスが同じ Session Store を共有し得るため、キーに clientId と tenantSlug を含めて空間を分ける。Cookie 値が同じでも別ホストのセッションを引けない
 - 取得時に session.clientId と session.tenantSlug が Host から解決した値と一致することを確認する
 - 逆引き `<clientId>:sid:<sid> → sessionKey[]` を持つ。Back-Channel Logout はサービス単位で届くため、同じ sid で作られたそのサービスの全テナントのセッションをまとめて削除できる
 - role は保存しない。表示用に必要なら API から都度取得する

@@ -56,10 +56,10 @@ Client と client_secret はサービスのものをそのまま使う。Tenant 
 2. oidc_clients に client_id、client_secret_hash、name、audience、backchannel_logout_uri を挿入
 3. 契約テナントごとに tenant_services と redirect_uri を挿入
 4. client_secret を Secret Store に `oidc/clients/<client_id>` として保存
-5. Tenant Web Application の SERVICES と API Server の API_HOSTS に追加
+5. そのサービスの web と api のプロセスを追加し、CLIENT_ID / CLIENT_SECRET / BASE_HOST / API_BASE_URL と API_HOST を与える
 ```
 
-サンドボックスでは provision が `SERVICES` の JSON からこれを投入する。
+サンドボックスでは provision が `SERVICES` の JSON から 1〜3 を投入する。
 
 ## redirect_uri 検証規則
 
@@ -74,12 +74,12 @@ Client と client_secret はサービスのものをそのまま使う。Tenant 
 
 ```text
 Host の解決
-  1. Host が SERVICES のいずれかの baseHost で終わることを確認。該当なしは 404
+  1. Host が自サービスの baseHost で終わることを確認。該当なしは 404
   2. baseHost の前のラベルを tenantSlug とする。tanaka.crm.sandbox.com → service=crm, tenantSlug=tanaka
   3. redirect_uri = <scheme>://<host>/auth/callback
 
 GET /auth/login?return_to=/projects
-  1. Host からサービス設定と tenantSlug を解決する
+  1. Host から tenantSlug を解決する
   2. return_to を検証。自ドメイン内の絶対パスのみ許可
   3. state, nonce, code_verifier を生成
   4. pre-auth を保存し参照IDを Cookie に設定
@@ -101,7 +101,7 @@ POST /auth/logout
   3. Tenant Session 削除
 
 POST /auth/backchannel-logout
-  1. logout_token 検証。aud でサービス設定を解決
+  1. logout_token 検証。aud が自サービスの clientId と一致すること
   2. <clientId>:sid:<sid> の逆引きから、テナントを問わずそのサービスの全セッションを削除
 
 内部ヘルパー
@@ -112,15 +112,15 @@ POST /auth/backchannel-logout
     Authorization: Bearer を付与してサービスの apiBaseUrl を呼ぶ
 ```
 
-設定として与えるのはサービスごとの以下のみ。環境変数 `SERVICES` の JSON 配列で渡す。
+設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。
 
 ```typescript
 type ServiceConfig = {
-  clientId: string;           // crm
-  clientSecret: string;       // Secret Store から注入。ローカルは crm-secret
-  name: string;               // CRM。エラー画面やポータルの表示名
-  baseHost: string;           // crm.sandbox.com。前にテナント slug が付く
-  apiBaseUrl: string;         // https://api.crm.sandbox.com
+  clientId: string;           // CLIENT_ID。crm
+  clientSecret: string;       // CLIENT_SECRET。Secret Store から注入。ローカルは crm-secret
+  name: string;               // SERVICE_NAME。CRM。エラー画面やポータルの表示名
+  baseHost: string;           // BASE_HOST。crm.sandbox.com。前にテナント slug が付く
+  apiBaseUrl: string;         // API_BASE_URL。https://api.crm.sandbox.com
 };
 
 type OidcClientConfig = ServiceConfig & {

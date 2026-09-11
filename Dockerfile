@@ -1,4 +1,4 @@
-# 3 アプリ共通の Dockerfile。--build-arg APP=auth-server|tenant-web|api-server|provision で切り替える
+# 全アプリ共通の Dockerfile。--build-arg APP=auth-api|crm-web|crm-api|cms-web|cms-api|provision で切り替える
 FROM node:24-alpine AS base
 RUN corepack enable && corepack prepare pnpm@10.34.5 --activate
 WORKDIR /repo
@@ -7,16 +7,21 @@ FROM base AS deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/oidc-client/package.json packages/oidc-client/
-COPY apps/auth-server/package.json apps/auth-server/
-COPY apps/tenant-web/package.json apps/tenant-web/
-COPY apps/api-server/package.json apps/api-server/
-COPY apps/provision/package.json apps/provision/
+COPY packages/service-web/package.json packages/service-web/
+COPY packages/service-api/package.json packages/service-api/
+COPY apps/auth-api/package.json apps/auth-api/
+COPY apps/crm-web/package.json apps/crm-web/
+COPY apps/crm-api/package.json apps/crm-api/
+COPY apps/cms-web/package.json apps/cms-web/
+COPY apps/cms-api/package.json apps/cms-api/
+COPY tools/provision/package.json tools/provision/
 RUN pnpm install --frozen-lockfile --prod=false
 
 FROM deps AS build
 ARG APP
 COPY packages packages
 COPY apps apps
+COPY tools tools
 COPY db db
 COPY tsconfig.base.json ./
 # 対象アプリと依存 workspace だけを /out に展開する

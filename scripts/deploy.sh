@@ -10,7 +10,7 @@ export AWS_PROFILE
 REGION="${AWS_REGION:-ap-northeast-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_DIR="$ROOT/terraform"
-APPS=(auth-server tenant-web api-server provision)
+APPS=(auth-api crm-web crm-api cms-web cms-api provision)
 TAG="${IMAGE_TAG:-$(git -C "$ROOT" rev-parse --short HEAD)}"
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)

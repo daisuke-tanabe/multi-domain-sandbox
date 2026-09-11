@@ -10,14 +10,23 @@
 pnpm workspace のモノレポ。
 
 ```text
-apps/auth-server      auth.sandbox.com。OpenID Provider
-apps/tenant-web       tenant-*.sandbox.com。BFF。1プロセスで複数テナントのホストを受ける
-apps/api-server       api.sandbox.com。Resource Server
+apps/auth-api         auth.sandbox.com。OpenID Provider。ログイン画面とポータルも当面ここが返す
+apps/crm-web          <tenant>.crm.sandbox.com。CRM の Web。BFF として Cookie セッションと API 中継を持つ
+apps/crm-api          api.crm.sandbox.com。CRM の Resource Server
+apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ構成
+apps/cms-api          api.cms.sandbox.com。CMS の Resource Server
 packages/shared       Result 型、ストア抽象、暗号、JWT、Cookie、ロガー
-packages/oidc-client  Tenant Web Application 向け OIDC Client 共通モジュール
+packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
+packages/service-web  *-web の Hono アプリ本体。画面、API 呼び出し、設定スキーマ
+packages/service-api  *-api の Hono アプリ本体。Token 検証、Membership 認可、routes、adapters
+tools/provision       AWS 専用。RDS のスキーマ作成、Cognito テストユーザー作成、シード投入
 db/                   PostgreSQL の初期化 SQL とシード
 docs/                 仕様と設計
 ```
+
+apps は起動と設定の組み立てだけを持つ。サービスごとに web と api を 1 プロセスずつ動かし、実装は packages に置いて共有する。
+サービスを増やすときは apps に web と api を 1 組追加し、`.env` でサービス固有の値を渡す。
+`*-web` はクライアントを意味する。ただし Token と Cookie をブラウザへ出さない BFF 方式のため、画面の配信と `/auth/*`、API 中継を担う薄いサーバーは必ず残す。
 
 ## 技術スタック
 
@@ -25,7 +34,7 @@ docs/                 仕様と設計
 | --- | --- | --- |
 | ランタイム | Node.js 24 | `.tool-versions` で固定 |
 | 言語 | TypeScript。strict | `tsc --noEmit` で型検査。ビルドは tsx で直接実行 |
-| HTTP | Hono + @hono/node-server | 3アプリ共通 |
+| HTTP | Hono + @hono/node-server | 全アプリ共通 |
 | バリデーション | zod + @hono/zod-validator | システム境界の入力は必ずスキーマで検証する |
 | JWT / JWKS | jose | 自前実装禁止 |
 | DB | PostgreSQL 16 on Docker。pg ドライバで素の SQL | ORM は使わない |
@@ -40,11 +49,14 @@ docs/                 仕様と設計
 
 | ホスト | ポート | アプリ |
 | --- | --- | --- |
-| auth.localhost | 3000 | auth-server |
-| tenant-a.localhost / tenant-b.localhost | 3001 | tenant-web |
-| api.localhost | 3002 | api-server |
+| auth.localhost | 3000 | auth-api |
+| tanaka.crm.localhost / suzuki.crm.localhost | 3001 | crm-web |
+| api.crm.localhost | 3002 | crm-api |
+| tanaka.cms.localhost / suzuki.cms.localhost | 3003 | cms-web |
+| api.cms.localhost | 3004 | cms-api |
 
-サーバー間通信は DNS に依存しないよう `127.0.0.1:<port>` を内部 URL として設定し、公開 URL とは別に持つ。
+Auth への サーバー間通信は DNS に依存しないよう `127.0.0.1:3000` を内部 URL として設定し、公開 URL とは別に持つ。
+web から api への呼び出しは公開 URL をそのまま使う。api は Host から aud を決めるため、ホスト名を変えて呼んではならない。
 
 ## レイヤー規約
 

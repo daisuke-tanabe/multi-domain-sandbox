@@ -5,7 +5,7 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-server / api-server / tenant-web / oidc-client / shared で 112 件が通っている。
+現在の自動テストは auth-api / service-api / service-web / oidc-client / shared で 112 件が通っている。crm-web / crm-api / cms-web / cms-api は `packages/service-web` と `packages/service-api` を環境変数で起動するだけの薄い構成のため、テストは共有パッケージ側に置く。
 
 ## テストピラミッド
 
@@ -13,7 +13,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | --- | --- | --- | --- |
 | Unit | PKCE 計算、JWT 生成と検証、Cookie 属性、redirect_uri 比較、Host 解決、return_to 検証、Role→Permission | Vitest | 毎コミット |
 | Integration | Auth / Tenant / API の各エンドポイント。ストアと Cognito はモック | Vitest + Hono テストクライアント | 毎コミット |
-| E2E | 3種のプロセスと6ホストをまたぐフロー。ブラウザ相当のクライアントで Cookie を追う | Vitest。ブラウザ確認は Chrome DevTools スクリプト | PR ごと |
+| E2E | 5種のプロセスと7ホストをまたぐフロー。ブラウザ相当のクライアントで Cookie を追う | Vitest。ブラウザ確認は Chrome DevTools スクリプト | PR ごと |
 | Security | 攻撃シナリオの再現 | Vitest | PR ごと |
 
 ## Unit テスト
@@ -37,8 +37,8 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 
 | 対象 | ケース |
 | --- | --- |
-| Host 解決 | tanaka.crm.localhost:3001 → service=crm, tenantSlug=tanaka。baseHost に一致しない Host は 404。ラベルが2段以上の Host は拒否 |
-| SERVICES 設定 | JSON の必須項目。clientId 重複の拒否 |
+| Host 解決 | tanaka.crm.localhost:3001 → tenantSlug=tanaka。BASE_HOST に一致しない Host は 404。ラベルが2段以上の Host は拒否 |
+| サービス設定 | CLIENT_ID / CLIENT_SECRET / SERVICE_NAME / BASE_HOST / API_BASE_URL の必須項目 |
 | return_to 検証 | 相対パス許可。絶対 URL / `//` / `javascript:` / `\` 拒否 |
 | ID Token 検証 | 署名 / iss / aud / exp / nonce / alg 固定 / tenant_slug と Host の一致 |
 | Cookie 生成 | HttpOnly / Secure / SameSite=Lax / `__Host-` / Domain なし |
@@ -50,7 +50,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 
 | 対象 | ケース |
 | --- | --- |
-| Host → aud | API_HOSTS の各 Host が `<PUBLIC_SCHEME>://<host>` に写像される |
+| Host → aud | API_HOST が `<PUBLIC_SCHEME>://<API_HOST>` に写像される |
 | Access Token 検証 | aud 不一致で拒否。ID Token を渡すと拒否。alg=none 拒否 |
 | Role→Permission | 4 role の permission 集合 |
 | Repository | tenant_id 引数の必須性。省略で型エラーになること |
@@ -96,9 +96,9 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | 番号 | テスト |
 | --- | --- |
 | P1-P14 | 各エラー応答 |
-| P5 | crm 向け Access Token を Host api.cms.localhost:3002 に送ると 401 |
-| P16 | API_HOSTS にない Host は 404。Token の有無に関わらず |
-| 正常 | cms 向け Access Token を Host api.cms.localhost:3002 に送ると 200 |
+| P5 | crm 向け Access Token を cms-api の Host api.cms.localhost:3004 に送ると 401 |
+| P16 | API_HOST と一致しない Host は 404。Token の有無に関わらず |
+| 正常 | cms 向け Access Token を cms-api の Host api.cms.localhost:3004 に送ると 200 |
 | 正常 | 有効な Token で自テナントのデータのみ返る |
 | P12 | 他テナントのリソース ID で 404 |
 | 権限 | viewer で projects:write が 403 |
@@ -108,7 +108,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 
 ## E2E テスト
 
-ローカルでは `auth.localhost:3000`、`tanaka.crm.localhost:3001` `suzuki.crm.localhost:3001` `tanaka.cms.localhost:3001` `suzuki.cms.localhost:3001`、`api.crm.localhost:3002` `api.cms.localhost:3002` を起動し、Cognito はモックアダプタを使う。ユーザーは alice。tanaka の owner かつ suzuki の viewer。
+ローカルでは auth-api の `auth.localhost:3000`、crm-web の `tanaka.crm.localhost:3001` `suzuki.crm.localhost:3001`、crm-api の `api.crm.localhost:3002`、cms-web の `tanaka.cms.localhost:3003` `suzuki.cms.localhost:3003`、cms-api の `api.cms.localhost:3004` を起動し、Cognito はモックアダプタを使う。ユーザーは alice。tanaka の owner かつ suzuki の viewer。
 
 | # | シナリオ | 確認内容 |
 | --- | --- | --- |
@@ -161,8 +161,9 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | Cognito | `CognitoAuthenticator` インターフェースのモック実装。固定ユーザー alice / bob / carol と失敗パターンを設定できる |
 | Session Store | インメモリ実装。TTL を進めるためのテスト用クロック |
 | Identity DB | ローカル PostgreSQL。RLS テストは PostgreSQL 必須 |
-| SERVICES | crm と cms の2サービス。baseHost は crm.localhost:3001 / cms.localhost:3001 |
-| API_HOSTS | api.crm.localhost:3002 / api.cms.localhost:3002 |
+| web インスタンス | crm と cms の2サービス。`packages/service-web/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003 |
+| api インスタンス | サービスごとに別インスタンス。API_HOST は api.crm.localhost:3002 / api.cms.localhost:3004 |
+| テストファイル | `apps/auth-api/src/app.test.ts`、`packages/service-web/src/app.test.ts`、`packages/service-api/src/app.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |
 | 時刻 | 注入可能なクロックで期限切れを再現 |
 

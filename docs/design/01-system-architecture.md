@@ -62,7 +62,7 @@ flowchart TB
     ApiCms -- "JWKS取得" --> Auth
 ```
 
-サンドボックスでは Tenant Web Application と API Server はそれぞれ1プロセスで、複数サービス × 複数テナントの Host を受ける。サービスごとに別プロセス、別ドメインに分けても構成は変わらない。
+サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。実装は `packages/service-web` と `packages/service-api` で共有し、環境変数でサービスを決める。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
 
 ## サービスとテナント
 
@@ -75,14 +75,16 @@ flowchart TB
 
 ## ホスト一覧
 
-| 役割 | 本番の形 | ローカル |
-| --- | --- | --- |
-| Auth Server | auth.sandbox.com | auth.localhost:3000 |
-| Tenant Web Application | `<tenant>.<service>.sandbox.com`。tanaka.crm.sandbox.com、suzuki.crm.sandbox.com、tanaka.cms.sandbox.com | tanaka.crm.localhost:3001、suzuki.crm.localhost:3001、tanaka.cms.localhost:3001、suzuki.cms.localhost:3001 |
-| API Server | `api.<service>.sandbox.com`。api.crm.sandbox.com、api.cms.sandbox.com | api.crm.localhost:3002、api.cms.localhost:3002 |
+| 役割 | アプリ | 本番の形 | ローカル |
+| --- | --- | --- | --- |
+| Auth Server | auth-api | auth.sandbox.com | auth.localhost:3000 |
+| CRM の Tenant Web Application | crm-web | `<tenant>.crm.sandbox.com`。tanaka.crm.sandbox.com、suzuki.crm.sandbox.com | tanaka.crm.localhost:3001、suzuki.crm.localhost:3001 |
+| CRM の API Server | crm-api | api.crm.sandbox.com | api.crm.localhost:3002 |
+| CMS の Tenant Web Application | cms-web | `<tenant>.cms.sandbox.com`。tanaka.cms.sandbox.com | tanaka.cms.localhost:3003、suzuki.cms.localhost:3003 |
+| CMS の API Server | cms-api | api.cms.sandbox.com | api.cms.localhost:3004 |
 
 サービスは独立したドメインに置いてもよい。tanaka.crm.com と tanaka.cms.com のようにドメインが異なっても、SSO は auth.sandbox.com の SSO Session で成立し Cookie の Domain に依存しない。
-suzuki.cms.localhost:3001 は redirect_uri が登録済みだが契約がないため、`/authorize` が `access_denied` を返す。
+suzuki.cms.localhost:3003 は redirect_uri が登録済みだが契約がないため、`/authorize` が `access_denied` を返す。
 
 ## レイヤーと責務
 
@@ -120,7 +122,7 @@ Host からサービスとテナントを特定するが、認可の根拠には
 
 ```mermaid
 flowchart LR
-    Host["Host: suzuki.crm.sandbox.com"] --> Resolve["service = crm<br/>tenantSlug = suzuki<br/>SERVICES 設定で解決"]
+    Host["Host: suzuki.crm.sandbox.com"] --> Resolve["service = crm<br/>tenantSlug = suzuki<br/>CLIENT_ID と BASE_HOST で解決"]
     Resolve --> Req["/authorize<br/>client_id = crm<br/>redirect_uri = https://suzuki.crm.sandbox.com/auth/callback"]
     Req --> Tenant["oidc_client_redirect_uris で<br/>redirect_uri → tenant_id を解決"]
     Tenant --> Check["user active → tenant active<br/>→ tenant_services → tenant_members"]
@@ -128,7 +130,7 @@ flowchart LR
     Token --> Api["API Server<br/>Host から aud を導き検証<br/>tenant_members を再検証<br/>リソースのtenant_idと一致確認"]
 ```
 
-- Host はサービス設定の選択と redirect_uri の組み立てにのみ使う
+- Host はテナント slug の解決と redirect_uri の組み立てにのみ使う。サービスはプロセスの環境変数で固定される
 - 認可リクエストのテナントは Auth Server が client_id と redirect_uri の組から解決する。Tenant Web Application が申告した値は使わない
 - テナントへのアクセス可否は Auth Server が `/authorize` と refresh_token grant で判定する。順序は user → tenant → 契約 → Membership
 - Tenant Web Application は ID Token の `tenant_slug` が Host から得たテナントと一致することを検証する
@@ -157,10 +159,10 @@ flowchart LR
 
 | エンドポイント | メソッド | 用途 |
 | --- | --- | --- |
-| `/auth/login` | GET | Host からサービスとテナントを解決し、認可リクエストを生成してリダイレクト |
+| `/auth/login` | GET | Host からテナントを解決し、認可リクエストを生成してリダイレクト |
 | `/auth/callback` | GET | code受領、Back Channelで交換、ID Token の tenant_slug 検証、Tenant Session作成 |
 | `/auth/logout` | POST | Tenant Logout |
-| `/auth/backchannel-logout` | POST | Back-Channel Logout受信。aud で サービスを解決し、sid に紐付く全テナントのセッションを削除 |
+| `/auth/backchannel-logout` | POST | Back-Channel Logout受信。aud が自サービスの client_id であることを確認し、sid に紐付く全テナントのセッションを削除 |
 | `/api/*` 相当の画面処理 | 任意 | サーバー側でAccess Tokenを付与しサービスの API を呼ぶ |
 
 `/auth/backchannel-logout` はテナントに依存しないため、サービスのベースホストで受ける。CRM は `https://crm.sandbox.com/auth/backchannel-logout`、CMS は `https://cms.sandbox.com/auth/backchannel-logout`。
@@ -179,14 +181,15 @@ flowchart LR
 
 | アプリ | 変数 | 内容 |
 | --- | --- | --- |
-| tenant-web | `SERVICES` | サービスごとの設定の JSON 配列。`[{"clientId":"crm","clientSecret":"crm-secret","name":"CRM","baseHost":"crm.localhost:3001","apiBaseUrl":"http://api.crm.localhost:3002"}, {"clientId":"cms", ...}]`。Host `<tenant>.<baseHost>` からサービスとテナントを解決する |
-| tenant-web | `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `COOKIE_SECURE` | redirect_uri の scheme、Auth Server の issuer、サーバー間通信先、Cookie の Secure 属性 |
-| auth-server | `ISSUER` `DATABASE_URL` `COGNITO_ADAPTER` 等 | Client やテナントの設定は持たず、Identity DB から読む |
-| api-server | `API_HOSTS` | 受け付ける API ホストのカンマ区切り。`api.crm.localhost:3002,api.cms.localhost:3002` |
-| api-server | `PUBLIC_SCHEME` | aud は `<PUBLIC_SCHEME>://<host>`。oidc_clients.audience と一致させる |
-| provision | `SERVICES` `PUBLIC_SCHEME` | tenant-web と同じ JSON。oidc_clients、redirect_uri、backchannel_logout_uri の投入に使う |
+| crm-web / cms-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` | このプロセスが担当するサービス。`crm` / `crm-secret` / `CRM` のように oidc_clients の登録値と一致させる |
+| crm-web / cms-web | `BASE_HOST` `API_BASE_URL` | テナント slug を除いたホストと、呼び出す API の公開 URL。crm は `crm.localhost:3001` と `http://api.crm.localhost:3002`、cms は `cms.localhost:3003` と `http://api.cms.localhost:3004`。Host `<tenant>.<BASE_HOST>` からテナントを解決する |
+| crm-web / cms-web | `PORT` `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `COOKIE_SECURE` `REDIS_URL` | 待ち受けポート、redirect_uri の scheme、Auth Server の issuer、サーバー間通信先、Cookie の Secure 属性、Session Store。`REDIS_URL` 未設定はインメモリ |
+| auth-api | `ISSUER` `DATABASE_URL` `COGNITO_ADAPTER` 等 | Client やテナントの設定は持たず、Identity DB から読む |
+| crm-api / cms-api | `API_HOST` | この API の公開ホスト。`api.crm.localhost:3002` / `api.cms.localhost:3004`。それ以外の Host は 404 |
+| crm-api / cms-api | `PORT` `PUBLIC_SCHEME` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` | aud は `<PUBLIC_SCHEME>://<API_HOST>`。oidc_clients.audience と一致させる |
+| provision | `SERVICES` `PUBLIC_SCHEME` | 全サービスの `clientId` `clientSecret` `name` `baseHost` `apiBaseUrl` の JSON 配列。oidc_clients、redirect_uri、backchannel_logout_uri の投入に使う |
 
-client_secret はローカルでは `crm-secret` と `cms-secret` の固定値。本番は Secret Store から `SERVICES` に注入する。
+client_secret はローカルでは `crm-secret` と `cms-secret` の固定値。本番は Secret Store から各 web の `CLIENT_SECRET` と provision の `SERVICES` に注入する。
 
 ## サービス追加手順
 
@@ -194,7 +197,7 @@ client_secret はローカルでは `crm-secret` と `cms-secret` の固定値�
 | --- | --- | --- |
 | 新テナント | tenants にレコード追加。契約するサービスごとに tenant_services と `https://<slug>.<service>.sandbox.com/auth/callback` の redirect_uri を登録 | なし。Client 登録と Secret 配布は不要 |
 | 既存テナントの契約追加 | tenant_services と redirect_uri を追加 | なし |
-| 新サービス | oidc_clients に client_id、audience、backchannel_logout_uri を登録。契約テナント分の redirect_uri を登録。Tenant Web Application の `SERVICES` と API Server の `API_HOSTS` に追加 | なし |
+| 新サービス | oidc_clients に client_id、audience、backchannel_logout_uri を登録。契約テナント分の redirect_uri を登録。`apps/<service>-web` と `apps/<service>-api` を追加し、`packages/service-web` と `packages/service-api` を環境変数で起動する。provision の `SERVICES` に追加 | なし |
 | 管理画面 | 専用clientを登録し、管理用scopeを付与 | なし |
 
 ## 技術スタック

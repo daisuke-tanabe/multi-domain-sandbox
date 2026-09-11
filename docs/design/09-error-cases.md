@@ -77,7 +77,7 @@
 | C15 | Tenant Session 作成失敗 | Tenant | 503 | 同上 | アラート |
 | C16 | return_to が不正 | Tenant | 302 / へ | ログイン成功。トップへ | ログ |
 | C17 | id_token tenant_slug が Host のテナントと不一致 | Tenant | 401 | 「ログインをやり直してください」 | 警告ログ。他テナントの code の疑い |
-| C18 | Host が SERVICES のどの baseHost にも一致しない | Tenant | 404 | 「ページが見つかりません」 | ログ |
+| C18 | Host が自サービスの BASE_HOST に一致しない | Tenant | 404 | 「ページが見つかりません」 | ログ |
 
 ## 4. Token エンドポイント。POST /token
 
@@ -119,7 +119,7 @@
 | P13 | JWKS 取得失敗かつキャッシュなし | API | 503 | アラート |
 | P14 | Identity DB 障害 | API | 503 | アラート。キャッシュがあれば寿命内のみ利用 |
 | P15 | RLS 設定漏れ。app.tenant_id 未設定 | DB | クエリが 0 件になる | 起動時テストで検知する |
-| P16 | Host が API_HOSTS に含まれない | API | 404 not_found。Token 検証に進まない | ログ |
+| P16 | Host が API_HOST と一致しない | API | 404 not_found。Token 検証に進まない | ログ |
 
 ## 6. Logout
 
@@ -142,7 +142,7 @@
 | M3 | 時刻ずれ | Tenant / API | 30 秒の許容スキュー。NTP 同期を必須にする |
 | M4 | テナント削除 | Auth / API | tenant_members / tenant_services / redirect_uri を CASCADE 削除。oidc_clients は残る。既存 Token は Membership 再検証で拒否 |
 | M6 | 契約解除 | Auth | tenant_services を削除または suspended。`/authorize` と Refresh で not_contracted。既存 Access Token は最大15分で失効 |
-| M7 | サービス廃止 | Auth / Tenant | oidc_clients を disabled。A2 で拒否。SERVICES と API_HOSTS から除く |
+| M7 | サービス廃止 | Auth / Tenant | oidc_clients を disabled。A2 で拒否。そのサービスの web と api のプロセスを停止し、provision の SERVICES から除く |
 | M5 | Cognito でユーザー削除 | Auth | 次回ログインで L4。既存 SSO Session は期限まで残るため、削除時に Auth の管理 API から SSO Session を失効させる運用を定義 |
 
 ## ユーザー向けメッセージ方針

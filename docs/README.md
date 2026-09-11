@@ -32,7 +32,7 @@ Sandbox 認証・マルチサービス・マルチテナントSSO基盤の設計
 
 ## 実装状況
 
-設計に対応する検証実装を `apps/` と `packages/` に置いている。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。
+設計に対応する検証実装を `apps/` と `packages/` に置いている。`apps/` は auth-api / crm-web / crm-api / cms-web / cms-api で、web と api の実装は `packages/service-web` と `packages/service-api` に共有する。起動方法と確認手順はリポジトリ直下の [README.md](../README.md) を参照する。フェーズ2の MFA は未実装。Global Logout は Back-Channel Logout まで実装済み。
 サービスとテナントを分けたモデルは `apps/` と `db/init` に反映済み。AWS の Terraform 構成はテナントごとに Client を持つ旧構成のままで、[deploy.md](./deploy.md) に記載のとおり別作業で移行する。
 
 ## 前提

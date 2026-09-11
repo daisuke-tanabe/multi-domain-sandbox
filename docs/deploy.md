@@ -3,8 +3,10 @@
 ## 未移行の注意
 
 AWS / Terraform 側はまだ旧構成のままである。旧構成ではテナントごとに OIDC Client を持ち、ホストは `tenant-a.<domain>` / `tenant-b.<domain>`、環境変数は `TENANT_CLIENTS` と `API_AUDIENCE` だった。
-アプリと `db/init` はサービス × テナントのモデルに移行済みで、ホストは `<tenant>.crm.<domain>` / `<tenant>.cms.<domain>`、環境変数は tenant-web / provision の `SERVICES` と api-server の `API_HOSTS` / `PUBLIC_SCHEME` に変わっている。
-Terraform の ALB ルーティング、ACM 証明書、タスク定義の環境変数、Secrets Manager の client_secret を `*.crm.<domain>` / `*.cms.<domain>` のホストと `SERVICES` シークレットへ移行する作業は別途行う。それまでこの手順で apply しても現在のアプリは起動しない。以下の Terraform に関する記述は旧構成のものをそのまま残している。
+アプリと `db/init` はサービス × テナントのモデルに移行済みで、ホストは `<tenant>.crm.<domain>` / `<tenant>.cms.<domain>` に変わっている。
+さらにアプリはサービスごとに web と api を分けた構成に変わっている。旧構成の auth-server / tenant-web / api-server / provision は auth-api / crm-web / crm-api / cms-web / cms-api / provision になった。`scripts/deploy.sh` と `Dockerfile` は新しいアプリ名でビルドするが、Terraform の ECR リポジトリ名、ECS サービス名、タスク定義、CloudWatch Logs のロググループ名は旧名のままで一致しない。
+環境変数も `*-web` の `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` と `*-api` の `API_HOST` に変わっており、旧構成の `TENANT_CLIENTS` と `API_AUDIENCE` はどのアプリも読まない。
+Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名、タスク定義の環境変数、Secrets Manager の client_secret を現在の構成へ移行する作業は別途行う。それまでこの手順で apply しても現在のアプリは起動しない。以下の Terraform に関する記述は旧構成のものをそのまま残している。
 
 ## 結論
 
@@ -17,8 +19,8 @@ Terraform の ALB ルーティング、ACM 証明書、タスク定義の環境�
 | 要素 | 内容 |
 | --- | --- |
 | ネットワーク | VPC 10.20.0.0/16。public subnet 2 つに ALB と Fargate タスク、private subnet 2 つに RDS と Redis。NAT なし |
-| 実行基盤 | ECS Fargate ARM64。auth-server / tenant-web / api-server を各 1 タスク。provision は一回限りのタスク |
-| ルーティング | ALB のホストベース。`auth.<domain>` → auth-server、`api.<domain>` → api-server、`*.<domain>` → tenant-web。移行後は `api.<service>.<domain>` → api-server、`*.<service>.<domain>` → tenant-web |
+| 実行基盤 | ECS Fargate ARM64。旧構成の auth-server / tenant-web / api-server を各 1 タスク。provision は一回限りのタスク。移行後は auth-api / crm-web / crm-api / cms-web / cms-api を各 1 タスク |
+| ルーティング | ALB のホストベース。旧構成は `auth.<domain>` → auth-server、`api.<domain>` → api-server、`*.<domain>` → tenant-web。移行後は `auth.<domain>` → auth-api、`api.crm.<domain>` → crm-api、`*.crm.<domain>` → crm-web、`api.cms.<domain>` → cms-api、`*.cms.<domain>` → cms-web |
 | 証明書 | ACM。`*.<domain>` と `<domain>` を DNS 検証。移行後は `*.crm.<domain>` / `*.cms.<domain>` も必要 |
 | DB | RDS PostgreSQL 16、db.t4g.micro、単一 AZ。`rds.force_ssl=1` のため接続 URL に `sslmode=no-verify` を付ける。ロールは provision タスクが作る |
 | Session Store | ElastiCache Redis 7、cache.t4g.micro、単一ノード、VPC 内のみ |
@@ -31,10 +33,12 @@ Terraform の ALB ルーティング、ACM 証明書、タスク定義の環境�
 
 | アプリ | 変数 | 本番の値の例 |
 | --- | --- | --- |
-| tenant-web | `SERVICES` | `[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]` |
-| tenant-web / api-server / provision | `PUBLIC_SCHEME` | `https` |
-| api-server | `API_HOSTS` | `api.crm.<domain>,api.cms.<domain>` |
-| provision | `SERVICES` | tenant-web と同じ JSON。oidc_clients、redirect_uri、backchannel_logout_uri の投入に使う |
+| crm-web | `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` | `crm` / Secrets Manager の値 / `CRM` / `crm.<domain>` / `https://api.crm.<domain>` |
+| cms-web | 同上 | `cms` / Secrets Manager の値 / `CMS` / `cms.<domain>` / `https://api.cms.<domain>` |
+| crm-api | `API_HOST` | `api.crm.<domain>` |
+| cms-api | `API_HOST` | `api.cms.<domain>` |
+| crm-web / cms-web / crm-api / cms-api / provision | `PUBLIC_SCHEME` | `https` |
+| provision | `SERVICES` | 全サービスの JSON 配列。`[{"clientId":"crm","clientSecret":"<secret>","name":"CRM","baseHost":"crm.<domain>","apiBaseUrl":"https://api.crm.<domain>"},{"clientId":"cms",...}]`。oidc_clients、redirect_uri、backchannel_logout_uri の投入に使う |
 
 ## 事前準備
 
@@ -124,7 +128,7 @@ ap-northeast-1 で常時起動した場合の概算。
 
 | 項目 | 月額の目安 |
 | --- | --- |
-| Fargate 0.25 vCPU / 0.5 GB × 3 | 約 2,500 円 |
+| Fargate 0.25 vCPU / 0.5 GB × 3。移行後は × 5 で約 4,200 円 | 約 2,500 円 |
 | ALB | 約 3,500 円 + 転送量 |
 | RDS db.t4g.micro + 20 GB | 約 2,500 円 |
 | ElastiCache cache.t4g.micro | 約 2,000 円 |

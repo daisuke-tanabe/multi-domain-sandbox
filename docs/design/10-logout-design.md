@@ -84,7 +84,7 @@ OIDC Back-Channel Logout 1.0 に従う。
 Tenant Web Application 側の検証。
 
 1. 署名 / iss / iat / exp
-2. `aud` で SERVICES からサービスを解決。未知なら 400
+2. `aud` が自サービスの `CLIENT_ID` と一致すること。不一致なら 400
 3. `events` に backchannel-logout が含まれる
 4. `nonce` が含まれていないこと
 5. jti の重複を短時間記憶してリプレイを拒否
