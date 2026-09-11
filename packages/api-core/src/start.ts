@@ -8,14 +8,14 @@ import {
 } from "@sandbox/shared";
 import { PgIdentityReader, PgProjectRepository } from "./adapters/pg-repositories.ts";
 import { createApiApp } from "./app.ts";
-import { loadResourceServerConfig } from "./config.ts";
+import { loadApiCoreConfig } from "./config.ts";
 
 /**
  * サービスの API を起動する。apps/<service>-api/src/main.ts はこれを呼ぶだけ。
  */
-export function startResourceServer(component: string): void {
+export function startApiCore(component: string): void {
   const logger = createLogger(component);
-  const config = loadResourceServerConfig(component);
+  const config = loadApiCoreConfig(component);
   const pool = createPool(config.DATABASE_URL, logger);
   const jwksUrl = `${config.AUTH_BACKCHANNEL_URL ?? config.ISSUER}/jwks`;
 

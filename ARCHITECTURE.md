@@ -17,14 +17,14 @@ apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ
 apps/cms-api          api.cms.sandbox.com。CMS の Resource Server
 packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
-packages/bff          *-web が使う BFF 本体。画面、/auth/* の受け口、API 中継、設定スキーマ、起動関数。crm-web と cms-web の実装はここ
-packages/resource-server  *-api が使う Resource Server 本体。Token 検証、Membership 認可、routes、adapters、設定スキーマ、起動関数。crm-api と cms-api の実装はここ
+packages/web-core     apps/*-web の実装本体。crm-web と cms-web はこれを起動するだけ。BFF として画面、/auth/* の受け口、API 中継、設定スキーマを持つ
+packages/api-core     apps/*-api の実装本体。crm-api と cms-api はこれを起動するだけ。auth-api は使わない。Token 検証、Membership 認可、routes、adapters、設定スキーマを持つ
 tools/provision       AWS 専用。RDS のスキーマ作成、Cognito テストユーザー作成、シード投入
 db/                   PostgreSQL の初期化 SQL とシード
 docs/                 仕様と設計
 ```
 
-apps/crm-web / cms-web / crm-api / cms-api はエントリポイントだけを持つ。`main.ts` は `startBff("crm-web")` や `startResourceServer("crm-api")` を呼ぶ 2 行で、設定スキーマと依存の組み立ては `packages/bff/src/config.ts` `start.ts` と `packages/resource-server/src/config.ts` `start.ts` にある。
+apps/crm-web / cms-web / crm-api / cms-api はエントリポイントだけを持つ。`main.ts` は `startWebCore("crm-web")` や `startApiCore("crm-api")` を呼ぶ 2 行で、設定スキーマと依存の組み立ては `packages/web-core/src/config.ts` `start.ts` と `packages/api-core/src/config.ts` `start.ts` にある。
 サービスごとに web と api を 1 プロセスずつ動かし、実装は packages に置いて共有する。
 サービスを増やすときは apps に web と api を 1 組追加し、`.env` でサービス固有の値を渡す。
 `*-web` はクライアントを意味する。ただし Token と Cookie をブラウザへ出さない BFF 方式のため、画面の配信と `/auth/*`、API 中継を担う薄いサーバーは必ず残す。

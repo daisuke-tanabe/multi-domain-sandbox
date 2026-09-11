@@ -1,5 +1,5 @@
 /**
- * auth-api が発行し、oidc-client と resource-server が解釈する値。
+ * auth-api が発行し、oidc-client と api-core が解釈する値。
  * 文字列の取り決めをここに閉じ、両側で同じ型を使う。
  */
 export const ACCESS_DENIED_REASONS = [

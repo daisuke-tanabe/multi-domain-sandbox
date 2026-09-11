@@ -1,5 +1,5 @@
 {
-  "name": "@sandbox/bff",
+  "name": "@sandbox/api-core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,15 +12,16 @@
   },
   "dependencies": {
     "@hono/node-server": "catalog:",
-    "@sandbox/oidc-client": "workspace:*",
+    "@hono/zod-validator": "catalog:",
     "@sandbox/shared": "workspace:*",
     "hono": "catalog:",
+    "pg": "catalog:",
+    "ulid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@sandbox/auth-api": "workspace:*",
-    "@sandbox/resource-server": "workspace:*",
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

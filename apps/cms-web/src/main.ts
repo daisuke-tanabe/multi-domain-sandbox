@@ -1,3 +1,3 @@
-import { startBff } from "@sandbox/bff";
+import { startWebCore } from "@sandbox/web-core";
 
-startBff("cms-web");
+startWebCore("cms-web");

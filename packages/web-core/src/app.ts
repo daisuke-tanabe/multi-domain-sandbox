@@ -15,7 +15,7 @@ import {
 } from "@sandbox/oidc-client";
 import { errorPage, homePage, projectsPage, type PageLabels, type Viewer } from "./views/pages.ts";
 
-export interface BffAppOptions {
+export interface WebCoreAppOptions {
   readonly deps: OidcClientDeps;
   readonly provider: OidcProvider;
 }
@@ -33,7 +33,7 @@ function toViewer(session: TenantSession): Viewer {
 /**
  * サービスの Web。BFF として API をサーバー間で呼び、ブラウザには HTML と Cookie だけを返す。1 プロセス 1 サービス
  */
-export function createBffApp(options: BffAppOptions): Hono<OidcEnv> {
+export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
   const { deps, provider } = options;
   const app = new Hono<OidcEnv>();
 

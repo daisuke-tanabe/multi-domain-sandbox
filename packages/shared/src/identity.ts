@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * Identity DB の列挙値。db/init/002_identity.sql の CHECK 制約と一致させる。
- * auth-api と resource-server の両方がここから型と zod スキーマを取る。
+ * auth-api と api-core の両方がここから型と zod スキーマを取る。
  */
 export const ROLES = ["owner", "admin", "member", "viewer"] as const;
 export const USER_STATUSES = ["active", "disabled"] as const;

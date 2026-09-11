@@ -62,7 +62,7 @@ flowchart TB
     ApiCms -- "JWKS取得" --> Auth
 ```
 
-サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。実装は `packages/bff` と `packages/resource-server` で共有し、環境変数でサービスを決める。各 app の `main.ts` は `startBff` か `startResourceServer` を呼ぶだけで、環境変数のスキーマは `packages/bff/src/config.ts` と `packages/resource-server/src/config.ts` にある。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
+サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。実装は `packages/web-core` と `packages/api-core` で共有し、環境変数でサービスを決める。各 app の `main.ts` は `startWebCore` か `startApiCore` を呼ぶだけで、環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
 
 ## サービスとテナント
 
@@ -199,7 +199,7 @@ client_secret はローカルでは `crm-secret` と `cms-secret` の固定値�
 | --- | --- | --- |
 | 新テナント | tenants にレコード追加。契約するサービスごとに tenant_services を登録 | なし。redirect_uri の登録、Client 登録、Secret 配布は不要 |
 | 既存テナントの契約追加 | tenant_services を追加 | なし |
-| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services を登録。`apps/<service>-web` と `apps/<service>-api` を追加し、`packages/bff` と `packages/resource-server` を環境変数で起動する。provision の `SERVICES` に追加 | なし |
+| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services を登録。`apps/<service>-web` と `apps/<service>-api` を追加し、`packages/web-core` と `packages/api-core` を環境変数で起動する。provision の `SERVICES` に追加 | なし |
 | client_secret のローテーション | oidc_client_secrets に新 secret を active で追加 → サービスの `CLIENT_SECRET` を差し替え → 旧行を revoked に更新 | なし。切替中は新旧どちらでも `/token` が通る |
 | 管理画面 | 専用clientを登録し、管理用scopeを付与 | なし |
 

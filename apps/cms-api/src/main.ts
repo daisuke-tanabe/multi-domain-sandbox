@@ -1,3 +1,3 @@
-import { startResourceServer } from "@sandbox/resource-server";
+import { startApiCore } from "@sandbox/api-core";
 
-startResourceServer("cms-api");
+startApiCore("cms-api");

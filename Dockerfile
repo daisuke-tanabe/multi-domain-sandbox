@@ -7,8 +7,8 @@ FROM base AS deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/oidc-client/package.json packages/oidc-client/
-COPY packages/bff/package.json packages/bff/
-COPY packages/resource-server/package.json packages/resource-server/
+COPY packages/web-core/package.json packages/web-core/
+COPY packages/api-core/package.json packages/api-core/
 COPY apps/auth-api/package.json apps/auth-api/
 COPY apps/crm-web/package.json apps/crm-web/
 COPY apps/crm-api/package.json apps/crm-api/

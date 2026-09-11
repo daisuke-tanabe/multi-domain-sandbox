@@ -28,12 +28,12 @@ flowchart TD
     H --> I["Response"]
 ```
 
-0 から 3 までは `packages/resource-server/src/usecases/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `IdentityReader.findAccessContext(userId, tenantId)` で user / tenant / membership を 1 回の JOIN で取得 → user → tenant → membership の順に判定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
+0 から 3 までは `packages/api-core/src/usecases/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `IdentityReader.findAccessContext(userId, tenantId)` で user / tenant / membership を 1 回の JOIN で取得 → user → tenant → membership の順に判定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
 
 ## 0. Host → aud
 
 API はサービスごとに別プロセスで、1 プロセスは 1 つの Host だけを受ける。環境変数 `API_BASE_URL` の値をそのまま aud とし、リクエストの Host が `API_BASE_URL` のホストと一致することを要求する。`ApiAppOptions.audience` は文字列 1 つで、Host から aud を引く表は持たない。
-環境変数は `packages/resource-server/src/config.ts` の `loadResourceServerConfig` が `parseEnv` で検証する。`PORT` `API_BASE_URL` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` のみで、`PUBLIC_SCHEME` は持たない。
+環境変数は `packages/api-core/src/config.ts` の `loadApiCoreConfig` が `parseEnv` で検証する。`PORT` `API_BASE_URL` `ISSUER` `AUTH_BACKCHANNEL_URL` `DATABASE_URL` のみで、`PUBLIC_SCHEME` は持たない。
 
 | プロセス | API_BASE_URL | aud | 受け付ける Host |
 | --- | --- | --- | --- |

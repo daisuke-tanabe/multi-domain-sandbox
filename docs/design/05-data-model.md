@@ -242,7 +242,7 @@ API Server はトランザクション開始時に `SET LOCAL app.tenant_id = :t
 ## Session Store
 
 Redis 想定。すべて TTL 付き。ローカル検証はインメモリ Map。
-ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、auth-api は `adapters/stores.ts` の `createAuthStores`、`*-web` は `startBff` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。
+ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、auth-api は `adapters/stores.ts` の `createAuthStores`、`*-web` は `startWebCore` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。
 寿命はストアの TTL で管理し、値には `createdAt` のような期限計算用の項目を持たせない。アイドル期限と絶対期限を持つ SSO Session と Tenant Session は例外で、`packages/shared/src/session-expiry.ts` の共通判定を使う。
 
 ### SSO Session

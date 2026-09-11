@@ -30,7 +30,7 @@ Terraform の ALB ルーティング、ACM 証明書、ECR / ECS のアプリ名
 
 ローカルとの差分は環境変数だけで吸収する。`COOKIE_SECURE=true` で `__Host-` プレフィックス、`COGNITO_ADAPTER=sdk` で実 Cognito、`REDIS_URL` で Redis を使う。
 アプリ側で必要な環境変数は次のとおり。Terraform のタスク定義はまだこれらを渡していない。
-crm-web / cms-web / crm-api / cms-api の `main.ts` は `packages/bff` と `packages/resource-server` の起動関数を呼ぶだけで、環境変数のスキーマは `packages/bff/src/config.ts` と `packages/resource-server/src/config.ts` にある。`*-api` は `PUBLIC_SCHEME` を読まず、aud は `API_BASE_URL` そのものになる。
+crm-web / cms-web / crm-api / cms-api の `main.ts` は `packages/web-core` と `packages/api-core` の起動関数を呼ぶだけで、環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。`*-api` は `PUBLIC_SCHEME` を読まず、aud は `API_BASE_URL` そのものになる。
 
 | アプリ | 変数 | 本番の値の例 |
 | --- | --- | --- |

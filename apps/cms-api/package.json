@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@sandbox/resource-server": "workspace:*",
+    "@sandbox/api-core": "workspace:*",
     "tsx": "catalog:"
   },
   "devDependencies": {

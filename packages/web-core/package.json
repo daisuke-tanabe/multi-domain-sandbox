@@ -1,5 +1,5 @@
 {
-  "name": "@sandbox/resource-server",
+  "name": "@sandbox/web-core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,16 +12,15 @@
   },
   "dependencies": {
     "@hono/node-server": "catalog:",
-    "@hono/zod-validator": "catalog:",
+    "@sandbox/oidc-client": "workspace:*",
     "@sandbox/shared": "workspace:*",
     "hono": "catalog:",
-    "pg": "catalog:",
-    "ulid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@sandbox/api-core": "workspace:*",
+    "@sandbox/auth-api": "workspace:*",
     "@types/node": "catalog:",
-    "@types/pg": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

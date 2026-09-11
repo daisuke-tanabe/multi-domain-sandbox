@@ -20,7 +20,7 @@ const envSchema = z
     BASE_HOST: z.string().min(1),
     API_BASE_URL: z.string().url(),
   })
-  .transform((env): BffConfig => ({
+  .transform((env): WebCoreConfig => ({
     port: env.PORT,
     publicScheme: env.PUBLIC_SCHEME,
     issuer: env.ISSUER,
@@ -37,7 +37,7 @@ const envSchema = z
     },
   }));
 
-export interface BffConfig {
+export interface WebCoreConfig {
   readonly port: number;
   readonly publicScheme: "http" | "https";
   readonly issuer: string;
@@ -48,7 +48,10 @@ export interface BffConfig {
   readonly service: ServiceConfig;
 }
 
-export function loadBffConfig(component: string, env: NodeJS.ProcessEnv = process.env): BffConfig {
+export function loadWebCoreConfig(
+  component: string,
+  env: NodeJS.ProcessEnv = process.env,
+): WebCoreConfig {
   return parseEnv(component, envSchema, env);
 }
 
@@ -63,7 +66,7 @@ export interface ClientResolvers {
  * 例 tanaka.crm.localhost:3001 → service crm, tenant tanaka
  */
 export function createClientResolvers(
-  config: Pick<BffConfig, "publicScheme" | "baseHost" | "service">,
+  config: Pick<WebCoreConfig, "publicScheme" | "baseHost" | "service">,
 ): ClientResolvers {
   const suffix = `.${config.baseHost.toLowerCase()}`;
   return {
