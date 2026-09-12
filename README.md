@@ -24,13 +24,13 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | ディレクトリ | 役割 | ローカルホスト |
 | --- | --- | --- |
 | `apps/auth-api` | OpenID Provider。認可、Token 発行、SSO Session、サービス向けの管理 API。auth-web の SPA を同一オリジンで配り、SPA 向けに `/api/login` `/api/portal` `/api/logout` の JSON を返す。フォーム POST の `/login` `/logout` はここが受ける | http://auth.localhost:3000 |
-| `apps/auth-web` | auth の画面。React Router の SPA で、ログイン、ポータル、Global Logout の確認と完了を描く。サーバーは持たず auth-api が配る。`packages/web-ui` からは `styles.css` と `Notice` だけを使う | auth-api と同じオリジン |
-| `apps/crm-web` | CRM の Tenant Web Application。React Router の SPA と薄い BFF。1 プロセスで CRM の全テナントのホストを受ける。`src/main.ts` は `startWebCore("crm-web")` を呼ぶだけで、`app/` にホーム、エンドユーザー、管理アカウントの画面を持つ | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
+| `apps/auth-web` | auth の画面。React Router の SPA で、`app/features/` の login、portal、logout がログイン、ポータル、Global Logout の確認と完了を描く。サーバーは持たず auth-api が配る。`packages/web-ui` からは `styles.css` と shadcn/ui の部品、`Notice` を使い、BFF 向けの通信は使わない | auth-api と同じオリジン |
+| `apps/crm-web` | CRM の Tenant Web Application。React Router の SPA と薄い BFF。1 プロセスで CRM の全テナントのホストを受ける。`src/main.ts` は `startWebCore("crm-web")` を呼ぶだけで、`app/features/` にホーム、エンドユーザー、管理アカウントの feature を持つ。エンドユーザーの feature はルート、API 呼び出し、フォーム、一覧を同じディレクトリに置く | http://tanaka.crm.localhost:3001 / http://suzuki.crm.localhost:3001 |
 | `apps/crm-api` | CRM の Resource Server。`definition.ts` に役割と権限、`end-users/` にエンドユーザーの CRUD とマスキング。`main.ts` は定義と routes を `startApiCore` に渡す | http://api.crm.localhost:3002 |
-| `apps/cms-web` | CMS の Tenant Web Application。crm-web と同じ構成で、`app/` にホーム、投稿、管理アカウントの画面を持つ | http://tanaka.cms.localhost:3003 / http://suzuki.cms.localhost:3003 |
+| `apps/cms-web` | CMS の Tenant Web Application。crm-web と同じ構成で、`app/features/` にホーム、投稿、管理アカウントの feature を持つ | http://tanaka.cms.localhost:3003 / http://suzuki.cms.localhost:3003 |
 | `apps/cms-api` | CMS の Resource Server。`definition.ts` に役割と権限、`posts/` に投稿の CRUD | http://api.cms.localhost:3004 |
 | `packages/web-core` | `apps/*-web` の BFF 本体。`/auth/*` の受け口、SPA に状態を渡す `/session`、API への中継 `/api/*`、SPA の配信、エラー画面、設定スキーマ `config.ts`、起動関数 `start.ts`、テストを持つ。Token をブラウザへ出さない | |
-| `packages/web-ui` | `apps/*-web` が共有する React コード。BFF との通信 `api.ts`、ルートの clientLoader と共通の枠 `shell.tsx`、CRM と CMS で同じ管理アカウント画面 `members-page.tsx`、`styles.css` | |
+| `packages/web-ui` | `apps/*-web` が共有する React コード。`lib/` に BFF との通信 `api.ts`、ルートの clientLoader `shell.ts`、書き込みの `use-action.ts`、`components/` に共通の枠 `app-shell.tsx` と shadcn/ui の部品 `ui/`、`features/` にホームと CRM と CMS で同じ管理アカウント画面、Tailwind CSS v4 の入口 `styles.css` | |
 | `packages/api-contract` | HTTP のリクエストとレスポンスの zod スキーマと型。サーバーの zValidator、SPA の型と受信検証、フォーム検証で同じスキーマを使う。`core` `crm` `cms` `auth` `web` に分け、依存は zod だけ | |
 | `packages/api-core` | `apps/*-api` のフレームワーク。`ServiceDefinition` で役割と権限を宣言させ、Token 検証、自サービス DB の member 行の解決、権限の確定、`/v1/me`、管理アカウントの `/v1/members`、`MemberRepository`、auth-api の管理 API を呼ぶ `AuthAdminClient`、RLS 用の `withTenant`、設定スキーマ、起動関数を持つ。auth-api は使わない | |
 | `packages/shared` | Result 型、KV ストアと StoreFactory、PKCE、AES-GCM、secret の SHA-256 ハッシュ、redirect_uri テンプレート、JWT と JWKS 取得、Cookie、ロガー、環境変数の検証、pg 接続、識別子の enum、セッション期限、OIDC のワイヤ契約、SPA の配信と CSP `spa.ts`。web-core と auth-api が同じ `mountSpa` を使う | |
@@ -40,7 +40,7 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | `tools/provision` | RDS の identity / crm / cms のロール、スキーマ、シードの投入と Cognito テストユーザー作成。ECS の一回限りタスクで冪等。SQL は `db/<name>/init` を共用する | |
 | `terraform` | AWS 構成。ECS Fargate + ALB、RDS、ElastiCache、Cognito、Route 53、ACM | |
 | `scripts/smoke.ts` | 起動中のサーバーに対する実 HTTP の疎通確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービスへの SSO、サービスごとの役割と権限、未契約サービスの拒否まで確認する | |
-| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。サービスと auth の SPA を実際に描画し、画面の文字列が出るまで待って確認する | |
+| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。サービスと auth の SPA を実際に描画し、画面の文字列が出るまで待って確認する。フォームの検証エラー、作成、削除まで 15 項目 | |
 | `scripts/deploy.sh` 他 | AWS へのビルドと apply。手順は [docs/deploy.md](./docs/deploy.md) | |
 
 ## 前提
@@ -223,7 +223,7 @@ auth-api の管理 API。Back Channel 専用で `Authorization: Basic base64(cli
 
 ## 画面
 
-`*-web` の画面は React Router v8 の SPA で、`apps/<service>-web/app` にある。BFF は Token を持ったまま `/session` でログイン状態と CSRF トークンだけを渡し、SPA は `/api/*` 経由でサービスの API を呼ぶ。ブラウザに Token は届かない。
+`*-web` の画面は React Router v8 の SPA で、`apps/<service>-web/app/features` に feature 単位で置く。UI 部品は shadcn/ui、スタイルは Tailwind CSS v4、フォームは react-hook-form で、検証には `packages/api-contract` の入力スキーマをそのまま使う。見た目の規約は [DESIGN.md](./DESIGN.md)、文言は [CONTENT.md](./CONTENT.md)。BFF は Token を持ったまま `/session` でログイン状態と CSRF トークンだけを渡し、SPA は `/api/*` 経由でサービスの API を呼ぶ。ブラウザに Token は届かない。
 
 | 画面 | パス | 内容 |
 | --- | --- | --- |
@@ -302,7 +302,7 @@ pnpm test
 pnpm smoke
 ```
 
-実 Chrome で SPA を描画して確認する場合は次を使う。ログイン後のホーム、エンドユーザー一覧、別テナントと別サービスへの SSO、投稿一覧、未契約サービスの拒否、Tenant Logout、ポータルからの SSO と Global Logout まで 11 項目を確認する。SPA は読み込み後に `/session` と `/api` を読んでから描くため、画面の文字列が出るまで待って判定する。auth の画面も同じで、「Sandbox にログイン」が出てからフォームを埋め、ポータルとログアウト確認も文字列を待つ。
+実 Chrome で SPA を描画して確認する場合は次を使う。ログイン後のホーム、エンドユーザー一覧、空のエンドユーザーフォームを送って項目ごとに検証エラーが出ること、入力して一覧に追加されること、別テナントと別サービスへの SSO、投稿一覧、未契約サービスの拒否、Tenant Logout、ポータルからの SSO と Global Logout まで 14 項目を確認する。SPA は読み込み後に `/session` と `/api` を読んでから描くため、画面の文字列が出るまで待って判定する。auth の画面も同じで、「Sandbox にログイン」が出てからフォームを埋め、ポータルとログアウト確認も文字列を待つ。
 
 ```bash
 pnpm chrome-check

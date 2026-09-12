@@ -83,11 +83,11 @@ export function describeError(error: unknown): string {
   if (error instanceof ApiError) {
     switch (error.code) {
       case "forbidden":
-        return "この操作を行う権限がありません";
+        return "権限がありません";
       case "not_found":
         return "対象が見つかりません";
       case "invalid_request":
-        return "入力内容が正しくありません";
+        return "入力内容を確認してください";
       case "not_contracted":
         return "このテナントはこのサービスを契約していません";
       case "cannot_remove_self":
@@ -95,7 +95,7 @@ export function describeError(error: unknown): string {
       case "temporarily_unavailable":
         return "一時的なエラーです。しばらくしてから再試行してください";
       default:
-        return `エラーが発生しました (${error.code})`;
+        return `エラーが発生しました。${error.code}`;
     }
   }
   return "エラーが発生しました";

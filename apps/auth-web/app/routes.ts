@@ -1,7 +1,8 @@
 import { index, route, type RouteConfig } from "@react-router/dev/routes";
 
+// feature ごとにルートモジュールと部品を同じディレクトリに置く
 export default [
-  index("routes/portal.tsx"),
-  route("login", "routes/login.tsx"),
-  route("logout", "routes/logout.tsx"),
+  index("features/portal/portal.route.tsx"),
+  route("login", "features/login/login.route.tsx"),
+  route("logout", "features/logout/logout.route.tsx"),
 ] satisfies RouteConfig;

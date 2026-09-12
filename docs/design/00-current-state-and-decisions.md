@@ -12,6 +12,7 @@ Identity DB の主キーはサロゲート ID、redirect_uri はサービスご�
 DB はサービスごとに分け、identity は「入れるか」だけを持つ。役割と権限はサービスの DB の members と permission_overrides に置き、Token には載せない。招待はサービスの画面から auth-api の管理 API を経由して行い、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。判断事項D17。
 Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF が `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担う。SPA は Token を見ない。判断事項D18。
 auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api が同一オリジンで配る。資格情報の送信は HTML フォーム POST を維持し、エラー画面はサーバー HTML のまま。判断事項D19。
+フロントは shadcn/ui + Tailwind v4 + react-hook-form で、画面は feature 単位のコロケーション。型共有は packages/api-contract の zod スキーマ。バックエンドはクリーンアーキテクチャの 4 層。判断事項D20。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -88,6 +89,7 @@ auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api �
 | D17 | DB はサービスごとに分け、PostgreSQL のコンテナも分ける。identity は「入れるか」だけを持ち、役割と権限はサービスの DB の members と permission_overrides に置く。招待はサービスの画面から auth-api の管理 API を経由し、identity にいない人はメールで事前作成して初回ログイン時に紐付ける。画面は当面プレースホルダにし、D18 で SPA にした。2026-09-11 決定 |
 | D18 | `*-web` の画面は React Router v8 の SPA モード。`packages/web-core` の BFF は `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担い、Token をブラウザへ出さない。共通の React コードは `packages/web-ui`。2026-09-11 決定。auth の画面は D19 で SPA にした |
 | D19 | auth の画面も React Router v8 の SPA。apps/auth-web を auth-api が同一オリジンで配る。資格情報の送信は HTML フォーム POST を維持。エラー画面はサーバー HTML のまま。2026-09-12 決定 |
+| D20 | フロントは shadcn/ui + Tailwind v4 + react-hook-form、feature 単位のコロケーション。型共有は packages/api-contract の zod スキーマ。バックエンドはクリーンアーキテクチャの 4 層。2026-09-12 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -374,6 +376,41 @@ D18 の時点では auth-api のログイン、ポータル、Global Logout の�
 - `POST /logout` は Global Logout を実行して Cookie を消し、`/logout?client_id=&tenant=` へ 303。SPA が `/api/logout` の `authenticated: false` と `returnTo` で完了画面を描く
 - `views/pages.ts` には `errorPage` だけが残る
 
+### D20. フロントの UI 基盤とディレクトリ構成、型共有
+
+問題点。D18 と D19 の SPA は手書きの CSS クラスと素の `<form>` で画面を組み、`apps/*-web/app/routes/*.tsx` に画面を並べていた。画面が増えると部品の見た目が揃わず、フォームの検証が画面ごとに別実装になる。サーバーは契約の zod スキーマで入力を検証するのに、SPA は送るまで誤りを知れない。1 つの画面に関わるルート、API 呼び出し、フォーム、一覧が `routes/` と `packages/web-ui` に散らばり、feature を足すときに触る場所が定まらない。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| UI 部品 | A. shadcn/ui。new-york、radix-ui、CSS 変数、neutral テーマ、ダークモードなし。実体は `packages/web-ui/src/components/ui` に置き 3 つの `*-web` で共有する | 部品のコードをリポジトリに持ち、依存の更新に振り回されない。`pnpm dlx shadcn add` で足せる。auth-web も同じ部品を使える | 生成物の `@/` import を相対パスに直す手間がある |
+| UI 部品 | B. 手書きの CSS クラスを続ける | 依存が増えない | 画面ごとに見た目が揺れる。フォームやテーブルの部品を自前で育てることになる |
+| スタイル | A. Tailwind CSS v4。設定は `styles.css` の `@theme` と CSS 変数だけで、tailwind.config は作らない。各 `*-web` の Vite に `@tailwindcss/vite` を足し、`root.tsx` で `styles.css` を副作用 import する | shadcn/ui の前提と一致する。クラス検出は `@source` で `packages/web-ui` まで届く | クラス名が JSX に並ぶ |
+| スタイル | B. CSS Modules | クラス名が短い | shadcn/ui と組み合わせられない |
+| フォーム | A. react-hook-form と `@hookform/resolvers/zod`。resolver には `packages/api-contract` の入力スキーマをそのまま渡す。エラーは項目の直下、サーバーエラーは `Alert`。文言は `z.locales.ja()` で日本語にする | サーバーと同じスキーマで送る前に検証できる。独自の検証を書かない。契約を変えると画面の検証も追従する | auth-web のログインとログアウトは資格情報を fetch で送らない D19 の決定により、素の HTML フォーム POST のまま残す |
+| フォーム | B. 素の `<form>` と `FormData` | 依存が増えない | 検証がサーバー往復になる。項目ごとのエラー表示を自前で組む |
+| ディレクトリ | A. feature 単位のコロケーション。`apps/*-web/app/features/<name>/` に `<name>.route.tsx` `<name>.api.ts` フォームと一覧を置き、`routes.ts` がそれを指す。`packages/web-ui` も `lib/` `components/` `features/` に分ける | 1 つの画面に関わるものが 1 か所に集まる。feature を足すときに触る場所が定まる。api 側の feature 先行の切り方と揃う | ルートモジュールの型は `./+types/<name>.route` から読む |
+| ディレクトリ | B. `routes/` `components/` `api/` のように種類で切る | 種類ごとに探しやすい | 1 つの画面の変更が複数ディレクトリにまたがる |
+| 型共有 | A. `packages/api-contract` の zod スキーマだけで共有する。サーバーは zValidator と `satisfies`、SPA は受信時の parse と resolver で同じスキーマを使う | 型と検証が 1 か所。契約パッケージは zod 以外に依存しない | 役割名のようにサービス定義で決まる制約は契約では `z.string()` にし、サーバー側で `refine` を重ねる |
+| 型共有 | B. tRPC や OpenAPI 生成 | 呼び出しの型が自動で付く | Hono と React Router の両方に生成物や実行時の依存が増える。BFF の `/api/*` 中継と相性が悪い |
+| バックエンド | A. クリーンアーキテクチャの 4 層を維持する。domain / application / infrastructure / interface | D17 以降の構成を変えない。`scripts/check-layers.ts` が逆向きの import を検出する | なし |
+
+決定はすべて A。理由は次のとおり。
+
+- 部品の実体をリポジトリに持つことで、3 つの `*-web` の見た目を 1 か所で揃えられる
+- 契約の入力スキーマを resolver に渡すことで、サーバーと SPA の検証が 1 つになり、契約の変更が画面に追従する
+- feature 単位に置くことで、api 側の feature 先行の切り方と web 側が揃い、サービスを足すときに触る場所が定まる
+- 型共有を zod スキーマに限ることで、契約パッケージの依存を増やさず、BFF の中継をそのまま使える
+
+具体化。
+
+- `packages/web-ui/src` は `lib/api.ts` `lib/shell.ts` `lib/use-action.ts` `lib/zod-locale.ts`、`components/app-shell.tsx` `components/page-header.tsx` `components/notice.tsx` `components/ui/*`、`features/home/` `features/members/`、`styles.css`、`index.ts` を持つ。`components.json` は `packages/web-ui` に置き、生成物の `@/` import は相対パスに直す。クラス名の結合は `cn` パッケージで、`@sandbox/web-ui` から再 export する
+- `apps/crm-web/app` は `root.tsx` `routes.ts` と `features/home/` `features/end-users/` `features/members/`、`apps/cms-web/app` は `features/posts/`、`apps/auth-web/app` は `features/portal/` `features/login/` `features/logout/` と `lib/api.ts` を持つ。ルートモジュールは `*.route.tsx` に統一する
+- `lib/api.ts` は `loadSession` `api(schema, path, init)` `apiVoid` `loadMe` `describeError` `redirectToLogin`。`lib/shell.ts` は `loadShell` `useShell` `useShellData` `usePermissions`。`lib/use-action.ts` の `useAction` は書き込みを実行して loader を再検証し、エラーと送信中の状態を持つ
+- 各 `*-web` の `root.tsx` は `styles.css` を副作用 import し、サービスの app は `configureZodLocale()` を先頭で呼ぶ。`vite.config.ts` は `@tailwindcss/vite` を足す
+- 手書きの CSS クラスと `packages/web-ui/src/{api.ts,shell.tsx,members-page.tsx}`、`apps/*/app/routes/*.tsx`、`apps/auth-web/app/api.ts` は削除した
+- 画面の文言のうちテストと `scripts/chrome-check.ts` が参照するものは `CONTENT.md` の「変えてはいけない文言」に列挙し、変えるときはスクリプトも同じコミットで直す。見た目の規約は `DESIGN.md`
+- `scripts/chrome-check.ts` は空のエンドユーザーフォームを送って項目ごとに `[data-slot=field-error]` が出ること、入力して一覧に加わることを確認する項目を加え 14 項目になった。vitest は 136 件のまま
+
 ## 5. 移行計画
 
 グリーンフィールドのため、構築順序として記述する。
@@ -390,5 +427,6 @@ D18 の時点では auth-api のログイン、ポータル、Global Logout の�
 | 7 | サービスごとの DB、管理 API による招待、サービス固有の API | 招待した人が初回ログインで紐付き、サービスの画面から役割と権限を変えられる |
 | 8 | React Router v8 の SPA と薄い BFF。エンドユーザー、投稿、招待、権限編集の画面。判断事項D18 | 画面から 7 の操作ができる |
 | 9 | auth の画面を `apps/auth-web` の SPA にし、auth-api が配る。判断事項D19 | ログイン、ポータル、Global Logout が SPA で通り、E8 と E11 が通る |
+| 10 | shadcn/ui と Tailwind CSS v4、react-hook-form への置き換えと feature 単位のコロケーション。判断事項D20 | `pnpm chrome-check` の 14 項目が通り、空のフォームで項目ごとの検証エラーが出る |
 
 既存システムがある適用先では、フェーズ2完了後に既存ログインを `/auth/login` へ差し替え、Cognito Tokenを直接使う箇所をAPI Server経由へ置き換える工程をフェーズ3と4の間に挟む。

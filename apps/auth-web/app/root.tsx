@@ -7,10 +7,8 @@ import {
   Scripts,
   ScrollRestoration,
 } from "react-router";
-import styles from "@sandbox/web-ui/styles.css?url";
+import "@sandbox/web-ui/styles.css";
 import type { Route } from "./+types/root";
-
-export const links: Route.LinksFunction = () => [{ rel: "stylesheet", href: styles }];
 
 export function Layout({ children }: { children: ReactNode }) {
   return (
@@ -24,7 +22,9 @@ export function Layout({ children }: { children: ReactNode }) {
         <Links />
       </head>
       <body>
-        <main className="auth">{children}</main>
+        <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center gap-6 px-6 py-12">
+          {children}
+        </main>
         <ScrollRestoration />
         <Scripts />
       </body>
@@ -37,21 +37,23 @@ export default function App() {
 }
 
 export function HydrateFallback() {
-  return <p className="muted">読み込み中...</p>;
+  return <p className="text-sm text-muted-foreground">読み込み中...</p>;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   if (isRouteErrorResponse(error)) {
     return (
-      <h1>
+      <h1 className="text-2xl font-semibold">
         {error.status} {error.statusText}
       </h1>
     );
   }
   return (
     <>
-      <h1>エラーが発生しました</h1>
-      <p className="muted">{error instanceof Error ? error.message : String(error)}</p>
+      <h1 className="text-2xl font-semibold">エラーが発生しました</h1>
+      <p className="text-sm text-muted-foreground">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
     </>
   );
 }

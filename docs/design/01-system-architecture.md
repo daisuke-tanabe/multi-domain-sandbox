@@ -62,7 +62,7 @@ flowchart TB
     ApiCms -- "JWKS取得<br/>管理 API で招待 / 解除" --> Auth
 ```
 
-サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。web は React Router v8 の SPA と薄い BFF で、BFF は `packages/web-core`、共通の React コードは `packages/web-ui` で共有する。crm-web / cms-web の `src/main.ts` は `startWebCore` を呼ぶだけで、`app/` にサービス固有の画面を持つ。判断事項D18。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api は `definition.ts` で役割と権限を宣言し、サービス固有の feature を domain / application / infrastructure / interface の 4 層で持ち、routes を `startApiCore` に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。HTTP のリクエストとレスポンスの形は `packages/api-contract` の zod スキーマで 1 か所に定め、サーバーの検証と SPA の型と受信検証で共有する。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
+サンドボックスではサービスごとに Tenant Web Application と API Server を 1 プロセスずつ持つ。crm-web / crm-api / cms-web / cms-api の 4 プロセスで、各 web は自サービスの全テナントの Host を受ける。web は React Router v8 の SPA と薄い BFF で、BFF は `packages/web-core`、共通の React コードは `packages/web-ui` で共有する。crm-web / cms-web の `src/main.ts` は `startWebCore` を呼ぶだけで、`app/features/` にサービス固有の画面を feature 単位で持つ。UI 部品は shadcn/ui、スタイルは Tailwind CSS v4、フォームは react-hook-form と `packages/api-contract` の入力スキーマで組む。判断事項D18、D20。api は `packages/api-core` をフレームワークとして使い、crm-api / cms-api は `definition.ts` で役割と権限を宣言し、サービス固有の feature を domain / application / infrastructure / interface の 4 層で持ち、routes を `startApiCore` に渡す。環境変数のスキーマは `packages/web-core/src/config.ts` と `packages/api-core/src/config.ts` にある。HTTP のリクエストとレスポンスの形は `packages/api-contract` の zod スキーマで 1 か所に定め、サーバーの検証と SPA の型と受信検証で共有する。サービスを別ドメインに分けても構成は変わらない。判断事項D14。
 auth の画面も `apps/auth-web` の React Router SPA で、auth-api が同一オリジンで配る。auth-web はサーバーを持たず、SPA は `/api/login` `/api/portal` `/api/logout` の JSON で材料を受け取り、資格情報と Global Logout は HTML フォームの POST で送る。SPA の配信と CSP は `packages/shared/src/spa.ts` の `mountSpa` と `spaCsp` で web-core と共有する。判断事項D19。
 DB もサービスごとに分かれる。ローカルは docker compose の `db-identity` 5432、`db-crm` 5433、`db-cms` 5434 の 3 コンテナで、初期化 SQL は `db/identity/init` `db/crm/init` `db/cms/init`。判断事項D17。
 
@@ -224,7 +224,7 @@ client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-P
 | 既存テナントの契約追加 | tenant_services を追加し、そのサービスの最初の管理者を tenant_service_members と members に登録する | なし |
 | 利用者の招待 | サービスの画面から `POST /v1/members` に email と role を送る。サービスの API が auth-api の管理 API で tenant_service_members に「入れる」を登録し、自 DB の members に役割付きの行を作る。外すときは `DELETE /v1/members/:userId` で両方を消す | なし。同テナントの他サービスには影響しない |
 | 権限の個別調整 | サービスの画面から `PUT /v1/members/:userId/permissions` で permission_overrides を置き換える。Auth Server には登録しない | なし。次のリクエストから反映 |
-| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services を登録。`db/<service>/init` に members と permission_overrides と業務テーブルを持つ DB を用意。`apps/<service>-web` を追加して `packages/web-core` を環境変数で起動し、`app/routes` にサービス固有の画面を置く。`apps/<service>-api` に `definition.ts` で役割と権限を宣言して routes を書き `packages/api-core` の `startApiCore` に渡す。provision の `SERVICES` に追加 | なし |
+| 新サービス | oidc_clients に client_id、audience、`https://{tenant}.<service>.sandbox.com/auth/callback` の redirect_uri_template、backchannel_logout_uri を登録。oidc_client_secrets に active な secret を登録。契約テナント分の tenant_services を登録。`db/<service>/init` に members と permission_overrides と業務テーブルを持つ DB を用意。`apps/<service>-web` を追加して `packages/web-core` を環境変数で起動し、`app/features` にサービス固有の画面を置く。`apps/<service>-api` に `definition.ts` で役割と権限を宣言して routes を書き `packages/api-core` の `startApiCore` に渡す。provision の `SERVICES` に追加 | なし |
 | client_secret のローテーション | oidc_client_secrets に新 secret を active で追加 → サービスの `CLIENT_SECRET` を差し替え → 旧行を revoked に更新 | なし。切替中は新旧どちらでも `/token` が通る |
 | 管理画面 | 専用clientを登録し、管理用scopeを付与 | なし |
 
@@ -236,7 +236,7 @@ client_secret はローカルでは `crm-v3R_5OBDCC6k8EeDKB6l5YltYVTSeJQZxpU-2-P
 | --- | --- | --- |
 | 言語 | TypeScript | リポジトリ標準 |
 | HTTPフレームワーク | Hono | 軽量。BFF / Auth / API を同一スタックで書ける |
-| 画面 | React Router v8 の SPA モード。ビルドは Vite。`*-web` と auth-web で同じ | BFF と auth-api は静的ファイルを配るだけで React の実行環境を持たない。他プロジェクトの SPA に持ち込める |
+| 画面 | React Router v8 の SPA モード。ビルドは Vite。`*-web` と auth-web で同じ。UI 部品は shadcn/ui、スタイルは Tailwind CSS v4、フォームは react-hook-form | BFF と auth-api は静的ファイルを配るだけで React の実行環境を持たない。他プロジェクトの SPA に持ち込める。部品の実体を `packages/web-ui` に持ち、検証は契約の zod スキーマを流用する。判断事項D20 |
 | モノレポ | pnpm workspace | 雛形標準 |
 | JWT / JWKS | jose | 標準準拠 |
 | Cognito連携 | アダプタで抽象化 | ローカルはモック、本番は @aws-sdk/client-cognito-identity-provider |

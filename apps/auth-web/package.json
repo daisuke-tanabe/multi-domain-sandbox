@@ -10,17 +10,22 @@
     "typecheck": "react-router typegen && tsc -p tsconfig.app.json"
   },
   "dependencies": {
+    "@hookform/resolvers": "catalog:",
     "@sandbox/api-contract": "workspace:*",
     "@sandbox/web-ui": "workspace:*",
     "isbot": "^5",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "react-router": "catalog:"
+    "react-hook-form": "catalog:",
+    "react-router": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@react-router/dev": "catalog:",
+    "@tailwindcss/vite": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:"
   }

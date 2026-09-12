@@ -1,5 +1,5 @@
 import { loadMembers, MembersPage } from "@sandbox/web-ui";
-import type { Route } from "./+types/members";
+import type { Route } from "./+types/members.route";
 
 export const clientLoader = loadMembers;
 

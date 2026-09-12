@@ -7,11 +7,11 @@ import {
   Scripts,
   ScrollRestoration,
 } from "react-router";
-import { AppShell, loadShell } from "@sandbox/web-ui";
-import styles from "@sandbox/web-ui/styles.css?url";
+import { AppShell, configureZodLocale, loadShell } from "@sandbox/web-ui";
+import "@sandbox/web-ui/styles.css";
 import type { Route } from "./+types/root";
 
-export const links: Route.LinksFunction = () => [{ rel: "stylesheet", href: styles }];
+configureZodLocale();
 
 export const clientLoader = loadShell;
 
@@ -51,23 +51,25 @@ export default function App() {
 
 // build/client/index.html はこれで作られ、clientLoader が終わるまで表示される
 export function HydrateFallback() {
-  return <p className="muted">読み込み中...</p>;
+  return <p className="p-8 text-sm text-muted-foreground">読み込み中...</p>;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   if (isRouteErrorResponse(error)) {
     return (
-      <main className="shell">
-        <h1>
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        <h1 className="text-2xl font-semibold">
           {error.status} {error.statusText}
         </h1>
       </main>
     );
   }
   return (
-    <main className="shell">
-      <h1>エラーが発生しました</h1>
-      <p className="muted">{error instanceof Error ? error.message : String(error)}</p>
+    <main className="mx-auto max-w-5xl px-6 py-8">
+      <h1 className="text-2xl font-semibold">エラーが発生しました</h1>
+      <p className="text-sm text-muted-foreground">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
     </main>
   );
 }

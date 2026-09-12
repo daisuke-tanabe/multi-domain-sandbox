@@ -27,3 +27,14 @@ export async function getJson<T extends z.ZodType>(schema: T, path: string): Pro
   }
   return schema.parse(body);
 }
+
+/** URL のクエリのうち、指定したキーだけを次のクエリに引き継ぐ */
+export function pickQuery(url: string, keys: ReadonlyArray<string>): URLSearchParams {
+  const source = new URL(url).searchParams;
+  const params = new URLSearchParams();
+  for (const key of keys) {
+    const value = source.get(key);
+    if (value !== null) params.set(key, value);
+  }
+  return params;
+}

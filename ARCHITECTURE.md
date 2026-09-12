@@ -20,7 +20,7 @@ packages/api-contract HTTP のリクエストとレスポンスの zod スキー
 packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限、SPA の配信 (spa.ts)
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
 packages/web-core     apps/*-web の BFF 本体。/auth/* の受け口、/session、/api/* の中継、SPA の配信、エラー画面、設定スキーマ、起動関数を持つ
-packages/web-ui       apps/*-web が共有する React コード。BFF との通信、ルートの clientLoader、共通の枠、管理アカウント画面、スタイル
+packages/web-ui       apps/*-web が共有する React コード。lib/ に BFF との通信、ルートの clientLoader、書き込みの useAction、components/ に共通の枠と shadcn/ui の部品 components/ui、features/ にホームと管理アカウントの画面、styles.css に Tailwind の入口
 packages/api-core     apps/*-api のフレームワーク。auth-api は使わない。ServiceDefinition、Token 検証、member 解決と権限の確定、/v1/me と /v1/members、MemberRepository、AuthAdminClient、withTenant、設定スキーマ、起動関数を持つ
 tools/provision       AWS 専用。identity と各サービスの DB のロール、スキーマ、シードを冪等に適用し、Cognito テストユーザーを作る。SQL は db/<name>/init を共用する
 db/identity, db/crm, db/cms  各 DB の初期化 SQL とシード。DB はサービスごとに分かれ、コンテナも分かれる
@@ -32,13 +32,13 @@ apps/crm-web / cms-web は BFF の起動口と、そのサービスの画面だ�
 ```text
 apps/crm-web/
   src/main.ts             startWebCore("crm-web") を呼ぶだけ。設定スキーマと依存の組み立ては packages/web-core/src/config.ts と start.ts
-  app/root.tsx            Layout、clientLoader = loadShell、HydrateFallback、ErrorBoundary
-  app/routes.ts           ルート定義
-  app/routes/home.tsx     ホーム。役割と権限の表
-  app/routes/end-users.tsx  CRM 固有の画面。cms-web は posts.tsx
-  app/routes/members.tsx  packages/web-ui の MembersPage を置くだけ
+  app/root.tsx            Layout、clientLoader = loadShell、HydrateFallback、ErrorBoundary。styles.css の import と configureZodLocale() の呼び出し
+  app/routes.ts           ルート定義。feature ごとの *.route.tsx を指す
+  app/features/home/home.route.tsx      ホーム。packages/web-ui の HomePage を置くだけ
+  app/features/end-users/               CRM 固有の feature。end-users.route.tsx、end-users.api.ts、end-user-form.tsx、end-user-table.tsx。cms-web は features/posts/
+  app/features/members/members.route.tsx  packages/web-ui の MembersPage を置くだけ
   react-router.config.ts  ssr: false、appDirectory app、buildDirectory build
-  vite.config.ts          reactRouter プラグイン。127.0.0.1:5173 で待ち受け、cms-web は 5174
+  vite.config.ts          tailwindcss と reactRouter プラグイン。127.0.0.1:5173 で待ち受け、cms-web は 5174
   tsconfig.json           src 用
   tsconfig.app.json       app 用。bundler 解決、react-jsx、.react-router/types
 ```
@@ -55,7 +55,7 @@ apps/crm-api / cms-api は `definition.ts` でサービスの役割と権限を 
 | ランタイム | Node.js 24 | `.tool-versions` で固定 |
 | 言語 | TypeScript。strict | `tsc --noEmit` で型検査。サーバーは tsx で直接実行 |
 | HTTP | Hono + @hono/node-server | 全アプリ共通 |
-| 画面 | React Router v8 の SPA モード。ビルドは Vite | `apps/*-web/app` に置き、`react-router build` の `build/client` を BFF が配る。共通の React コードは `packages/web-ui` |
+| 画面 | React Router v8 の SPA モード。ビルドは Vite。UI 部品は shadcn/ui、スタイルは Tailwind CSS v4、フォームは react-hook-form | `apps/*-web/app` に置き、`react-router build` の `build/client` を BFF が配る。共通の React コードと shadcn/ui の部品は `packages/web-ui`。見た目の規約は `DESIGN.md` |
 | バリデーション | zod + @hono/zod-validator | システム境界の入力は必ずスキーマで検証する |
 | JWT / JWKS | jose | 自前実装禁止 |
 | DB | PostgreSQL 16 on Docker。pg ドライバで素の SQL | ORM は使わない |
@@ -95,7 +95,8 @@ web から api への呼び出しは公開 URL をそのまま使う。api は a
 - SPA は Token を見ない。Cookie 付きの同一オリジン fetch だけを行い、API は必ず `/api/*` 経由で呼ぶ。`API_BASE_URL` をブラウザに渡さない
 - `/api/*` はセッションがなければ 401 `unauthenticated`。GET / HEAD / OPTIONS 以外は `X-CSRF-Token` ヘッダが `/session` の `csrfToken` と一致しなければ 403。body は JSON のみ受け付け、それ以外は 415。上限は 64 KB。API がセッション切れを返したら 401 にし、SPA が `/auth/login?return_to=<現在のパス>` へ遷移して再ログインする
 - ルートの `clientLoader` は `packages/web-ui` の `loadShell` を使う。`/session` を読み、未ログインなら `/auth/login` へ送り、ログイン済みなら `/v1/me` を読んで `useShell` と `usePermissions` に渡す。`?logged_out=1` のときだけログアウト済み画面を出す
-- 共通の React コードは `packages/web-ui` に置く。BFF との通信 `api.ts`、枠と loader の `shell.tsx`、両サービス共通の `members-page.tsx`、`styles.css`。`apps/*-web/app` には routes とサービス固有の画面だけを置き、通信や CSRF の扱いを書かない
+- 共通の React コードは `packages/web-ui` に置く。BFF との通信 `lib/api.ts`、loader の `lib/shell.ts`、枠の `components/app-shell.tsx`、両サービス共通の `features/members/`、`styles.css`。`apps/*-web/app` には `routes.ts` と feature ディレクトリだけを置き、通信や CSRF の扱いを書かない。feature は `<name>.route.tsx` `<name>.api.ts` と部品を同じディレクトリに持つ
+- フォームは react-hook-form と契約の入力スキーマ、UI 部品は shadcn/ui。詳細は `DESIGN.md`
 - 画面の出し分けは `/v1/me` の `permissions` で行う。ナビゲーションは `permission` を持つ項目を確定した権限で絞り、ボタンは該当する permission がなければ出さない。最終判定は API が行う
 - 静的配信では CSP の `script-src` を `'self'` と `index.html` のインラインスクリプトの sha256 ハッシュに限定し、`'unsafe-inline'` を使わない。`/assets/*` は immutable で長期キャッシュし、それ以外の GET は `index.html` を返す
 - Vite への中継は開発専用。`'unsafe-inline'` と Vite の origin および ws origin への `connect-src` を許すため、`PUBLIC_SCHEME=https` では `SPA_DIR` を必須にして中継モードで起動できないようにする
@@ -120,7 +121,7 @@ auth の画面は `apps/auth-web` の React Router SPA で描き、auth-api が�
 - ログイン失敗の理由はクエリの `error` に種類だけを載せ、文言は auth-api が `/api/login` で返す。ユーザー名やパスワードを URL に載せない
 - `/authorize` の不正な redirect_uri、CSRF 不一致、入力不正、404、500 は auth-api の `views/pages.ts` の最小 HTML で返す。SPA へリダイレクトして運ばない
 - SPA 向け JSON は `/api/` 配下に置き、`Cache-Control: no-store` を付ける。`/api/login` と `/api/logout` は `/login` `/logout` と同じレート制限にかける
-- 共通の React コードは `packages/web-ui` から `styles.css` と `Notice` だけを使う。BFF 向けの `api.ts` と `loadShell` は使わない
+- 共通の React コードは `packages/web-ui` から `styles.css`、`Notice`、shadcn の部品だけを使う。BFF 向けの `lib/api.ts` と `loadShell` は使わない
 
 ## API 契約
 
@@ -182,7 +183,7 @@ apps/auth-api/src/
 - main.ts と start.ts でのみ adapters を組み立てる
 - `*-api` の認証は `packages/api-core/src/usecases/resolve-tenant-context.ts` に置く。Host 確認、Bearer 検証、自サービス DB の member 行の取得と JIT 作成、上書きの適用による権限の確定までを usecase が行い、`auth/middleware.ts` はその Result を HTTP ステータスに写像するだけにする。identity DB は参照しない
 - `*-api` のサービス固有ルートは `apps/<service>-api/src/<resource>/routes.ts` と `repository.ts` に置く。routes は `requirePermission` で要求 permission を宣言し、repository は `withTenant` で `app.tenant_id` を設定したトランザクションの中で SQL を実行する
-- `*-web` の画面は `apps/<service>-web/app/routes/` に置き、BFF との通信は `packages/web-ui` の `api` と `loadShell` を経由する。画面から `fetch` を直接呼ばない
+- `*-web` の画面は `apps/<service>-web/app/features/` に置き、BFF との通信は `packages/web-ui` の `api` と `loadShell` を経由する。画面から `fetch` を直接呼ばない
 
 ## エラー規約
 

@@ -11,14 +11,23 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@hookform/resolvers": "catalog:",
     "@sandbox/api-contract": "workspace:*",
+    "class-variance-authority": "catalog:",
+    "cn": "0.2.6",
+    "lucide-react": "catalog:",
+    "radix-ui": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "react-router": "catalog:"
+    "react-hook-form": "catalog:",
+    "react-router": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "tailwindcss": "catalog:",
+    "tw-animate-css": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:"
   }

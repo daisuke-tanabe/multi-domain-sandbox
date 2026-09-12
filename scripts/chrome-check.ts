@@ -126,6 +126,16 @@ class Cdp {
     return href;
   }
 
+  public async waitForTextGone(text: string, timeoutMs = 8000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const body = String(await this.evaluate("document.body.innerText"));
+      if (!body.includes(text)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return false;
+  }
+
   /** SPA は load 後に /session と /api を読んでから描画するので、本文に文字列が出るまで待つ */
   public async waitForText(text: string, timeoutMs = 8000): Promise<string> {
     const deadline = Date.now() + timeoutMs;
@@ -200,6 +210,46 @@ try {
     endUsersBody.includes("taro.yamada@example.com") && endUsersBody.includes("そのまま表示"),
     String(await cdp.evaluate("location.href")),
   );
+
+  // react-hook-form と契約スキーマの検証。空のまま送ると項目ごとのエラーが出て、送信されない。ヘッダのログアウトフォームと区別する
+  await cdp.evaluate("document.querySelector('main form button[type=submit]').click()");
+  await cdp.waitForText("必要", 3000);
+  const fieldErrors = Number(
+    await cdp.evaluate("document.querySelectorAll('[data-slot=field-error]').length"),
+  );
+  check(
+    "empty end user form shows a validation error per field",
+    fieldErrors >= 3,
+    `${fieldErrors} errors`,
+  );
+
+  // 入力して追加すると一覧に出る。React の value 追跡を通すため native の setter で値を入れて input イベントを送る
+  const fill = (id: string, value: string) =>
+    cdp.evaluate(
+      `(() => { const el = document.getElementById(${JSON.stringify(id)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+    );
+  await fill("end-user-name", "確認 花子");
+  await fill("end-user-email", "hanako.kakunin@example.com");
+  await fill("end-user-phone", "090-0000-1234");
+  await cdp.evaluate("document.querySelector('main form button[type=submit]').click()");
+  const afterCreate = await cdp.waitForText("hanako.kakunin@example.com");
+  check(
+    "a valid end user form creates the user through the BFF",
+    afterCreate.includes("確認 花子") &&
+      Number(await cdp.evaluate("document.querySelectorAll('[data-slot=field-error]').length")) ===
+        0,
+    String(await cdp.evaluate("location.href")),
+  );
+
+  // 作ったユーザーは消して、繰り返し実行しても増えないようにする
+  const deleteCreated =
+    "(() => { const row = [...document.querySelectorAll('main table tbody tr')].find((tr) => tr.innerText.includes('hanako.kakunin@example.com')); row?.querySelector('button[data-variant=destructive]')?.click(); return row !== undefined; })()";
+  let afterDelete = false;
+  for (let attempt = 0; attempt < 5 && !afterDelete; attempt += 1) {
+    if ((await cdp.evaluate(deleteCreated)) !== true) break;
+    afterDelete = await cdp.waitForTextGone("hanako.kakunin@example.com", 3000);
+  }
+  check("deleting the created end user removes it from the table", afterDelete);
 
   await cdp.navigateWith(() => cdp.send("Page.navigate", { url: SUZUKI_CRM }));
   const suzukiBody = await cdp.waitForText("としてログインしています");

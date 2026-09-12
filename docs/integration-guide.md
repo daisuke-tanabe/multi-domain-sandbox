@@ -1187,14 +1187,14 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `packages/oidc-client` | サービス側に移植する OIDC Client 実装。Host からのサービス / テナント解決、tenant_slug 照合を含む |
 | `apps/auth-api/src/application/usecases` | Auth Server の判定ロジック。契約とサービスへの割り当ての確認順序はここ |
 | `packages/web-core` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、`/session`、`/api/*` の中継と CSRF 検証、SPA の配信と CSP、エラー画面。`src/spa.ts` に静的配信と開発時の中継 |
-| `packages/web-ui` | crm-web / cms-web が共有する React コード。`api.ts` の `/session` `/api/*` の呼び出しと 401 での再ログイン、`shell.tsx` のルート clientLoader と共通の枠、`members-page.tsx` の管理アカウント画面 |
+| `packages/web-ui` | crm-web / cms-web が共有する React コード。`lib/api.ts` の `/session` `/api/*` の呼び出しと 401 での再ログイン、`lib/shell.ts` のルート clientLoader、`components/app-shell.tsx` の共通の枠、`components/ui/` の shadcn/ui の部品、`features/members/` の管理アカウント画面、`styles.css` の Tailwind CSS v4 の入口 |
 | `packages/api-contract` | HTTP 境界の zod スキーマと型。api-core の `/v1/me` `/v1/members`、crm の end-users、cms の posts、auth-api の `/api/*` と `/admin/service-members`、BFF の `/session`。サーバーは zValidator と `satisfies` で、SPA は受信時の parse で同じスキーマを使う |
-| `apps/crm-web/app` `apps/cms-web/app` | React Router v8 の SPA。`root.tsx` `routes.ts` と、CRM はエンドユーザー、CMS は投稿の画面。`react-router.config.ts` は `ssr: false` |
+| `apps/crm-web/app` `apps/cms-web/app` | React Router v8 の SPA。`root.tsx` `routes.ts` と `features/` に feature 単位の画面。CRM は `features/end-users/`、CMS は `features/posts/` にルート、API 呼び出し、react-hook-form のフォーム、一覧を置く。`react-router.config.ts` は `ssr: false` |
 | `packages/api-core/src/application/resolve-tenant-context.ts` `packages/api-core/src/domain/service-definition.ts` | API 側の Host → aud 確認、Token 検証、自サービス DB の members の取得と既定の役割での作成、役割の既定に `permission_overrides` を重ねる権限の確定。`ServiceDefinition` で役割と権限の語彙を宣言する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
 | `packages/api-core/src/application/members.ts` `packages/api-core/src/interface/http/routes/members.ts` `packages/api-core/src/infrastructure/auth-admin-client.ts` | 管理アカウントの一覧、招待、役割変更、権限の上書き、削除。招待と削除は Auth Server の管理 API を client_secret_basic で呼ぶ |
 | `apps/crm-api/src/definition.ts` `apps/cms-api/src/definition.ts` | サービスごとの役割と権限の宣言。CRM は owner / admin / member / viewer と `end_users:*`、CMS は owner / editor / viewer と `posts:*` |
 | `scripts/smoke.ts` | 実 HTTP での受け入れ確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービス SSO と未契約サービスの拒否まで通す |
-| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する。CSP のような fetch では見えない問題を検出する |
+| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する 15 項目。フォームの検証エラー、作成、削除も含む。CSP のような fetch では見えない問題を検出する |
 
 ## 11. 用語
 

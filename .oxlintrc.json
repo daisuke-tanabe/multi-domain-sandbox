@@ -7,8 +7,20 @@
   },
   "rules": {
     "@typescript-eslint/no-explicit-any": "error",
-    "eqeqeq": ["error", "always", { "null": "ignore" }],
-    "no-console": "off"
+    "eqeqeq": [
+      "error",
+      "always",
+      {
+        "null": "ignore"
+      }
+    ],
+    "no-console": "off",
+    "import/no-unassigned-import": [
+      "warn",
+      {
+        "allow": ["**/*.css"]
+      }
+    ]
   },
   "ignorePatterns": ["node_modules", "dist", "coverage"]
 }

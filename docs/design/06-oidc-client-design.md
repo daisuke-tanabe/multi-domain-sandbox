@@ -181,7 +181,7 @@ GET /*
   SPA の配信。SPA_DIR があれば index.html と /assets/*、SPA_DEV_SERVER_URL があれば react-router dev への中継。両方なければ最小の HTML
 ```
 
-SPA 側は `packages/web-ui` の `api.ts` がこの契約を担う。`loadSession` が `/session` を読んで CSRF トークンを保持し、`api(path, init)` が `/api${path}` を `accept: application/json` で呼び、JSON body には `content-type` を、GET 以外には `x-csrf-token` を付ける。401 なら `/auth/login?return_to=<現在のパス>` へ遷移する。ルートの `clientLoader` は `loadShell` で、未ログインなら同じ遷移を行い、`?logged_out=1` のときだけログアウト済み画面を出す。
+SPA 側は `packages/web-ui` の `lib/api.ts` がこの契約を担う。`loadSession` が `/session` を読んで CSRF トークンを保持し、`api(schema, path, init)` が `/api${path}` を `accept: application/json` で呼び、JSON body には `content-type` を、GET 以外には `x-csrf-token` を付け、応答を契約のスキーマで検証する。本文のない応答は `apiVoid`。401 なら `/auth/login?return_to=<現在のパス>` へ遷移する。ルートの `clientLoader` は `loadShell` で、未ログインなら同じ遷移を行い、`?logged_out=1` のときだけログアウト済み画面を出す。
 
 設定として与えるのは自サービスの以下のみ。web プロセスは 1 サービスを担当し、環境変数 `CLIENT_ID` `CLIENT_SECRET` `SERVICE_NAME` `BASE_HOST` `API_BASE_URL` で渡す。スキーマは `packages/web-core/src/config.ts` の `loadWebCoreConfig`。`CLIENT_SECRET` は 43 文字以上でなければ起動に失敗する。`PUBLIC_SCHEME` が `https` のときは `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` も必須になる。
 

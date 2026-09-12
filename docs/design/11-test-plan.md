@@ -5,7 +5,7 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 136 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。auth-api のテストも SPA は配らず、auth-web と同じ経路で `/api/login` `/api/portal` `/api/logout` の JSON とフォーム POST の応答を検証する。React の画面は `*-web` も auth-web も `scripts/chrome-check.ts` が実 Chrome で描画して確認する。
+現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 136 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。auth-api のテストも SPA は配らず、auth-web と同じ経路で `/api/login` `/api/portal` `/api/logout` の JSON とフォーム POST の応答を検証する。React の画面は `*-web` も auth-web も `scripts/chrome-check.ts` が実 Chrome で描画して 14 項目を確認する。react-hook-form の検証は空のエンドユーザーフォームを送って項目ごとにエラーが出ること、入力すると一覧に加わることで確認する。
 
 ## テストピラミッド
 
@@ -221,7 +221,7 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | サービスの DB | テストは `MemoryMemberRepository` と各サービスのインメモリ Repository。`MemoryAuthAdminClient` が auth-api の管理 API を代替する |
 | auth インスタンス | `apps/auth-api/src/test-support.ts` が SPA を配らない `createAuthApp` を組み立てる。`readLoginContext(harness, rid, cookie)` が auth-web と同じく `/api/login?rid=` を呼び、フォームに入れる `csrf` と Cookie ヘッダと JSON の `body` を返す。`runLoginFlow` はこれで CSRF を受け取ってから `POST /login` する。HTML からトークンを抜き出す補助は持たない |
 | web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003。SPA は配らず、簡易ブラウザの `Browser.fetch` `readJson` `readSession` と、`/auth/login?return_to=<path>` から入る `loginThrough` で `/session` と `/api/*` を検証する。`loginThrough` は auth の `/login?rid=` に着いたら `/api/login?rid=` で rid と CSRF を受け取り、フォーム POST で `/login` に送る |
-| Chrome 確認 | `scripts/chrome-check.ts` は auth-web の SPA が `/api/login` を読んで「Sandbox にログイン」を描くまで待ってからフォームを埋める。ポータルは「Sandbox ポータル」、ログアウト確認は「ログアウトする」、完了は「Sandbox からログアウトしました」の文字列を待つ |
+| Chrome 確認 | `scripts/chrome-check.ts` は 15 項目。auth-web の SPA が `/api/login` を読んで「Sandbox にログイン」を描くまで待ってからフォームを埋める。ポータルは「Sandbox ポータル」、ログアウト確認は「ログアウトする」、完了は「Sandbox からログアウトしました」の文字列を待つ。tanaka.crm では空のエンドユーザーフォームを送って項目ごとに `[data-slot=field-error]` が 1 つずつ出ることと、入力して送ると作成したユーザーが表に出ることを確認する。参照する文言は `CONTENT.md` の「変えてはいけない文言」に列挙する |
 | api インスタンス | サービスごとに別インスタンス。`apps/crm-api/src/test-support.ts` と `apps/cms-api/src/test-support.ts` が実物の定義と routes で組み立て、web-core の harness もこれを使う。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
 | テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/application/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |
