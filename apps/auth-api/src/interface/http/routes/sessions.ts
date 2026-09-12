@@ -3,18 +3,17 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { SessionsResponse } from "@sandbox/api-contract";
 import type { CookiePolicy } from "@sandbox/shared";
-import { issueCsrfToken, verifyCsrfToken } from "../../../application/usecases/csrf.ts";
+import { issueCsrfToken } from "../../../application/usecases/csrf.ts";
 import type { AuthDeps } from "../../../application/deps.ts";
 import { revokeSessionBySid } from "../../../application/usecases/global-logout.ts";
 import { listUserSessions } from "../../../application/usecases/sessions.ts";
 import { loadSsoSession } from "../../../application/usecases/sso-session.ts";
-import { errorPage } from "../views/pages.ts";
 import {
-  noStore,
-  readCsrfCookie,
-  readSsoCookie,
+  csrfCookie,
+  invalidForm,
+  rejectInvalidCsrf,
   requestEnvironment,
-  writeCsrfCookie,
+  ssoCookie,
 } from "./helpers.ts";
 
 const revokeFormSchema = z.object({
@@ -29,17 +28,18 @@ const revokeFormSchema = z.object({
  */
 export function sessionRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
+  const sso = ssoCookie(policy);
+  const csrf = csrfCookie(policy);
 
   app.get("/api/sessions", async (c) => {
-    noStore(c);
-    const session = await loadSsoSession(deps, readSsoCookie(c, policy));
+    const session = await loadSsoSession(deps, sso.read(c));
     if (session === undefined) return c.json({ error: "unauthenticated" }, 401);
-    const [sessions, mfaMethods, csrf] = await Promise.all([
+    const [sessions, mfaMethods, issued] = await Promise.all([
       listUserSessions(deps, session.userId),
       deps.identity.listMfaMethods(session.userId),
       issueCsrfToken(deps),
     ]);
-    writeCsrfCookie(c, policy, csrf.cookieValue);
+    csrf.write(c, issued.cookieValue);
     return c.json({
       sessions: sessions.map((s) => ({
         id: s.id,
@@ -48,46 +48,31 @@ export function sessionRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
         created_at: s.createdAt,
         last_seen_at: s.lastSeenAt,
         current: s.id === session.sid,
-        services: s.services.map((service) => ({
-          client_id: service.clientId,
-          name: service.name,
-          tenant_slug: service.tenantSlug,
-          tenant_name: service.tenantName,
+        services: s.services.map(({ client, tenant }) => ({
+          client_id: client.clientId,
+          name: client.name,
+          tenant_slug: tenant.slug,
+          tenant_name: tenant.name,
         })),
       })),
       mfa_methods: mfaMethods.map((m) => ({ method: m.method, enrolled_at: m.enrolledAt })),
-      csrfToken: csrf.formToken,
+      csrfToken: issued.formToken,
     } satisfies SessionsResponse);
   });
 
-  app.post(
-    "/sessions/revoke",
-    zValidator("form", revokeFormSchema, (result, c) => {
-      if (!result.success)
-        return c.html(errorPage("無効なリクエストです", "入力内容が正しくありません。"), 400);
-      return undefined;
-    }),
-    async (c) => {
-      noStore(c);
-      const form = c.req.valid("form");
-      const session = await loadSsoSession(deps, readSsoCookie(c, policy));
-      if (session === undefined) return c.redirect("/login", 303);
-      const csrfValid = await verifyCsrfToken(deps, readCsrfCookie(c, policy), form.csrf);
-      if (!csrfValid) {
-        deps.logger.warn("session revoke csrf mismatch");
-        return c.html(
-          errorPage("ページを再読み込みしてください", "フォームの有効期限が切れています。"),
-          403,
-        );
-      }
-      // 自分のセッションだけを対象にする。他人の sid を指定しても何も起きない
-      const target = await deps.sessions.find(form.session_id);
-      if (target !== undefined && target.userId === session.userId && target.id !== session.sid) {
-        await revokeSessionBySid(deps, target.id, "user_revoked", requestEnvironment(c));
-      }
-      return c.redirect("/security", 303);
-    },
-  );
+  app.post("/sessions/revoke", zValidator("form", revokeFormSchema, invalidForm), async (c) => {
+    const form = c.req.valid("form");
+    const session = await loadSsoSession(deps, sso.read(c));
+    if (session === undefined) return c.redirect("/login", 303);
+    const rejected = await rejectInvalidCsrf(c, deps, policy, form.csrf);
+    if (rejected !== undefined) return rejected;
+    // 自分のセッションだけを対象にする。他人の sid を指定しても何も起きない
+    const target = await deps.sessions.findWithClients(form.session_id);
+    if (target !== undefined && target.userId === session.userId && target.id !== session.sid) {
+      await revokeSessionBySid(deps, target.id, "user_revoked", requestEnvironment(c));
+    }
+    return c.redirect("/security", 303);
+  });
 
   return app;
 }

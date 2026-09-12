@@ -8,7 +8,6 @@ export function createAuthStores(store: StoreFactory): AuthStores {
   return {
     ssoSessions: store.kv("sso:sess"),
     sidIndex: store.kv("sso:sid"),
-    sessionClients: store.set("sso:clients"),
     authorizationRequests: store.kv("sso:authreq"),
     authorizationCodes: store.kv("sso:code"),
     refreshTokens: store.kv("sso:rt"),

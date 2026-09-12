@@ -498,7 +498,6 @@ Cookie の値はすべてサーバー側ストアを指す乱数で、JWT やユ
 | --- | --- | --- | --- |
 | SSO Session | `sso:sess:<sha256(cookie の値)>` | sid、user_id、暗号化した Cognito Token、auth_time、lastSeenAt。Cookie の値は持たない | 12 時間 |
 | sid 逆引き | `sso:sid:<sid>` | sid → SSO Session のキー。Back-Channel Logout とセッションの失効に使う | 12 時間 |
-| code を発行した Client | `sso:clients:<SSO Session のキー>` | その SSO Session に code を発行した client_id の集合。Global Logout の通知先 | 12 時間 |
 | 認可リクエスト | `sso:authreq:<sha256(rid)>` | client_id、redirect_uri、scope、state、nonce、code_challenge | 30 分 |
 | Authorization Code | `sso:code:<sha256(code)>` | client_id、redirect_uri、nonce、code_challenge、user_id、tenant_id、sid、used。code の値は持たない | 60 秒。使用済みは再利用検知のため 10 分保持 |
 | Refresh Token | `sso:rt:<sha256(token)>` | family_id、client_id、user_id、tenant_id、sid、status。Token の値は持たない | 12 時間 |
@@ -523,7 +522,7 @@ oidc_client_secrets    (id, oidc_client_id, secret_hash, status, created_at, rev
 tenant_services        (tenant_id, oidc_client_id, status)                    -- 契約。会社単位
 tenant_service_members (tenant_id, oidc_client_id, user_id, status)           -- サービスごとの割り当て。役割は持たない
 tenant_members         (tenant_id, user_id, role, status)                     -- 会社横断の役割。ログイン可否には使わない
-auth_sessions          (id, user_id, status, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason)  -- SSO Session の記録。id は sid
+auth_sessions          (id, user_id, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason)  -- SSO Session の記録。id は sid。有効は revoked_at IS NULL
 auth_session_clients   (session_id, oidc_client_id, tenant_id, first_seen_at, last_seen_at)  -- その SSO Session で code を発行したサービスとテナント
 audit_events           (id, occurred_at, kind, user_id, session_id, tenant_id, client_id, ip, user_agent, detail JSONB)  -- 監査イベント
 user_mfa_methods       (user_id, method, enrolled_at)                          -- 登録済み MFA 方式。secret は持たない
@@ -683,7 +682,8 @@ sequenceDiagram
         Note over CrmA: 403「アクセス権がありません」を表示。SSO Session は残る
     end
     Auth->>Store: Authorization Code 保存 {code:AC1, client_id:crm, redirect_uri, nonce:N1,<br/>code_challenge:C1, user_id, tenant_id:tanaka, sid:SID1, auth_time} TTL 60秒
-    Auth->>Store: R1 を削除。SADD sso:clients:SS1 crm
+    Auth->>Store: R1 を削除
+    Auth->>IdDB: auth_session_clients に (SID1, crm, tanaka) を upsert
     Auth-->>Browser: 303 https://tanaka.crm.example.com/auth/callback?code=AC1&state=S1&iss=https://auth.example.com<br/>Set-Cookie: __Host-sso_session=SS1#59; Path=/#59; Secure#59; HttpOnly#59; SameSite=Lax
 
     Browser->>CrmA: GET /auth/callback?code=AC1&state=S1&iss=...<br/>Cookie: __Secure-tenant_pre_auth=P1
@@ -906,10 +906,11 @@ sequenceDiagram
     Auth-->>Browser: 200 {authenticated:true, csrfToken, returnTo:{label:"CRM (tanaka)", href:"https://tanaka.crm.example.com/"}}<br/>Set-Cookie: __Host-auth_csrf
     Note over Browser: SPA が確認画面を描く (hidden: csrf, client_id, tenant)
     Browser->>Auth: POST /logout  csrf=...&client_id=crm&tenant=tanaka (HTML フォームの POST)
-    Auth->>Store: SS1 を取得。sid=SID1、SMEMBERS sso:clients:SS1 → {crm, cms}
+    Auth->>Store: SS1 を取得。sid=SID1
+    Auth->>IdDB: auth_session_clients から通知先 {crm, cms} を引く
     Auth->>Store: SID1 に紐付く Refresh Token 系列 F1, F2, F3 を全失効
     Auth->>Cognito: RevokeToken {Token: Cognito RefreshToken, ClientId, ClientSecret}
-    Auth->>Store: SS1、sid 逆引き、sso:clients:SS1 を削除
+    Auth->>Store: SS1 と sid 逆引きを削除
     par 並列送信。active で backchannel_logout_uri を持つ Client のみ。1 件 5 秒でタイムアウト
         Auth->>Crm: POST /auth/backchannel-logout<br/>logout_token=<JWT: iss, aud=crm, sid=SID1, jti, events:{backchannel-logout:{}}>
         Crm->>Crm: JWKS で検証。events あり、nonce なし、aud でサービスを解決
@@ -1232,7 +1233,7 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `docs/deploy.md` | AWS 構成と手順 |
 | `db/identity/init/002_identity.sql` `003_seed.sql` | Identity DB。サービス、client_secret、テナント、契約、サービスごとの割り当て、会社横断の役割のスキーマとシード。redirect_uri はサービスの `redirect_uri_template` 列。割り当てに役割はない。SSO Session の記録 `auth_sessions` `auth_session_clients`、監査イベント `audit_events`、MFA 方式 `user_mfa_methods` も同じ SQL |
 | `apps/auth-api/src/domain/audit.ts` `apps/auth-api/src/domain/session.ts` `apps/auth-api/src/application/usecases/audit.ts` `apps/auth-api/src/application/usecases/sso-session.ts` | 監査イベントの種類、セッションの記録と環境の比較、`recordAudit`、SSO Session の作成と `/authorize` 到達時の記録。`infrastructure/pg-session-repository.ts` が pg 実装 |
-| `apps/auth-api/src/application/usecases/global-logout.ts` | `revokeSsoSession` に失効の手順をまとめる。Global Logout、ポータルからの sid 指定の失効 `revokeSessionBySid`、招待解除でそのサービスとテナントだけを切る `revokeClientAccess` |
+| `apps/auth-api/src/application/usecases/global-logout.ts` | `revokeSessionBySid` に失効の手順をまとめる。Global Logout の `globalLogout`、ポータルからの sid 指定の失効、招待解除でそのサービスとテナントだけを切る `revokeClientAccess` |
 | `apps/auth-api/src/interface/http/routes/sessions.ts` `apps/auth-web/app/features/security/security.route.tsx` | `GET /api/sessions` と `POST /sessions/revoke` と、MFA の登録状況とセッションの一覧と失効を描く `/security` の画面 |
 | `apps/auth-api/src/application/usecases/store-keys.ts` `packages/shared/src/secret-hash.ts` | 揮発ストアのキーにする SHA-256。`keyOf` と `keyDigest` |
 | `db/crm/init/002_schema.sql` `003_seed.sql` `db/cms/init/002_schema.sql` `003_seed.sql` | サービスごとの DB。`members` と `permission_overrides` と業務テーブル、FORCE ROW LEVEL SECURITY、所有者と分けた NOBYPASSRLS のアプリロール。`001_roles.sql` はローカル専用で、AWS では `tools/provision` がロールを作って同じ SQL を適用する |

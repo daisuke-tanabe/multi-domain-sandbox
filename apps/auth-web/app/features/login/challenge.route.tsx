@@ -12,51 +12,30 @@ import {
   Input,
   Notice,
 } from "@sandbox/web-ui";
-import { ApiError, getJson, pickQuery } from "../../lib/api.ts";
+import { ExpiredCard } from "../../components/expired-card.tsx";
+import { getJson, loadOrExpired, pickQuery, type Loaded } from "../../lib/api.ts";
 import type { Route } from "./+types/challenge.route";
 
-type ChallengeData =
-  | { readonly kind: "form"; readonly mid: string; readonly context: LoginChallengeResponse }
-  | { readonly kind: "expired"; readonly message: string };
+type ChallengeData = Loaded<{ readonly mid: string; readonly context: LoginChallengeResponse }>;
 
 /**
  * /login/challenge?mid=&error=。パスワード認証のあと、認証アプリのコードを求める。
  * 送信は通常のフォーム POST で、通れば auth-api がサービスへ 303 する
  */
-export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<ChallengeData> {
+export function clientLoader({ request }: Route.ClientLoaderArgs): Promise<ChallengeData> {
   const params = pickQuery(request.url, ["mid", "error"]);
-  const mid = params.get("mid") ?? "";
-  try {
-    const context = await getJson(
+  return loadOrExpired(async () => ({
+    mid: params.get("mid") ?? "",
+    context: await getJson(
       loginChallengeResponseSchema,
       `/api/login/challenge?${params.toString()}`,
-    );
-    return { kind: "form", mid, context };
-  } catch (error: unknown) {
-    if (error instanceof ApiError && error.code === "expired_request") {
-      return { kind: "expired", message: error.message };
-    }
-    throw error;
-  }
+    ),
+  }));
 }
 
 export default function Challenge({ loaderData }: Route.ComponentProps) {
-  if (loaderData.kind === "expired") {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>ログインをやり直してください</CardTitle>
-          <CardDescription>{loaderData.message}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button asChild>
-            <a href="/login">ログイン画面へ</a>
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
-  const { mid, context } = loaderData;
+  if (loaderData.kind === "expired") return <ExpiredCard message={loaderData.message} />;
+  const { mid, context } = loaderData.data;
   return (
     <Card>
       <CardHeader>

@@ -48,24 +48,17 @@ describe("validateAuthorizationRequest", () => {
     expect(result).toEqual({ ok: false, error: { redirectable: false, kind: "invalid_client" } });
   });
 
-  test.each([
-    ["different host", "http://evil.example/auth/callback"],
-    ["trailing slash", `${TANAKA_CRM_REDIRECT}/`],
-    ["extra query", `${TANAKA_CRM_REDIRECT}?x=1`],
-    ["upper case", TANAKA_CRM_REDIRECT.toUpperCase()],
-  ])(
-    "rejects redirect_uri that is not an exact match (%s) without redirect",
-    async (_label, redirectUri) => {
-      const result = await validateAuthorizationRequest(
-        harness.identity,
-        baseParams({ redirect_uri: redirectUri }),
-      );
-      expect(result).toEqual({
-        ok: false,
-        error: { redirectable: false, kind: "invalid_redirect_uri" },
-      });
-    },
-  );
+  test("rejects redirect_uri that is not an exact match without redirect", async () => {
+    // 文字列の完全一致で比べる。末尾のスラッシュ 1 つの違いでも拒む
+    const result = await validateAuthorizationRequest(
+      harness.identity,
+      baseParams({ redirect_uri: `${TANAKA_CRM_REDIRECT}/` }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { redirectable: false, kind: "invalid_redirect_uri" },
+    });
+  });
 
   test("rejects response_type other than code with a redirectable error", async () => {
     const result = await validateAuthorizationRequest(

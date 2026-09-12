@@ -174,7 +174,7 @@ ALL /api/*
   1. セッションがなければ 401 {error: "unauthenticated"}
   2. GET / HEAD / OPTIONS 以外は X-CSRF-Token ヘッダとセッションの csrfToken を timingSafeEqualString で照合。不一致は 403
   3. body は application/json のみ。それ以外は 415。上限 64 KB
-  4. apiFetch で API_BASE_URL + (/api を除いたパス) を呼び、応答の status と JSON をそのまま返す
+  4. apiFetch で API_BASE_URL + (/api を除いたパス) を呼び、応答の status と body をバッファせずそのまま流す
   5. apiFetch が session_expired なら 401 にし、SPA が /auth/login?return_to=<現在のパス> へ遷移する
 
 GET /*

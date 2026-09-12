@@ -6,5 +6,5 @@ import { endUserRoutes } from "./end-users/interface/routes.ts";
 startApiCore("crm-api", {
   definition: CRM,
   schema: CRM_SCHEMA,
-  routes: (pool) => [endUserRoutes({ endUsers: new PgEndUserRepository(pool) })],
+  routes: (pool) => [endUserRoutes(new PgEndUserRepository(pool))],
 });

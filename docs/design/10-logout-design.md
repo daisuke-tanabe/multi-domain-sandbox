@@ -19,7 +19,7 @@ Global Logout は auth.sandbox.com の `/logout` と OIDC Back-Channel Logout �
 | 契約解除 | 維持。Refresh で失効 | Refresh 時に失効 | 維持 | 維持。同テナントの他サービスは影響なし | 維持 |
 | ユーザー無効化 | 維持。Refresh で失効 | Refresh 時に失効 | 次回 /authorize で access_denied | 同左 | 管理操作で Revoke |
 
-どの失効も `auth_sessions` の記録と `audit_events` に残す。Global Logout は `global_logout`、それ以外の SSO Session の失効は `session_revoked` で、理由は `global_logout` `user_revoked` `service_member_revoked` `refresh_token_reused` `expired` のいずれか。
+どの失効も `audit_events` に残す。SSO Session を失効させる Global Logout とポータルからの失効は `auth_sessions` に revoked_at と理由を書く。理由は `global_logout` か `user_revoked`。監査の kind は Global Logout が `global_logout`、ポータルからの失効が `session_revoked`。招待の解除と Refresh Token の再利用は SSO Session を残すため `auth_sessions` には書かず、`service_member_revoked` と `refresh_token_reused` にだけ残す。期限切れは行に書かず、読み出し時に判定する。
 
 ## Tenant Logout
 
@@ -60,8 +60,8 @@ token=<refresh_token>&token_type_hint=refresh_token
 | --- | --- |
 | エンドポイント | `GET /logout?client_id=crm&tenant=tanaka` は auth-web の SPA。SPA が `GET /api/logout?client_id=&tenant=` を読み、SSO Session があれば `authenticated: true` と `csrfToken` と `returnTo` を受けて確認画面を描く。確認フォームは csrf、client_id、tenant を hidden で持ち、HTML フォームの POST で `POST /logout` に送る。POST は完了後に `/logout?client_id=&tenant=` へ 303 し、SPA が `/api/logout` の `authenticated: false` で完了画面を描く |
 | CSRF | 同期トークン必須。`/api/logout` が Cookie とトークンを発行する |
-| 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → `auth_sessions` を revoked に更新して `global_logout` を監査 → Cookie 削除 → `/logout` へ 303。`revokeSsoSession` にまとめ、ポータルからの失効も同じ関数を使う |
-| 通知先 | `sso:clients` の集合に含まれるサービスのうち、`oidc_clients.status` が `active` で backchannel_logout_uri を持つもの。サービスごとに1通。停止した Client には送らない |
+| 処理 | sid 系列の Refresh Token 全失効 → Cognito RevokeToken → SSO Session 削除 → Back-Channel Logout 送信 → `auth_sessions` に revoked_at と `global_logout` を書いて監査 → Cookie 削除 → `/logout` へ 303。`revokeSessionBySid` にまとめ、ポータルからの失効も同じ関数を使う |
+| 通知先 | Identity DB の `auth_session_clients` を `SessionRepository.findWithClients` で引き、そのセッションで code を発行したサービスのうち、`oidc_clients.status` が `active` で backchannel_logout_uri を持つもの。サービスごとに1通。停止した Client には送らない |
 | タイムアウト | `fetch` に `AbortSignal.timeout(5000)` を付ける。`BACKCHANNEL_TIMEOUT_MS`。1 サービスの無応答が完了画面を止めない |
 | 通知失敗 | 完了扱い。対象サービスの Session は Refresh 失敗で最大15分以内に失効 |
 | 完了画面 | SPA が「Sandbox からログアウトしました」を出す。`/api/logout` の `returnTo` は `{label: "CRM (tanaka)", href: "https://tanaka.crm.sandbox.com/"}` で、`client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin から導く。SPA は「CRM (tanaka) に戻る」のリンクを出す。`returnTo` がなければリンクを出さない |
@@ -113,7 +113,7 @@ jti の重複記憶によるリプレイ拒否は未対応。リプレイされ�
 
 - ID Token と Access Token に `sid` を含める
 - Tenant Session に `sid` を保存し、ストア `<clientId>:sid` に `sid:<sid> → sessionKey の集合` の逆引きを `SetStore` で持つ。Tenant Logout の `destroySession` は集合から自分のキーを外す
-- SSO Session ID から code を発行したサービスの client_id を引ける集合 `sso:clients` を持つ。値の配列ではなく `SetStore` にし、並行する `/authorize` で追加が落ちないようにする
+- SSO Session の sid から code を発行したサービスとテナントを引ける `auth_session_clients` を Identity DB に持つ。`/authorize` の到達で upsert し、揮発ストアには通知先の集合を持たない
 - oidc_clients に `backchannel_logout_uri` 列を持つ
 - oidc_clients に `redirect_uri_template` 列を持ち、完了画面とポータルの戻り先を展開で導く
 
@@ -124,11 +124,11 @@ jti の重複記憶によるリプレイ拒否は未対応。リプレイされ�
 | 項目 | 内容 |
 | --- | --- |
 | 画面 | auth-web の `/security`。ポータルの「セキュリティ」から入る。`GET /api/sessions` で本人の active なセッションの一覧と CSRF を受け取り、セッションごとに IP、User-Agent、ログイン時刻、最終アクセス、入ったサービスとテナントをカードで出す。現在のセッションには「この端末」の印を付け、失効のボタンを出さない |
-| 一覧の出どころ | Identity DB の `auth_sessions` と `auth_session_clients`。サービス名とテナント名は identity から引く。status が active の行だけを出す。揮発ストアの期限切れは記録に反映されないため、期限切れのセッションも失効するまでは一覧に残る |
+| 一覧の出どころ | Identity DB の `auth_sessions` と `auth_session_clients`。`SessionRepository.listActiveByUser` が 1 回で引き、サービス名とテナント名は identity から引く。revoked_at が NULL で、アイドル 2 時間と絶対 12 時間を過ぎていない行だけを出す。期限は行に書かず、created_at と last_seen_at から SQL で判定する |
 | エンドポイント | `POST /sessions/revoke`。フォーム POST で `csrf` と `session_id` を受け取り、完了後に `/security` へ 303 |
 | CSRF | 同期トークン必須。`/api/sessions` が Cookie とトークンを発行する。不一致は 403 のサーバー HTML |
 | 対象 | 自分の sid だけ。他人の sid、自分の現在のセッション、存在しない sid は無視して `/security` へ 303 する |
-| 処理 | `revokeSessionBySid` が sid から SSO Session を引き、Global Logout と同じ手順で失効させる。理由は `user_revoked`。揮発ストアに既に無ければ `auth_sessions` の記録だけを revoked にする |
+| 処理 | `revokeSessionBySid` が sid から SSO Session を引き、Global Logout と同じ手順で失効させる。理由は `user_revoked`。揮発ストアに既に無ければ `auth_sessions` の記録に revoked_at だけを書く |
 | レート制限 | `/api/sessions` と `/sessions/*` は `/logout` と同じ IP あたり 60 回/分 |
 | 未認証 | `GET /api/sessions` は 401 `unauthenticated` で SPA が `/login` へ遷移する。`POST /sessions/revoke` は `/login` へ 303 |
 

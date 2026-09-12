@@ -71,14 +71,3 @@ export interface CognitoAuthenticator {
     refreshToken: string,
   ): Promise<Result<void, { kind: "unavailable"; reason: string }>>;
 }
-
-/** モックアダプタが受け取るテストユーザー。config の MOCK_COGNITO_USERS と同じ形 */
-export interface MockCognitoUser {
-  readonly username: string;
-  readonly password: string;
-  readonly sub: string;
-  readonly email: string;
-  readonly name?: string | undefined;
-  /** 登録済みの認証アプリの secret。base32。無ければ初回ログインで登録する */
-  readonly totpSecret?: string | undefined;
-}

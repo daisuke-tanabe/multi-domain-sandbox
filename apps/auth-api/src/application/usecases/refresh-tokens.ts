@@ -12,6 +12,26 @@ export interface IssuedRefreshToken {
   readonly record: RefreshToken;
 }
 
+/** sid に紐付く系列の一覧の要素。どのサービスとテナントの系列かを一覧だけで分かるようにする */
+export interface RefreshFamilyRef {
+  readonly familyId: string;
+  readonly clientId: string;
+  readonly tenantId: string;
+}
+
+// client_id と tenant_id はどちらも ":" を含まない
+const REF_SEPARATOR = ":";
+
+function encodeFamilyRef(ref: RefreshFamilyRef): string {
+  return [ref.clientId, ref.tenantId, ref.familyId].join(REF_SEPARATOR);
+}
+
+function decodeFamilyRef(member: string): RefreshFamilyRef | undefined {
+  const [clientId, tenantId, familyId] = member.split(REF_SEPARATOR);
+  if (clientId === undefined || tenantId === undefined || familyId === undefined) return undefined;
+  return { clientId, tenantId, familyId };
+}
+
 /**
  * 新しい系列で Refresh Token を発行する。code 交換時に使う。
  */
@@ -23,9 +43,25 @@ export async function createRefreshTokenFamily(
   const issued = await storeRefreshToken(deps, { ...input, familyId });
   await Promise.all([
     deps.stores.refreshTokenFamilies.add(familyId, keyOf(issued.value), REFRESH_TOKEN_TTL_SECONDS),
-    deps.stores.sidRefreshFamilies.add(input.sid, familyId, REFRESH_TOKEN_TTL_SECONDS),
+    deps.stores.sidRefreshFamilies.add(
+      input.sid,
+      encodeFamilyRef({ familyId, clientId: input.clientId, tenantId: input.tenantId }),
+      REFRESH_TOKEN_TTL_SECONDS,
+    ),
   ]);
   return issued;
+}
+
+/** sid に紐付く系列。失効の対象を絞るのに使う */
+export async function listRefreshFamilies(
+  deps: AuthDeps,
+  sid: string,
+): Promise<ReadonlyArray<RefreshFamilyRef>> {
+  const members = await deps.stores.sidRefreshFamilies.members(sid);
+  return members.flatMap((member) => {
+    const ref = decodeFamilyRef(member);
+    return ref === undefined ? [] : [ref];
+  });
 }
 
 export type ConsumeResult =
@@ -75,11 +111,12 @@ export async function rotateRefreshToken(
  */
 export async function revokeRefreshTokenFamily(deps: AuthDeps, familyId: string): Promise<void> {
   const keys = await deps.stores.refreshTokenFamilies.members(familyId);
+  const records = await Promise.all(keys.map((key) => deps.stores.refreshTokens.get(key)));
   await Promise.all(
-    keys.map(async (key) => {
-      const stored = await deps.stores.refreshTokens.get(key);
-      if (stored === undefined) return;
-      await deps.stores.refreshTokens.set(
+    records.map((stored, index) => {
+      const key = keys[index];
+      if (stored === undefined || key === undefined) return undefined;
+      return deps.stores.refreshTokens.set(
         key,
         { ...stored, status: "revoked" },
         REFRESH_TOKEN_TTL_SECONDS,
@@ -89,17 +126,14 @@ export async function revokeRefreshTokenFamily(deps: AuthDeps, familyId: string)
   deps.logger.warn("refresh token family revoked", { familyId });
 }
 
-/** 系列の先頭の記録。どの Client とテナントの系列かを知るために使う */
+/** 系列の先頭の記録。code の再利用検知でどの人の系列かを知るために使う */
 export async function describeRefreshTokenFamily(
   deps: AuthDeps,
   familyId: string,
 ): Promise<RefreshToken | undefined> {
   const keys = await deps.stores.refreshTokenFamilies.members(familyId);
-  for (const key of keys) {
-    const stored = await deps.stores.refreshTokens.get(key);
-    if (stored !== undefined) return stored;
-  }
-  return undefined;
+  const records = await Promise.all(keys.map((key) => deps.stores.refreshTokens.get(key)));
+  return records.find((record) => record !== undefined);
 }
 
 async function storeRefreshToken(

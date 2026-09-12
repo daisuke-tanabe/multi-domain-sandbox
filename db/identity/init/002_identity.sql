@@ -116,18 +116,22 @@ CREATE TRIGGER tenant_service_members_touch_updated_at BEFORE UPDATE ON identity
 
 -- ブラウザから作られた SSO Session の記録。id は ID Token に載せる sid で、Cookie の値ではない
 -- 揮発ストアの寿命とは独立に残し、監査とポータルの一覧に使う
+-- 失効は revoked_at で表す。status 列は持たず、revoked_at IS NULL を「有効」とする
+-- 期限切れは行に書かず、created_at と last_seen_at から読み出し時に判定する
 CREATE TABLE identity.auth_sessions (
   id             TEXT PRIMARY KEY,
   user_id        TEXT NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
-  status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
   ip             TEXT NOT NULL,
   user_agent     TEXT NOT NULL,
   created_at     TIMESTAMPTZ NOT NULL,
   last_seen_at   TIMESTAMPTZ NOT NULL,
   revoked_at     TIMESTAMPTZ,
-  revoke_reason  TEXT
+  revoke_reason  TEXT CHECK (revoke_reason IN ('global_logout', 'user_revoked')),
+  CHECK ((revoked_at IS NULL) = (revoke_reason IS NULL))
 );
-CREATE INDEX auth_sessions_user_id_idx ON identity.auth_sessions (user_id, status, last_seen_at DESC);
+-- ポータルの一覧は有効な行だけを引く
+CREATE INDEX auth_sessions_active_idx ON identity.auth_sessions (user_id, last_seen_at DESC)
+  WHERE revoked_at IS NULL;
 
 -- その SSO Session で code を発行したサービスとテナント。ポータルの一覧と、招待解除時の対象の絞り込みに使う
 CREATE TABLE identity.auth_session_clients (
@@ -154,6 +158,9 @@ CREATE TABLE identity.audit_events (
 );
 CREATE INDEX audit_events_user_id_idx ON identity.audit_events (user_id, occurred_at DESC);
 CREATE INDEX audit_events_kind_idx ON identity.audit_events (kind, occurred_at DESC);
+CREATE INDEX audit_events_session_id_idx ON identity.audit_events (session_id, occurred_at DESC);
+-- 追記のみで時系列に並ぶため、期間の絞り込みは BRIN で足りる
+CREATE INDEX audit_events_occurred_at_idx ON identity.audit_events USING BRIN (occurred_at);
 
 -- 登録済みの MFA 方式。secret は Cognito が持ち、ここには方式と日時だけを残す
 CREATE TABLE identity.user_mfa_methods (

@@ -13,8 +13,8 @@ import {
   type OidcEnv,
   type ServiceConfig,
 } from "@sandbox/oidc-client";
-import { createMemoryStoreFactory, silentLogger } from "@sandbox/shared";
-import { generateTotp } from "@sandbox/shared";
+import { createMemoryStoreFactory, generateTotp, silentLogger } from "@sandbox/shared";
+import { readJsonObject } from "@sandbox/shared/test-support";
 import { createWebCoreApp } from "./app.ts";
 import { createClientResolvers } from "./config.ts";
 
@@ -64,16 +64,22 @@ export interface SandboxHarness {
   readonly crm: ServiceHarness;
   readonly cms: ServiceHarness;
   readonly dispatch: (url: URL, init?: RequestInit) => Promise<Response>;
+  /** auth-api の /token に届いた grant_type の並び。Refresh の回数を数える */
+  readonly tokenGrants: ReadonlyArray<string>;
 }
 
 export async function createSandbox(): Promise<SandboxHarness> {
   // apps は後から埋める。auth-api の Back-Channel Logout もこの dispatch を通る
   const apps = new Map<string, Requestable>();
+  const tokenGrants: string[] = [];
   const dispatch = async (url: URL, init: RequestInit = {}): Promise<Response> => {
     const app = apps.get(url.host);
     if (app === undefined) throw new Error(`no app for host ${url.host}`);
     const headers = new Headers(init.headers);
     headers.set("host", url.host);
+    if (url.pathname === "/token" && typeof init.body === "string") {
+      tokenGrants.push(new URLSearchParams(init.body).get("grant_type") ?? "");
+    }
     return Promise.resolve(app.request(url.toString(), { ...init, headers }));
   };
 
@@ -139,7 +145,7 @@ export async function createSandbox(): Promise<SandboxHarness> {
   apps.set(AUTH_HOST, auth.app);
   apps.set(AUTH_BACKCHANNEL_HOST, auth.app);
 
-  return { auth, crm, cms, dispatch };
+  return { auth, crm, cms, dispatch, tokenGrants };
 }
 
 interface StoredCookie {
@@ -322,10 +328,7 @@ export function visitedPaths(result: NavigationResult): ReadonlyArray<string> {
 
 /** BFF の JSON 応答を読む。SPA が /session や /api を呼ぶのと同じ経路 */
 export async function readJson(browser: Browser, url: string): Promise<Record<string, unknown>> {
-  const res = await browser.fetch(url);
-  const body: unknown = await res.json();
-  if (typeof body !== "object" || body === null) throw new Error(`expected JSON from ${url}`);
-  return { ...body };
+  return readJsonObject(await browser.fetch(url));
 }
 
 export function readSession(browser: Browser, origin: string): Promise<Record<string, unknown>> {

@@ -1,4 +1,3 @@
-import { MemoryKeyValueStore } from "@sandbox/shared";
 import { beforeEach, describe, expect, test } from "vitest";
 import {
   AUTH_HOST,
@@ -25,6 +24,10 @@ const JWT_PATTERN = /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\./;
 /** SPA が最初に開く画面。BFF は index.html を返し、SPA が /session と /api を呼ぶ */
 const APP_PATH = "/end-users";
 
+/**
+ * パスワードや MFA の誤り、SSO Session の期限などログイン画面そのものの振る舞いは auth-api のテストが持つ。
+ * ここでは BFF を通した画面遷移、Cookie の分離、テナントとサービスの切り替えを確認する
+ */
 describe("E1 first login through tanaka.crm", () => {
   let sandbox: SandboxHarness;
   let browser: Browser;
@@ -96,26 +99,6 @@ describe("E1 first login through tanaka.crm", () => {
     expect(me.body).not.toMatch(JWT_PATTERN);
   });
 
-  test("E8 shows the login form again with a generic message on wrong password", async () => {
-    const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, {
-      username: "alice",
-      password: "wrong",
-    });
-
-    // 失敗は種類だけをクエリに載せて /login に戻り、文言は SPA が /api/login から受け取る
-    const retry = await readJson(
-      browser,
-      `http://${AUTH_HOST}/api/login?${result.finalUrl.searchParams.toString()}`,
-    );
-
-    expect(result.finalUrl.host).toBe(AUTH_HOST);
-    expect(result.finalUrl.pathname).toBe("/login");
-    expect(result.finalUrl.searchParams.get("error")).toBe("invalid_credentials");
-    expect(retry.errorMessage).toBe("ユーザー名またはパスワードが正しくありません");
-    expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(false);
-    expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(false);
-  });
-
   test("E5 shows access denied for a user without an assignment and keeps the SSO session", async () => {
     const result = await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, {
       username: "carol",
@@ -127,6 +110,24 @@ describe("E1 first login through tanaka.crm", () => {
     expect(result.body).toContain("アクセス権がありません");
     expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(false);
     expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(true);
+  });
+
+  test("the callback refuses a forged state and a callback without a pending login", async () => {
+    // 認可リクエストを始めてから、state を差し替えた応答を返す
+    const started = await browser.fetch(`${TANAKA_CRM_ORIGIN}/auth/login?return_to=${APP_PATH}`);
+    const authorizeUrl = new URL(started.headers.get("Location") ?? "");
+    const forged = await browser.navigate(
+      `${TANAKA_CRM_ORIGIN}/auth/callback?code=x&state=forged&iss=${encodeURIComponent(authorizeUrl.origin)}`,
+    );
+    // pre_auth は一回限りで消えているので、正しい state を送っても続きはない
+    const replayed = await browser.navigate(
+      `${TANAKA_CRM_ORIGIN}/auth/callback?code=x&state=${authorizeUrl.searchParams.get("state")}`,
+    );
+
+    expect(forged.response.status).toBe(400);
+    expect(replayed.response.status).toBe(400);
+    expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(false);
+    expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_pre_auth")).toBe(false);
   });
 });
 
@@ -140,13 +141,14 @@ describe("E2 SSO into suzuki.crm after logging in through tanaka.crm", () => {
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
   });
 
-  test("logs into suzuki.crm without showing the login page and with tenant-specific role", async () => {
+  test("E10 logs into suzuki.crm without the login page, with the role and overrides of that tenant", async () => {
     const result = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login?return_to=${APP_PATH}`);
-    const me = await readJson(browser, `${SUZUKI_CRM_ORIGIN}/api/v1/me`);
+    const suzuki = await readJson(browser, `${SUZUKI_CRM_ORIGIN}/api/v1/me`);
+    const tanaka = await readJson(browser, `${TANAKA_CRM_ORIGIN}/api/v1/me`);
+    const suzukiUsers = await readJson(browser, `${SUZUKI_CRM_ORIGIN}/api/v1/end-users`);
 
     expect(result.response.status).toBe(200);
     expect(result.finalUrl.host).toBe(SUZUKI_CRM_HOST);
-    expect(me.role).toBe("viewer");
     expect(visitedPaths(result)).toEqual([
       `${SUZUKI_CRM_HOST}/auth/login`,
       `${AUTH_HOST}/authorize`,
@@ -157,6 +159,13 @@ describe("E2 SSO into suzuki.crm after logging in through tanaka.crm", () => {
     expect(browser.cookies(TANAKA_CRM_HOST).get("tenant_session")).not.toBe(
       browser.cookies(SUZUKI_CRM_HOST).get("tenant_session"),
     );
+    // 同じ人でもテナントごとの役割と上書きはそのサービスの DB が決める
+    expect(suzuki.role).toBe("viewer");
+    expect(suzuki.permissions).not.toContain("end_users:create");
+    expect(suzuki.permissions).toContain("end_users:unmask");
+    expect(suzukiUsers.masked).toBe(false);
+    expect(tanaka.role).toBe("owner");
+    expect(tanaka.permissions).toContain("end_users:create");
   });
 
   test("E9 API calls on tanaka.crm do not contact the auth server", async () => {
@@ -164,21 +173,6 @@ describe("E2 SSO into suzuki.crm after logging in through tanaka.crm", () => {
 
     expect(result.response.status).toBe(200);
     expect(visitedPaths(result)).toEqual([`${TANAKA_CRM_HOST}/api/v1/end-users`]);
-  });
-
-  test("E10 the same user has different permissions per tenant because each service DB decides", async () => {
-    await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
-    const suzuki = await readJson(browser, `${SUZUKI_CRM_ORIGIN}/api/v1/me`);
-    const tanaka = await readJson(browser, `${TANAKA_CRM_ORIGIN}/api/v1/me`);
-    const suzukiUsers = await readJson(browser, `${SUZUKI_CRM_ORIGIN}/api/v1/end-users`);
-
-    expect(suzuki.role).toBe("viewer");
-    expect(suzuki.permissions).not.toContain("end_users:create");
-    // viewer でも上書きで unmask を許可している
-    expect(suzuki.permissions).toContain("end_users:unmask");
-    expect(suzukiUsers.masked).toBe(false);
-    expect(tanaka.role).toBe("owner");
-    expect(tanaka.permissions).toContain("end_users:create");
   });
 
   test("the API proxy requires the CSRF token for writes and forwards JSON bodies", async () => {
@@ -229,7 +223,7 @@ describe("E3 tenant logout keeps other tenants and the SSO session", () => {
     await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
   });
 
-  test("logs out of tanaka.crm only", async () => {
+  test("logs out of tanaka.crm only and gets back in without a password", async () => {
     const session = await readSession(browser, TANAKA_CRM_ORIGIN);
 
     const loggedOut = await browser.submitForm(`${TANAKA_CRM_ORIGIN}/auth/logout`, {
@@ -237,23 +231,14 @@ describe("E3 tenant logout keeps other tenants and the SSO session", () => {
     });
     const after = await readSession(browser, TANAKA_CRM_ORIGIN);
     const suzuki = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/api/v1/me`);
+    const again = await browser.navigate(`${TANAKA_CRM_ORIGIN}/auth/login?return_to=${APP_PATH}`);
 
     expect(loggedOut.finalUrl.pathname).toBe("/");
     expect(after.authenticated).toBe(false);
-    expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(false);
     expect(browser.cookies(SUZUKI_CRM_HOST).has("tenant_session")).toBe(true);
     expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(true);
     expect(suzuki.response.status).toBe(200);
-  });
-
-  test("re-login after tenant logout succeeds without a password because the SSO session remains", async () => {
-    const session = await readSession(browser, TANAKA_CRM_ORIGIN);
-    await browser.submitForm(`${TANAKA_CRM_ORIGIN}/auth/logout`, {
-      csrf: String(session.csrfToken),
-    });
-
-    const again = await browser.navigate(`${TANAKA_CRM_ORIGIN}/auth/login?return_to=${APP_PATH}`);
-
+    // SSO Session が残っているので、再ログインはパスワードなしで済む
     expect(again.response.status).toBe(200);
     expect(visitedPaths(again)).not.toContain(`${AUTH_HOST}/login`);
     expect((await readSession(browser, TANAKA_CRM_ORIGIN)).authenticated).toBe(true);
@@ -277,22 +262,8 @@ describe("E12 services share the SSO session but contracts gate access", () => {
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
   });
 
-  test("enters tanaka.cms via SSO with a cms audience token and a separate session", async () => {
+  test("enters tanaka.cms via SSO with its own session, role and deny override", async () => {
     const result = await browser.navigate(`${TANAKA_CMS_ORIGIN}/auth/login?return_to=/posts`);
-    const me = await readJson(browser, `${TANAKA_CMS_ORIGIN}/api/v1/me`);
-
-    expect(result.response.status).toBe(200);
-    expect(result.finalUrl.host).toBe(TANAKA_CMS_HOST);
-    expect(me.role).toBe("owner");
-    expect(me.permissions).toContain("posts:read");
-    expect(visitedPaths(result)).not.toContain(`${AUTH_HOST}/login`);
-    expect(browser.cookies(TANAKA_CMS_HOST).get("tenant_session")).not.toBe(
-      browser.cookies(TANAKA_CRM_HOST).get("tenant_session"),
-    );
-  });
-
-  test("a service-side deny override removes posts:create from an owner on tanaka.cms", async () => {
-    await browser.navigate(`${TANAKA_CMS_ORIGIN}/auth/login`);
     const me = await readJson(browser, `${TANAKA_CMS_ORIGIN}/api/v1/me`);
     const session = await readSession(browser, TANAKA_CMS_ORIGIN);
     const created = await browser.fetch(`${TANAKA_CMS_ORIGIN}/api/v1/posts`, {
@@ -301,8 +272,16 @@ describe("E12 services share the SSO session but contracts gate access", () => {
       body: JSON.stringify({ title: "t", body: "b" }),
     });
 
-    expect(me.permissions).not.toContain("posts:create");
+    expect(result.response.status).toBe(200);
+    expect(result.finalUrl.host).toBe(TANAKA_CMS_HOST);
+    expect(visitedPaths(result)).not.toContain(`${AUTH_HOST}/login`);
+    expect(browser.cookies(TANAKA_CMS_HOST).get("tenant_session")).not.toBe(
+      browser.cookies(TANAKA_CRM_HOST).get("tenant_session"),
+    );
+    // cms の DB では owner だが posts:create を deny している
+    expect(me.role).toBe("owner");
     expect(me.permissions).toContain("posts:update");
+    expect(me.permissions).not.toContain("posts:create");
     expect(created.status).toBe(403);
   });
 
@@ -315,25 +294,6 @@ describe("E12 services share the SSO session but contracts gate access", () => {
     expect(browser.cookies(new URL(SUZUKI_CMS_ORIGIN).host).has("tenant_session")).toBe(false);
     // SSO Session は残る。契約のあるサービスは引き続き使える
     expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(true);
-  });
-
-  test("global logout from crm also ends the cms session through back-channel logout", async () => {
-    await browser.navigate(`${TANAKA_CMS_ORIGIN}/auth/login`);
-    const confirm = await readJson(
-      browser,
-      `http://${AUTH_HOST}/api/logout?client_id=crm&tenant=tanaka`,
-    );
-    await browser.submitForm(`http://${AUTH_HOST}/logout`, {
-      csrf: String(confirm.csrfToken),
-      client_id: "crm",
-      tenant: "tanaka",
-    });
-
-    const cms = await readSession(browser, TANAKA_CMS_ORIGIN);
-    const crm = await readSession(browser, TANAKA_CRM_ORIGIN);
-
-    expect(cms.authenticated).toBe(false);
-    expect(crm.authenticated).toBe(false);
   });
 });
 
@@ -362,29 +322,8 @@ describe("session lifetimes", () => {
     expect(browser.cookies(TANAKA_CRM_HOST).get("tenant_session")).not.toBe(before);
   });
 
-  test("E7 requires a password again after the SSO session idles out", async () => {
-    sandbox.auth.clock.advance(2 * 60 * 60 + 1);
-
-    const result = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
-
-    expect(result.finalUrl.host).toBe(AUTH_HOST);
-    expect(result.finalUrl.pathname).toBe("/login");
-  });
-
-  test("refreshes the access token transparently before it expires", async () => {
+  test("concurrent API calls near token expiry refresh once, transparently, and keep the session", async () => {
     // Arrange: Access Token 15 分の直前。Tenant Session のアイドル 30 分は超えない
-    sandbox.auth.clock.advance(14 * 60 + 30);
-
-    const result = await browser.navigate(`${TANAKA_CRM_ORIGIN}/api/v1/me`);
-
-    expect(result.response.status).toBe(200);
-    // 初回交換で 1 件、ローテーションで rotated + 新規の 2 件になる
-    const refreshTokens = sandbox.auth.deps.stores.refreshTokens;
-    if (!(refreshTokens instanceof MemoryKeyValueStore)) throw new Error("unexpected store");
-    expect(refreshTokens.size()).toBe(2);
-  });
-
-  test("concurrent API calls refresh only once and keep the session alive", async () => {
     sandbox.auth.clock.advance(14 * 60 + 30);
 
     const [first, second] = await Promise.all([
@@ -394,9 +333,7 @@ describe("session lifetimes", () => {
 
     expect(first.response.status).toBe(200);
     expect(second.response.status).toBe(200);
-    const refreshTokens = sandbox.auth.deps.stores.refreshTokens;
-    if (!(refreshTokens instanceof MemoryKeyValueStore)) throw new Error("unexpected store");
-    expect(refreshTokens.size()).toBe(2);
+    expect(sandbox.tokenGrants).toEqual(["authorization_code", "refresh_token"]);
     expect(browser.cookies(TANAKA_CRM_HOST).has("tenant_session")).toBe(true);
   });
 });
@@ -410,40 +347,32 @@ describe("E11 global logout via auth.localhost", () => {
     browser = new Browser(sandbox.dispatch, sandbox.auth.clock);
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
     await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
+    await browser.navigate(`${TANAKA_CMS_ORIGIN}/auth/login`);
   });
 
-  test("the session endpoint links to global logout for this client and tenant", async () => {
+  test("logs out of every tenant and service at once and requires a password afterwards", async () => {
     const session = await readSession(browser, TANAKA_CRM_ORIGIN);
-
-    expect((session.urls as { globalLogout: string }).globalLogout).toBe(
-      `http://${AUTH_HOST}/logout?client_id=crm&tenant=tanaka`,
-    );
-  });
-
-  test("logs out of every tenant at once and requires a password afterwards", async () => {
-    const confirm = await readJson(
-      browser,
-      `http://${AUTH_HOST}/api/logout?client_id=crm&tenant=tanaka`,
-    );
-    expect(confirm.authenticated).toBe(true);
+    const globalLogout = (session.urls as { globalLogout: string }).globalLogout;
+    const confirm = await readJson(browser, globalLogout.replace("/logout", "/api/logout"));
 
     const done = await browser.submitForm(`http://${AUTH_HOST}/logout`, {
       csrf: String(confirm.csrfToken),
       client_id: "crm",
       tenant: "tanaka",
     });
-    const after = await readJson(
-      browser,
-      `http://${AUTH_HOST}/api/logout?client_id=crm&tenant=tanaka`,
-    );
+    const after = await readJson(browser, globalLogout.replace("/logout", "/api/logout"));
+    const cms = await readSession(browser, TANAKA_CMS_ORIGIN);
     const tenantA = await browser.navigate(`${TANAKA_CRM_ORIGIN}/auth/login`);
     const tenantB = await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
 
+    expect(globalLogout).toBe(`http://${AUTH_HOST}/logout?client_id=crm&tenant=tanaka`);
+    expect(confirm.authenticated).toBe(true);
     expect(done.finalUrl.pathname).toBe("/logout");
     expect(after.authenticated).toBe(false);
     expect(after.returnTo).toEqual({ label: "CRM (tanaka)", href: `${TANAKA_CRM_ORIGIN}/` });
     expect(browser.cookies(AUTH_HOST).has("sso_session")).toBe(false);
     // Back-Channel Logout でテナント側セッションが消えているため、Cookie があってもログイン画面になる
+    expect(cms.authenticated).toBe(false);
     expect(tenantA.finalUrl.host).toBe(AUTH_HOST);
     expect(tenantA.finalUrl.pathname).toBe("/login");
     expect(tenantB.finalUrl.host).toBe(AUTH_HOST);

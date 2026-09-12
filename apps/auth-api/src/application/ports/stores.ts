@@ -65,10 +65,6 @@ export interface RefreshToken {
   readonly status: RefreshTokenStatus;
 }
 
-export interface CsrfToken {
-  readonly token: string;
-}
-
 /**
  * パスワード認証のあと MFA を終えるまでの保留状態。キーは保留 ID の SHA-256。
  * secret と Cognito の Token は暗号化して持つ
@@ -79,13 +75,11 @@ export type MfaPending =
       readonly username: string;
       readonly cognitoSession: string;
       readonly rid: string;
+      /** 失敗した回数。書き戻しは update で行い、TTL は延びない */
       readonly attempts: number;
-      /** 作成時に決めた期限。失敗して書き戻しても延びない */
-      readonly expiresAt: number;
     }
   | {
       readonly kind: "totp_setup";
-      readonly username: string;
       readonly sub: string;
       readonly email: string;
       readonly name: string | null;
@@ -99,18 +93,17 @@ export type MfaPending =
 
 export interface AuthStores {
   readonly ssoSessions: KeyValueStore<SsoSession>;
-  /** sid → SSO Session ID の逆引き */
+  /** sid → SSO Session のストアのキー */
   readonly sidIndex: KeyValueStore<string>;
-  /** SSO Session ID → code を発行した client_id の集合。Global Logout の通知先 */
-  readonly sessionClients: SetStore;
   readonly authorizationRequests: KeyValueStore<AuthorizationRequest>;
   readonly authorizationCodes: KeyValueStore<AuthorizationCode>;
   readonly refreshTokens: KeyValueStore<RefreshToken>;
   /** familyId → その系列で発行した Refresh Token のキーの集合。一括失効に使う */
   readonly refreshTokenFamilies: SetStore;
-  readonly csrfTokens: KeyValueStore<CsrfToken>;
+  /** CSRF の参照 ID のキー → フォームに入れた値 */
+  readonly csrfTokens: KeyValueStore<string>;
   readonly mfaPending: KeyValueStore<MfaPending>;
-  /** sid → Refresh Token 系列 ID の集合。Global Logout で一括失効する */
+  /** sid → 系列の参照 (client_id:tenant_id:family_id) の集合。失効の対象をここだけで絞れる */
   readonly sidRefreshFamilies: SetStore;
   readonly rateLimits: CounterStore;
 }

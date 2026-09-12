@@ -26,7 +26,7 @@ import {
 } from "../../../application/members.ts";
 import type { Member } from "../../../domain/member.ts";
 import { isPermission, isRole } from "../../../domain/service-definition.ts";
-import { requirePermission, type ApiEnv } from "../middleware.ts";
+import { invalidJson, notFoundResponse, requirePermission, type ApiEnv } from "../middleware.ts";
 
 export type MemberRoutesDeps = MemberUsecaseDeps;
 
@@ -43,7 +43,7 @@ function toJson(member: Member): MemberJson {
 function respondError(c: Context, logger: Logger, error: MemberError): Response {
   switch (error.kind) {
     case "not_found":
-      return c.json({ error: "not_found" }, 404);
+      return notFoundResponse(c);
     case "cannot_remove_self":
       return c.json({ error: "cannot_remove_self" }, 400);
     case "auth_admin":
@@ -52,7 +52,7 @@ function respondError(c: Context, logger: Logger, error: MemberError): Response 
         case "not_contracted":
           return c.json({ error: error.error.kind }, 403);
         case "user_not_found":
-          return c.json({ error: "not_found" }, 404);
+          return notFoundResponse(c);
         case "unavailable":
           logger.error("auth admin api unavailable", { reason: error.error.reason });
           return c.json({ error: "temporarily_unavailable" }, 503);
@@ -77,9 +77,6 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
   const permissionsSchema = permissionOverridesInputSchema.extend({
     overrides: z.array(overrideSchema).max(50),
   });
-  const invalid = (result: { success: boolean }, c: Context) =>
-    result.success ? undefined : c.json({ error: "invalid_request" }, 400);
-
   app.get("/v1/members", requirePermission("members:read"), async (c) => {
     const ctx = c.get("tenantContext");
     const list = await listMembers(deps, ctx.tenantId);
@@ -100,7 +97,7 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
   app.post(
     "/v1/members",
     requirePermission("members:invite"),
-    zValidator("json", inviteSchema, invalid),
+    zValidator("json", inviteSchema, invalidJson),
     async (c) => {
       const ctx = c.get("tenantContext");
       const body = c.req.valid("json");
@@ -123,7 +120,7 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
   app.patch(
     "/v1/members/:userId",
     requirePermission("members:manage"),
-    zValidator("json", patchSchema, invalid),
+    zValidator("json", patchSchema, invalidJson),
     async (c) => {
       const ctx = c.get("tenantContext");
       const result = await changeMemberRole(
@@ -140,7 +137,7 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
   app.put(
     "/v1/members/:userId/permissions",
     requirePermission("members:manage"),
-    zValidator("json", permissionsSchema, invalid),
+    zValidator("json", permissionsSchema, invalidJson),
     async (c) => {
       const ctx = c.get("tenantContext");
       const result = await replaceMemberOverrides(

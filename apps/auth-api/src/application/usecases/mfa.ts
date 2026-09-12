@@ -1,15 +1,16 @@
-import { decrypt, encrypt, err, ok, otpauthUri, type Result } from "@sandbox/shared";
+import { err, ok, otpauthUri, type Result } from "@sandbox/shared";
 import { MFA_ISSUER_NAME, MFA_MAX_ATTEMPTS, TOTP_SETUP_TTL_SECONDS } from "../../domain/policy.ts";
 import type { RequestEnvironment } from "../../domain/session.ts";
-import type { CognitoTokens } from "../ports/cognito.ts";
 import type { MfaPending } from "../ports/stores.ts";
 import type { AuthDeps } from "../deps.ts";
 import { recordAudit } from "./audit.ts";
+import { sealSecret, unsealCognitoTokens, unsealSecret } from "./cognito-tokens.ts";
 import {
   deletePending,
   finishLogin,
   loadPending,
   savePending,
+  updatePending,
   type LoginSuccess,
 } from "./login.ts";
 
@@ -73,12 +74,11 @@ export async function completeTotpChallenge(
         detail: { method: "totp", attempts },
       });
       // 失敗しても期限は延ばさない。試行回数の上限に達したらログインからやり直させる
-      const remaining = pending.expiresAt - deps.clock.nowSeconds();
-      if (attempts >= MFA_MAX_ATTEMPTS || remaining <= 0) {
+      if (attempts >= MFA_MAX_ATTEMPTS) {
         await deletePending(deps, pendingId);
         return err({ kind: "expired" });
       }
-      await savePending(deps, pendingId, { ...pending, attempts }, remaining);
+      await updatePending(deps, pendingId, { ...pending, attempts });
       return err({ kind: "code_mismatch" });
     }
     await deletePending(deps, pendingId);
@@ -99,30 +99,29 @@ export async function completeTotpChallenge(
 export async function beginTotpSetup(
   deps: AuthDeps,
   pendingId: string,
-  options: { readonly renew: boolean },
+  renew: boolean,
 ): Promise<Result<TotpSetup, MfaFlowError>> {
   const pending = await loadKind(deps, pendingId, "totp_setup");
   if (pending === undefined) return err({ kind: "expired" });
   const now = deps.clock.nowSeconds();
 
-  const current = decryptSecret(deps, pending);
+  const current =
+    pending.encryptedSecret === null ? undefined : unsealSecret(deps, pending.encryptedSecret);
   const alive =
     current !== undefined &&
     pending.secretIssuedAt !== null &&
     pending.secretIssuedAt + TOTP_SETUP_TTL_SECONDS > now;
-  if (alive && !options.renew) {
+  if (alive && !renew) {
     return ok(toSetup(pending, current, pending.secretIssuedAt ?? now));
   }
 
-  const tokens = decryptTokens(deps, pending);
+  const tokens = unsealCognitoTokens(deps, pending.encryptedTokens);
   if (tokens === undefined) return err({ kind: "expired" });
   const associated = await deps.cognito.associateSoftwareToken(tokens.accessToken);
   if (!associated.ok) {
     if (associated.error.kind === "session_expired") return err({ kind: "expired" });
     return err(associated.error);
   }
-  const currentKey = deps.encryptionKeys[0];
-  if (currentKey === undefined) throw new Error("No encryption key configured");
   if (current !== undefined) {
     await recordAudit(deps, {
       kind: "mfa_setup_expired",
@@ -132,7 +131,7 @@ export async function beginTotpSetup(
   }
   await savePending(deps, pendingId, {
     ...pending,
-    encryptedSecret: encrypt(associated.value.secret, currentKey),
+    encryptedSecret: sealSecret(deps, associated.value.secret),
     secretIssuedAt: now,
   });
   return ok(toSetup(pending, associated.value.secret, now));
@@ -153,7 +152,7 @@ export async function completeTotpSetup(
   if (pending.secretIssuedAt === null || pending.secretIssuedAt + TOTP_SETUP_TTL_SECONDS <= now) {
     return err({ kind: "setup_expired" });
   }
-  const tokens = decryptTokens(deps, pending);
+  const tokens = unsealCognitoTokens(deps, pending.encryptedTokens);
   if (tokens === undefined) return err({ kind: "expired" });
 
   const verified = await deps.cognito.verifySoftwareToken(tokens.accessToken, code);
@@ -213,22 +212,4 @@ function toSetup(
     otpauthUri: otpauthUri(MFA_ISSUER_NAME, pending.email, secret),
     expiresAt: issuedAt + TOTP_SETUP_TTL_SECONDS,
   };
-}
-
-function decryptSecret(
-  deps: AuthDeps,
-  pending: Extract<MfaPending, { kind: "totp_setup" }>,
-): string | undefined {
-  if (pending.encryptedSecret === null) return undefined;
-  const decrypted = decrypt(pending.encryptedSecret, deps.encryptionKeys);
-  return decrypted.ok ? decrypted.value : undefined;
-}
-
-function decryptTokens(
-  deps: AuthDeps,
-  pending: Extract<MfaPending, { kind: "totp_setup" }>,
-): CognitoTokens | undefined {
-  const decrypted = decrypt(pending.encryptedTokens, deps.encryptionKeys);
-  if (!decrypted.ok) return undefined;
-  return JSON.parse(decrypted.value) as CognitoTokens;
 }

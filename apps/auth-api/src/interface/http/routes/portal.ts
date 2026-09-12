@@ -3,7 +3,7 @@ import type { PortalResponse } from "@sandbox/api-contract";
 import type { CookiePolicy } from "@sandbox/shared";
 import type { AuthDeps } from "../../../application/deps.ts";
 import { loadSsoSession } from "../../../application/usecases/sso-session.ts";
-import { noStore, readSsoCookie } from "./helpers.ts";
+import { ssoCookie } from "./helpers.ts";
 
 /**
  * ポータル。auth.sandbox.com を直接開いたときの入口。画面は apps/auth-web の SPA が描く。
@@ -15,8 +15,7 @@ export function portalRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
 
   app.get("/api/portal", async (c) => {
-    noStore(c);
-    const session = await loadSsoSession(deps, readSsoCookie(c, policy));
+    const session = await loadSsoSession(deps, ssoCookie(policy).read(c));
     if (session === undefined) return c.json({ error: "unauthenticated" }, 401);
 
     const user = await deps.identity.findUserById(session.userId);

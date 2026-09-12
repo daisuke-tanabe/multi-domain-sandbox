@@ -4,8 +4,8 @@
 
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
-エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 149 件が通っている。MFA は全員必須のため、auth-api と web-core のログインは `completeMfa` と `completeMfaThrough` でパスワードのあとに TOTP を送って終える。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。auth-api のテストも SPA は配らず、auth-web と同じ経路で `/api/login` `/api/portal` `/api/logout` `/api/sessions` の JSON とフォーム POST の応答を検証する。セッションの記録と監査イベントはインメモリの `SessionRepository` と `AuditRepository` で確認する。React の画面は `*-web` も auth-web も `scripts/chrome-check.ts` が実 Chrome で描画して 17 項目を確認する。react-hook-form の検証は空のエンドユーザーフォームを送って項目ごとにエラーが出ること、入力すると一覧に加わることで確認する。
+エラーケース一覧の各行はいずれかの Integration テストで確かめる。1 つのテストが複数の行を扱ってよく、同じ経路を別の層で重ねて確かめない。ログイン画面そのものの失敗は auth-api、BFF を通した遷移は web-core が持つ。
+現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 142 件が通っている。内訳は auth-api が 63 件、crm-api が 15 件、cms-api が 2 件、web-core が 17 件、残りが shared。MFA は全員必須のため、auth-api と web-core のログインは `completeMfa` と `completeMfaThrough` でパスワードのあとに TOTP を送って終える。Redis 実装の 2 件は `REDIS_URL` があるときだけ動き、この 142 件には含まない。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。auth-api のテストも SPA は配らず、auth-web と同じ経路で `/api/login` `/api/portal` `/api/logout` `/api/sessions` の JSON とフォーム POST の応答を検証する。ログイン画面そのものの失敗と期限切れは auth-api が持ち、web-core は BFF を通した遷移と Cookie の分離だけを見る。Refresh の回数は揮発ストアの中身ではなく `/token` に届いた grant_type の記録で数える。セッションの記録と監査イベントはインメモリの `SessionRepository` と `AuditRepository` で確認する。React の画面は `*-web` も auth-web も `scripts/chrome-check.ts` が実 Chrome で描画して 17 項目を確認する。react-hook-form の検証は空のエンドユーザーフォームを送って項目ごとにエラーが出ること、入力すると一覧に加わることで確認する。
 
 ## テストピラミッド
 
@@ -46,6 +46,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | `MemoryKeyValueStore.get` | TTL 経過後は undefined |
 | `MemoryKeyValueStore.getAndDelete` | 同じキーを同時に消費しても値を返すのは 1 回 |
 | `MemoryKeyValueStore.setIfAbsent` | 未登録なら true で書き、登録済みなら false で書かない。TTL 経過後は再取得できる |
+| `MemoryKeyValueStore.update` | 既存のキーだけを書き換え、TTL を延ばさない。未登録なら false で何も書かない |
 | `MemorySetStore` | 同時に add した要素がすべて残り、remove で個別に外せる |
 | `MemoryCounterStore` | increment が 1 から加算され、窓の経過後に 1 に戻る |
 | `RemoteJwksSource` | 通常取得の直後でも未知の kid による強制再取得は 1 回通り、その後 60 秒は間引かれる。同時の取得要求は 1 回の fetch にまとまる |
@@ -114,7 +115,7 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | セキュリティ画面 | `/api/sessions` が本人の active なセッションを `current` と入ったサービス付きで返し、`csrfToken` を発行する。`POST /sessions/revoke` で別の端末のセッションを失効させると `/security` へ 303 し、その sid の Refresh が `invalid_grant` になり、一覧から消える。SSO Session なしの `/api/sessions` は 401 |
 | セキュリティ画面 | 他人の sid を `session_id` に入れても何も失効せず `/security` へ 303 する |
 | ストアのキー | ログイン後の `sso:sess` に Cookie の値のキーがなく、SHA-256 のキーだけがある |
-| Global Logout | `/api/logout?client_id=crm&tenant=tanaka` が SSO Session ありで `authenticated: true` と `csrfToken`。`POST /logout` で `sso:clients` のサービスごとに1通の logout_token。aud がサービス。完了後は `/logout?client_id=crm&tenant=tanaka` へ 303 し、`/api/logout` が `authenticated: false` と `returnTo` `{label: "CRM (tanaka)", href}` を返す。href は redirect_uri_template を tenant で展開した origin |
+| Global Logout | `/api/logout?client_id=crm&tenant=tanaka` が SSO Session ありで `authenticated: true` と `csrfToken`。`POST /logout` で `auth_session_clients` にあるサービスごとに1通の logout_token。aud がサービス。完了後は `/logout?client_id=crm&tenant=tanaka` へ 303 し、`/api/logout` が `authenticated: false` と `returnTo` `{label: "CRM (tanaka)", href}` を返す。href は redirect_uri_template を tenant で展開した origin |
 | 並行性と悪用 | 同じ Refresh Token を同時に 2 回提示すると成功は 1 つで、もう一方は invalid_grant。系列は失効せず、成功側の新 Token で次の Refresh が通る |
 | 並行性と悪用 | 別 Client の Basic 認証で Refresh Token を提示すると invalid_grant になり、その後の正規 Client からの提示も invalid_grant。系列全体が失効する |
 | 並行性と悪用 | ログイン済みの Cookie で再ログインすると旧 SSO Session がストアから消え、SSO Session は 1 件だけになる |
@@ -176,10 +177,10 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | E4 | 他テナントデータ拒否 | tanaka の Token で suzuki の end_user ID を指定 → 404 |
 | E5 | 割り当てなし | どのサービスにも割り当てのない carol が tanaka.crm へアクセス → 403 アクセス権なし画面。ログイン画面は出ない。SSO Session は残る |
 | E6 | Tenant Session 期限切れ復帰 | tanaka.crm の Session を強制失効 → 再アクセスで無画面復帰 |
-| E7 | SSO Session 期限切れ | SSO Session を強制失効 → suzuki.crm へアクセスでログイン画面 |
-| E8 | 認証失敗 | パスワード誤りで `/login?error=invalid_credentials&rid=` へ戻り、SPA が「ユーザー名またはパスワードが正しくありません」を出す。SSO Cookie が発行されない |
+| E7 | SSO Session 期限切れ | SSO Session を強制失効 → suzuki.crm へアクセスでログイン画面。auth-api のテストで確認する |
+| E8 | 認証失敗 | パスワード誤りで `/login?error=invalid_credentials&rid=` へ戻り、SPA が「ユーザー名またはパスワードが正しくありません」を出す。SSO Cookie が発行されない。auth-api のテストと chrome-check で確認する |
 | E9 | 再訪 | E1 後に tanaka.crm を再読み込み → auth への通信が発生しない |
-| E10 | role の差 | 同じ alice が tanaka では owner で `end_users:create` が yes、suzuki では viewer で no だが、上書きで `end_users:unmask` が yes。各サービスの DB が決める |
+| E10 | role の差 | 同じ alice が tanaka では owner で `end_users:create` が yes、suzuki では viewer で no だが、上書きで `end_users:unmask` が yes。各サービスの DB が決める。E2 のテストに含めて確認する |
 | E11 | Global Logout | auth の `/logout?client_id=crm&tenant=tanaka` で SPA の確認画面から「ログアウトする」→ tanaka.crm / suzuki.crm 両方が未ログイン。完了画面に「Sandbox からログアウトしました」と「CRM (tanaka) に戻る」 |
 | E12 | 別サービス SSO と契約判定 | E1 後に tanaka.cms へアクセス → ログイン画面なしで code を取得し cms 向け Token でログイン。suzuki.cms へアクセス → 403「テナント suzuki は CMS を契約していません」。crm から Global Logout → Back-Channel で tanaka.cms も未ログイン |
 | E13 | サービスごとの権限 | tanaka.cms では owner と表示されるが、cms 側の deny により `posts:create` が no で `posts:update` が yes。smoke と web のテストで確認する |

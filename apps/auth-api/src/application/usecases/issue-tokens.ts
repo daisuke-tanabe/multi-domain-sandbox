@@ -36,7 +36,7 @@ export async function issueTokens(deps: AuthDeps, input: IssueTokensInput): Prom
   const scopes = input.scope.split(" ");
   const tenantClaims = { tenant_id: input.tenant.id, tenant_slug: input.tenant.slug };
 
-  const idToken = await signJwt(deps.signingKey, {
+  const idToken = signJwt(deps.signingKey, {
     issuer: deps.issuer,
     audience: input.client.clientId,
     subject: input.user.id,
@@ -52,7 +52,7 @@ export async function issueTokens(deps: AuthDeps, input: IssueTokensInput): Prom
   });
 
   // aud に issuer も含め、/userinfo でも同じ Access Token を受け付ける
-  const accessToken = await signJwt(deps.signingKey, {
+  const accessToken = signJwt(deps.signingKey, {
     issuer: deps.issuer,
     audience: [input.client.audience, deps.issuer],
     subject: input.user.id,
@@ -67,5 +67,6 @@ export async function issueTokens(deps: AuthDeps, input: IssueTokensInput): Prom
     },
   });
 
-  return { idToken, accessToken, expiresIn: ACCESS_TOKEN_TTL_SECONDS };
+  const [signedId, signedAccess] = await Promise.all([idToken, accessToken]);
+  return { idToken: signedId, accessToken: signedAccess, expiresIn: ACCESS_TOKEN_TTL_SECONDS };
 }

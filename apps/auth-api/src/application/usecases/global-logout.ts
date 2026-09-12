@@ -1,17 +1,17 @@
-import { decrypt, getErrorMessage, randomToken, signJwt } from "@sandbox/shared";
+import { getErrorMessage, randomToken, signJwt } from "@sandbox/shared";
 import { BACKCHANNEL_TIMEOUT_MS, LOGOUT_TOKEN_TTL_SECONDS } from "../../domain/policy.ts";
 import type { OidcClient } from "../../domain/identity.ts";
 import type { RequestEnvironment, SessionRevokeReason } from "../../domain/session.ts";
 import type { SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "../deps.ts";
 import { recordAudit } from "./audit.ts";
-import { describeRefreshTokenFamily, revokeRefreshTokenFamily } from "./refresh-tokens.ts";
-import { destroySsoSession, findSsoSessionBySid, listAuthorizedClients } from "./sso-session.ts";
+import { unsealCognitoTokens } from "./cognito-tokens.ts";
+import { listRefreshFamilies, revokeRefreshTokenFamily } from "./refresh-tokens.ts";
+import { destroySsoSession, findSsoSessionBySid } from "./sso-session.ts";
 
 interface BackchannelResult {
   readonly clientId: string;
   readonly ok: boolean;
-  readonly reason?: string;
 }
 
 /**
@@ -34,37 +34,40 @@ export function issueLogoutToken(deps: AuthDeps, clientId: string, sid: string):
 }
 
 /**
- * SSO Session を失効させる。docs/design/02-auth-sequences.md の 11 に対応する。
- * 1. sid に紐付く Refresh Token 系列を全失効
- * 2. Cognito Refresh Token を失効
- * 3. SSO Session を削除
- * 4. code を発行した Client へ Back-Channel Logout を並列送信。失敗しても完了扱い
- * 5. identity DB の記録を revoked にし、監査イベントを残す
+ * sid のセッションを失効させる。docs/design/02-auth-sequences.md の 11 に対応する。
+ * 揮発ストアに SSO Session が残っていれば Refresh Token 系列、Cognito の Refresh Token、SSO Session を消し、
+ * 残っていなくても identity DB の記録から通知先を引いて Back-Channel Logout を送る。
+ * 通知先は auth_session_clients。code を発行した client だけに送る
  */
-export async function revokeSsoSession(
+export async function revokeSessionBySid(
   deps: AuthDeps,
-  session: SsoSession,
+  sid: string,
   reason: SessionRevokeReason,
   environment?: RequestEnvironment,
 ): Promise<void> {
-  const [families, authorizedClients] = await Promise.all([
-    deps.stores.sidRefreshFamilies.members(session.sid),
-    listAuthorizedClients(deps, session),
+  const [session, recorded] = await Promise.all([
+    findSsoSessionBySid(deps, sid),
+    deps.sessions.findWithClients(sid),
   ]);
-  await Promise.all(families.map((familyId) => revokeRefreshTokenFamily(deps, familyId)));
-  await deps.stores.sidRefreshFamilies.delete(session.sid);
+  if (session !== undefined) {
+    const families = await listRefreshFamilies(deps, sid);
+    await Promise.all([
+      ...families.map((ref) => revokeRefreshTokenFamily(deps, ref.familyId)),
+      revokeCognitoTokens(deps, session),
+      destroySsoSession(deps, session),
+    ]);
+    await deps.stores.sidRefreshFamilies.delete(sid);
+  }
 
-  await revokeCognitoTokens(deps, session);
-  await destroySsoSession(deps, session);
-
-  const notifications = await Promise.all(
-    authorizedClients.map((clientId) => notifyClient(deps, clientId, session.sid)),
-  );
-  await deps.sessions.markRevoked(session.sid, reason, deps.clock.nowSeconds());
+  const clientIds = [...new Set(recorded?.clients.map((c) => c.oidcClientId) ?? [])];
+  const [notifications] = await Promise.all([
+    Promise.all(clientIds.map((oidcClientId) => notifyClientById(deps, oidcClientId, sid))),
+    deps.sessions.markRevoked(sid, reason, deps.clock.nowSeconds()),
+  ]);
   await recordAudit(deps, {
     kind: reason === "global_logout" ? "global_logout" : "session_revoked",
-    userId: session.userId,
-    sessionId: session.sid,
+    userId: session?.userId ?? recorded?.userId ?? null,
+    sessionId: sid,
     ip: environment?.ip ?? null,
     userAgent: environment?.userAgent ?? null,
     detail: {
@@ -81,25 +84,7 @@ export function globalLogout(
   session: SsoSession,
   environment: RequestEnvironment,
 ): Promise<void> {
-  return revokeSsoSession(deps, session, "global_logout", environment);
-}
-
-/**
- * sid を指定して失効させる。ポータルからの他端末の失効や管理操作で使う。
- * 揮発ストアに既に無ければ DB の記録だけを revoked にする
- */
-export async function revokeSessionBySid(
-  deps: AuthDeps,
-  sid: string,
-  reason: SessionRevokeReason,
-  environment?: RequestEnvironment,
-): Promise<void> {
-  const session = await findSsoSessionBySid(deps, sid);
-  if (session !== undefined) {
-    await revokeSsoSession(deps, session, reason, environment);
-    return;
-  }
-  await deps.sessions.markRevoked(sid, reason, deps.clock.nowSeconds());
+  return revokeSessionBySid(deps, session.sid, "global_logout", environment);
 }
 
 /**
@@ -117,46 +102,47 @@ export async function revokeClientAccess(
   const affected = sessions.filter((s) =>
     s.clients.some((c) => c.oidcClientId === client.id && c.tenantId === tenantId),
   );
-  for (const record of affected) {
-    const families = await deps.stores.sidRefreshFamilies.members(record.id);
-    for (const familyId of families) {
-      const described = await describeRefreshTokenFamily(deps, familyId);
-      if (described?.clientId === client.clientId && described.tenantId === tenantId) {
-        await revokeRefreshTokenFamily(deps, familyId);
-      }
-    }
-    await notifyClient(deps, client.clientId, record.id);
-  }
+  await Promise.all(
+    affected.map(async (record) => {
+      const families = await listRefreshFamilies(deps, record.id);
+      await Promise.all(
+        families
+          .filter((ref) => ref.clientId === client.clientId && ref.tenantId === tenantId)
+          .map((ref) => revokeRefreshTokenFamily(deps, ref.familyId)),
+      );
+      await notifyClient(deps, client, record.id);
+    }),
+  );
   return affected.map((s) => s.id);
 }
 
 async function revokeCognitoTokens(deps: AuthDeps, session: SsoSession): Promise<void> {
-  const decrypted = decrypt(session.encryptedCognitoTokens, deps.encryptionKeys);
-  if (!decrypted.ok) {
-    deps.logger.warn("cognito tokens could not be decrypted on logout", {
-      reason: decrypted.error.kind,
-    });
-    return;
-  }
-  const parsed: unknown = JSON.parse(decrypted.value);
-  const refreshToken =
-    typeof parsed === "object" && parsed !== null ? Reflect.get(parsed, "refreshToken") : undefined;
-  if (typeof refreshToken !== "string") return;
-  const revoked = await deps.cognito.revokeRefreshToken(refreshToken);
+  const tokens = unsealCognitoTokens(deps, session.encryptedCognitoTokens);
+  if (tokens === undefined) return;
+  const revoked = await deps.cognito.revokeRefreshToken(tokens.refreshToken);
   if (!revoked.ok) deps.logger.warn("cognito revoke failed", { reason: revoked.error.reason });
+}
+
+async function notifyClientById(
+  deps: AuthDeps,
+  oidcClientId: string,
+  sid: string,
+): Promise<BackchannelResult> {
+  const client = await deps.identity.findClientById(oidcClientId);
+  if (client === undefined) return { clientId: oidcClientId, ok: false };
+  return notifyClient(deps, client, sid);
 }
 
 async function notifyClient(
   deps: AuthDeps,
-  clientId: string,
+  client: OidcClient,
   sid: string,
 ): Promise<BackchannelResult> {
-  const client = await deps.identity.findClient(clientId);
-  if (client === undefined || client.status !== "active" || client.backchannelLogoutUri === null) {
-    return { clientId, ok: false, reason: "no_backchannel_uri" };
+  if (client.status !== "active" || client.backchannelLogoutUri === null) {
+    return { clientId: client.clientId, ok: false };
   }
   try {
-    const logoutToken = await issueLogoutToken(deps, clientId, sid);
+    const logoutToken = await issueLogoutToken(deps, client.clientId, sid);
     // 応答しない Client でユーザーのログアウトを待たせない
     const res = await deps.fetch(client.backchannelLogoutUri, {
       method: "POST",
@@ -164,9 +150,17 @@ async function notifyClient(
       body: new URLSearchParams({ logout_token: logoutToken }).toString(),
       signal: AbortSignal.timeout(BACKCHANNEL_TIMEOUT_MS),
     });
-    if (!res.ok) return { clientId, ok: false, reason: `status ${res.status}` };
-    return { clientId, ok: true };
+    if (!res.ok)
+      deps.logger.warn("backchannel logout rejected", {
+        clientId: client.clientId,
+        status: res.status,
+      });
+    return { clientId: client.clientId, ok: res.ok };
   } catch (error: unknown) {
-    return { clientId, ok: false, reason: getErrorMessage(error) };
+    deps.logger.warn("backchannel logout failed", {
+      clientId: client.clientId,
+      reason: getErrorMessage(error),
+    });
+    return { clientId: client.clientId, ok: false };
   }
 }

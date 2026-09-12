@@ -8,9 +8,9 @@ import type {
   MfaSetupResponse,
 } from "@sandbox/api-contract";
 import type { CookiePolicy } from "@sandbox/shared";
-import { issueCsrfToken, verifyCsrfToken } from "../../../application/usecases/csrf.ts";
+import { issueCsrfToken } from "../../../application/usecases/csrf.ts";
 import type { AuthDeps } from "../../../application/deps.ts";
-import { login, type LoginError, type LoginSuccess } from "../../../application/usecases/login.ts";
+import { login, type LoginSuccess } from "../../../application/usecases/login.ts";
 import {
   beginTotpSetup,
   completeTotpChallenge,
@@ -18,20 +18,20 @@ import {
   type MfaFlowError,
 } from "../../../application/usecases/mfa.ts";
 import {
-  deletePendingAuthorization,
+  consumePendingAuthorization,
   loadPendingAuthorization,
   resumePendingAuthorization,
 } from "../../../application/usecases/pending-authorization.ts";
 import { destroySsoSession, loadSsoSession } from "../../../application/usecases/sso-session.ts";
 import { errorPage } from "../views/pages.ts";
 import {
-  noStore,
+  csrfCookie,
+  invalidForm,
   redirectForOutcome,
-  readCsrfCookie,
-  readSsoCookie,
+  rejectInvalidCsrf,
   requestEnvironment,
-  writeCsrfCookie,
-  writeSsoCookie,
+  ssoCookie,
+  withQuery,
 } from "./helpers.ts";
 
 const loginFormSchema = z.object({
@@ -65,20 +65,8 @@ const EXPIRED_REQUEST_MESSAGE =
 const EXPIRED_MFA_MESSAGE = "時間切れです。もう一度ログインしてください。";
 
 function errorMessageOf(c: Context): { errorMessage: string } | Record<never, never> {
-  const kind = c.req.query("error") ?? "";
-  const message = ERROR_MESSAGES[kind];
+  const message = ERROR_MESSAGES[c.req.query("error") ?? ""];
   return message === undefined ? {} : { errorMessage: message };
-}
-
-function withQuery(path: string, params: Record<string, string>): string {
-  const query = new URLSearchParams(
-    Object.entries(params).filter(([, value]) => value !== ""),
-  ).toString();
-  return query === "" ? path : `${path}?${query}`;
-}
-
-function loginErrorKind(error: LoginError): string {
-  return error.kind;
 }
 
 /**
@@ -92,31 +80,23 @@ function loginErrorKind(error: LoginError): string {
  */
 export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
+  const sso = ssoCookie(policy);
+  const csrf = csrfCookie(policy);
 
-  const invalidForm = (result: { success: boolean }, c: Context) =>
-    result.success
-      ? undefined
-      : c.html(errorPage("無効なリクエストです", "入力内容が正しくありません。"), 400);
-
-  const csrfGuard = async (c: Context, formToken: string): Promise<Response | undefined> => {
-    const valid = await verifyCsrfToken(deps, readCsrfCookie(c, policy), formToken);
-    if (valid) return undefined;
-    deps.logger.warn("login csrf mismatch");
-    return c.html(
-      errorPage("ページを再読み込みしてください", "フォームの有効期限が切れています。"),
-      403,
-    );
+  const issueCsrf = async (c: Context): Promise<string> => {
+    const issued = await issueCsrfToken(deps);
+    csrf.write(c, issued.cookieValue);
+    return issued.formToken;
   };
 
   /** MFA を終えたログインの仕上げ。Cookie を書き、保留していた認可リクエストを再開する */
   const finish = async (c: Context, result: LoginSuccess, rid: string): Promise<Response> => {
     // 古い SSO Session を残さない。Cookie を上書きするだけでは前のセッションが期限まで生き続ける
-    const previous = await loadSsoSession(deps, readSsoCookie(c, policy));
+    const previous = await loadSsoSession(deps, sso.read(c));
     if (previous !== undefined) await destroySsoSession(deps, previous);
-    writeSsoCookie(c, policy, result.cookieValue);
-    const request = rid === "" ? undefined : await loadPendingAuthorization(deps, rid);
+    sso.write(c, result.cookieValue);
+    const request = rid === "" ? undefined : await consumePendingAuthorization(deps, rid);
     if (request === undefined) return c.redirect("/", 303);
-    await deletePendingAuthorization(deps, rid);
     const outcome = await resumePendingAuthorization(
       deps,
       request,
@@ -139,40 +119,33 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       case "expired":
         return c.redirect(withQuery("/login", { error: "challenge_expired" }), 303);
       case "user_disabled":
-        return c.redirect(withQuery("/login", { error: "user_disabled" }), 303);
       case "unavailable":
-        return c.redirect(withQuery("/login", { error: "unavailable" }), 303);
+        return c.redirect(withQuery("/login", { error: error.kind }), 303);
     }
   };
 
   app.get("/api/login", async (c) => {
-    noStore(c);
     const rid = c.req.query("rid") ?? "";
     if (rid !== "") {
-      const request = await loadPendingAuthorization(deps, rid);
-      if (request === undefined) {
+      if ((await loadPendingAuthorization(deps, rid)) === undefined) {
         return c.json({ error: "expired_request", message: EXPIRED_REQUEST_MESSAGE }, 400);
       }
     } else {
       // rid なしはポータル用ログイン。既に SSO Session があればポータルへ
-      const session = await loadSsoSession(deps, readSsoCookie(c, policy));
+      const session = await loadSsoSession(deps, sso.read(c));
       if (session !== undefined) return c.json({ redirectTo: "/" } satisfies LoginRedirectResponse);
     }
-    const csrf = await issueCsrfToken(deps);
-    writeCsrfCookie(c, policy, csrf.cookieValue);
     return c.json({
       rid,
-      csrfToken: csrf.formToken,
+      csrfToken: await issueCsrf(c),
       ...errorMessageOf(c),
     } satisfies LoginContextResponse);
   });
 
   app.post("/login", zValidator("form", loginFormSchema, invalidForm), async (c) => {
-    noStore(c);
     const form = c.req.valid("form");
-    const guarded = await csrfGuard(c, form.csrf);
-    if (guarded !== undefined) return guarded;
-
+    const rejected = await rejectInvalidCsrf(c, deps, policy, form.csrf);
+    if (rejected !== undefined) return rejected;
     if (form.rid !== "" && (await loadPendingAuthorization(deps, form.rid)) === undefined) {
       return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
     }
@@ -184,53 +157,40 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       form.rid,
     );
     if (!result.ok) {
-      return c.redirect(
-        withQuery("/login", { error: loginErrorKind(result.error), rid: form.rid }),
-        303,
-      );
+      return c.redirect(withQuery("/login", { error: result.error.kind, rid: form.rid }), 303);
     }
-    switch (result.value.kind) {
-      case "totp_required":
-        return c.redirect(withQuery("/login/challenge", { mid: result.value.pendingId }), 303);
-      case "setup_required":
-        return c.redirect(withQuery("/login/mfa-setup", { mid: result.value.pendingId }), 303);
-      case "logged_in":
-        return finish(c, result.value.login, form.rid);
-    }
+    const next = result.value.kind === "totp_required" ? "/login/challenge" : "/login/mfa-setup";
+    return c.redirect(withQuery(next, { mid: result.value.pendingId }), 303);
   });
 
   app.get("/api/login/challenge", async (c) => {
-    noStore(c);
-    const csrf = await issueCsrfToken(deps);
-    writeCsrfCookie(c, policy, csrf.cookieValue);
     return c.json({
-      csrfToken: csrf.formToken,
+      csrfToken: await issueCsrf(c),
       method: "totp",
       ...errorMessageOf(c),
     } satisfies LoginChallengeResponse);
   });
 
   app.post("/login/challenge", zValidator("form", codeFormSchema, invalidForm), async (c) => {
-    noStore(c);
     const form = c.req.valid("form");
-    const guarded = await csrfGuard(c, form.csrf);
-    if (guarded !== undefined) return guarded;
+    const rejected = await rejectInvalidCsrf(c, deps, policy, form.csrf);
+    if (rejected !== undefined) return rejected;
     const result = await completeTotpChallenge(deps, form.mid, form.code, requestEnvironment(c));
     if (!result.ok) return respondMfaError(c, result.error, "/login/challenge", form.mid);
     return finish(c, result.value.login, result.value.rid);
   });
 
   app.get("/api/login/mfa-setup", async (c) => {
-    noStore(c);
-    const mid = c.req.query("mid") ?? "";
-    const setup = await beginTotpSetup(deps, mid, { renew: c.req.query("renew") === "1" });
+    const setup = await beginTotpSetup(
+      deps,
+      c.req.query("mid") ?? "",
+      c.req.query("renew") === "1",
+    );
     if (!setup.ok) {
       return c.json({ error: "expired_request", message: EXPIRED_MFA_MESSAGE }, 400);
     }
-    const csrf = await issueCsrfToken(deps);
-    writeCsrfCookie(c, policy, csrf.cookieValue);
     return c.json({
-      csrfToken: csrf.formToken,
+      csrfToken: await issueCsrf(c),
       method: "totp",
       account: setup.value.account,
       secret: setup.value.secret,
@@ -241,10 +201,9 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   });
 
   app.post("/login/mfa-setup", zValidator("form", codeFormSchema, invalidForm), async (c) => {
-    noStore(c);
     const form = c.req.valid("form");
-    const guarded = await csrfGuard(c, form.csrf);
-    if (guarded !== undefined) return guarded;
+    const rejected = await rejectInvalidCsrf(c, deps, policy, form.csrf);
+    if (rejected !== undefined) return rejected;
     const result = await completeTotpSetup(deps, form.mid, form.code, requestEnvironment(c));
     if (!result.ok) return respondMfaError(c, result.error, "/login/mfa-setup", form.mid);
     return finish(c, result.value.login, result.value.rid);

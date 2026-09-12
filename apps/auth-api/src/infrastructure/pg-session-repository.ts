@@ -1,102 +1,93 @@
 import type { Pool } from "pg";
 import { z } from "zod";
+import { epochSecondsColumn, queryAll, queryOne, toTimestamp } from "@sandbox/shared";
+import { SSO_SESSION_ABSOLUTE_SECONDS, SSO_SESSION_IDLE_SECONDS } from "../domain/policy.ts";
 import type {
   AuthSessionRecord,
   AuthSessionWithClients,
+  NewAuthSession,
   RequestEnvironment,
   SessionClientEntry,
   SessionRevokeReason,
 } from "../domain/session.ts";
 import type { SessionRepository } from "../application/ports/session-repository.ts";
 
-const epoch = z.coerce.date().transform((d) => Math.floor(d.getTime() / 1000));
-
-const sessionRow = z.object({
-  id: z.string(),
-  user_id: z.string(),
-  status: z.enum(["active", "revoked"]),
-  ip: z.string(),
-  user_agent: z.string(),
-  created_at: epoch,
-  last_seen_at: epoch,
-  revoked_at: epoch.nullable(),
-  revoke_reason: z.string().nullable(),
-});
-
-const clientRow = z.object({
-  session_id: z.string(),
-  oidc_client_id: z.string(),
-  tenant_id: z.string(),
-  first_seen_at: epoch,
-  last_seen_at: epoch,
-});
-
-function toRecord(r: z.infer<typeof sessionRow>): AuthSessionRecord {
-  return {
+const sessionRow = z
+  .object({
+    id: z.string(),
+    user_id: z.string(),
+    ip: z.string(),
+    user_agent: z.string(),
+    created_at: epochSecondsColumn,
+    last_seen_at: epochSecondsColumn,
+    revoked_at: epochSecondsColumn.nullable(),
+    revoke_reason: z.enum(["global_logout", "user_revoked"]).nullable(),
+  })
+  .transform((r): AuthSessionRecord => ({
     id: r.id,
     userId: r.user_id,
-    status: r.status,
     ip: r.ip,
     userAgent: r.user_agent,
     createdAt: r.created_at,
     lastSeenAt: r.last_seen_at,
     revokedAt: r.revoked_at,
     revokeReason: r.revoke_reason,
-  };
-}
+  }));
 
-function toClient(r: z.infer<typeof clientRow>): SessionClientEntry {
-  return {
+const clientRow = z
+  .object({
+    session_id: z.string(),
+    oidc_client_id: z.string(),
+    tenant_id: z.string(),
+    first_seen_at: epochSecondsColumn,
+    last_seen_at: epochSecondsColumn,
+  })
+  .transform((r): SessionClientEntry => ({
     sessionId: r.session_id,
     oidcClientId: r.oidc_client_id,
     tenantId: r.tenant_id,
     firstSeenAt: r.first_seen_at,
     lastSeenAt: r.last_seen_at,
-  };
-}
+  }));
 
-const COLUMNS =
-  "id, user_id, status, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason";
-const at = (seconds: number) => new Date(seconds * 1000);
+const environmentRow = z
+  .object({ ip: z.string(), user_agent: z.string() })
+  .transform((r): RequestEnvironment => ({ ip: r.ip, userAgent: r.user_agent }));
+
+const COLUMNS = "id, user_id, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason";
 
 export class PgSessionRepository implements SessionRepository {
   constructor(private readonly pool: Pool) {}
 
-  public async create(record: AuthSessionRecord): Promise<void> {
+  public async create(session: NewAuthSession): Promise<void> {
     await this.pool.query(
-      `INSERT INTO identity.auth_sessions (${COLUMNS})
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO identity.auth_sessions (id, user_id, ip, user_agent, created_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
       [
-        record.id,
-        record.userId,
-        record.status,
-        record.ip,
-        record.userAgent,
-        at(record.createdAt),
-        at(record.lastSeenAt),
-        record.revokedAt === null ? null : at(record.revokedAt),
-        record.revokeReason,
+        session.id,
+        session.userId,
+        session.ip,
+        session.userAgent,
+        toTimestamp(session.createdAt),
+        toTimestamp(session.lastSeenAt),
       ],
     );
   }
 
-  public async find(sessionId: string): Promise<AuthSessionRecord | undefined> {
-    const result = await this.pool.query(
-      `SELECT ${COLUMNS} FROM identity.auth_sessions WHERE id = $1`,
-      [sessionId],
-    );
-    const first: unknown = result.rows[0];
-    return first === undefined ? undefined : toRecord(sessionRow.parse(first));
-  }
-
-  public async touch(
+  public touch(
     sessionId: string,
     environment: RequestEnvironment,
-    atSeconds: number,
-  ): Promise<void> {
-    await this.pool.query(
-      `UPDATE identity.auth_sessions SET ip = $2, user_agent = $3, last_seen_at = $4 WHERE id = $1`,
-      [sessionId, environment.ip, environment.userAgent, at(atSeconds)],
+    at: number,
+  ): Promise<RequestEnvironment | undefined> {
+    // 更新前の環境を同じ文で返し、変化の検知に別の読み取りを要らなくする
+    return queryOne(
+      this.pool,
+      environmentRow,
+      `UPDATE identity.auth_sessions AS s SET ip = $2, user_agent = $3, last_seen_at = $4
+         FROM (SELECT id, ip, user_agent FROM identity.auth_sessions WHERE id = $1 FOR UPDATE) AS old
+        WHERE s.id = old.id
+        RETURNING old.ip, old.user_agent`,
+      [sessionId, environment.ip, environment.userAgent, toTimestamp(at)],
     );
   }
 
@@ -104,42 +95,65 @@ export class PgSessionRepository implements SessionRepository {
     sessionId: string,
     oidcClientId: string,
     tenantId: string,
-    atSeconds: number,
+    at: number,
   ): Promise<void> {
     await this.pool.query(
       `INSERT INTO identity.auth_session_clients (session_id, oidc_client_id, tenant_id, first_seen_at, last_seen_at)
        VALUES ($1, $2, $3, $4, $4)
        ON CONFLICT (session_id, oidc_client_id, tenant_id) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at`,
-      [sessionId, oidcClientId, tenantId, at(atSeconds)],
+      [sessionId, oidcClientId, tenantId, toTimestamp(at)],
     );
   }
 
   public async markRevoked(
     sessionId: string,
     reason: SessionRevokeReason,
-    atSeconds: number,
+    at: number,
   ): Promise<void> {
     await this.pool.query(
-      `UPDATE identity.auth_sessions SET status = 'revoked', revoked_at = $2, revoke_reason = $3
-        WHERE id = $1 AND status = 'active'`,
-      [sessionId, at(atSeconds), reason],
+      `UPDATE identity.auth_sessions SET revoked_at = $2, revoke_reason = $3
+        WHERE id = $1 AND revoked_at IS NULL`,
+      [sessionId, toTimestamp(at), reason],
     );
   }
 
   public async listActiveByUser(userId: string): Promise<ReadonlyArray<AuthSessionWithClients>> {
-    const sessions = await this.pool.query(
+    const sessions = await queryAll(
+      this.pool,
+      sessionRow,
       `SELECT ${COLUMNS} FROM identity.auth_sessions
-        WHERE user_id = $1 AND status = 'active' ORDER BY last_seen_at DESC`,
-      [userId],
+        WHERE user_id = $1 AND revoked_at IS NULL
+          AND last_seen_at > now() - make_interval(secs => $2)
+          AND created_at > now() - make_interval(secs => $3)
+        ORDER BY last_seen_at DESC`,
+      [userId, SSO_SESSION_IDLE_SECONDS, SSO_SESSION_ABSOLUTE_SECONDS],
     );
-    const records = sessions.rows.map((r) => toRecord(sessionRow.parse(r)));
-    if (records.length === 0) return [];
-    const clients = await this.pool.query(
+    return this.attachClients(sessions);
+  }
+
+  public async findWithClients(sessionId: string): Promise<AuthSessionWithClients | undefined> {
+    const session = await queryOne(
+      this.pool,
+      sessionRow,
+      `SELECT ${COLUMNS} FROM identity.auth_sessions WHERE id = $1`,
+      [sessionId],
+    );
+    if (session === undefined) return undefined;
+    const [withClients] = await this.attachClients([session]);
+    return withClients;
+  }
+
+  private async attachClients(
+    sessions: ReadonlyArray<AuthSessionRecord>,
+  ): Promise<AuthSessionWithClients[]> {
+    if (sessions.length === 0) return [];
+    const entries = await queryAll(
+      this.pool,
+      clientRow,
       `SELECT session_id, oidc_client_id, tenant_id, first_seen_at, last_seen_at
          FROM identity.auth_session_clients WHERE session_id = ANY($1)`,
-      [records.map((r) => r.id)],
+      [sessions.map((s) => s.id)],
     );
-    const entries = clients.rows.map((r) => toClient(clientRow.parse(r)));
-    return records.map((r) => ({ ...r, clients: entries.filter((e) => e.sessionId === r.id) }));
+    return sessions.map((s) => ({ ...s, clients: entries.filter((e) => e.sessionId === s.id) }));
   }
 }

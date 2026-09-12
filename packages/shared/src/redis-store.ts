@@ -24,6 +24,18 @@ export class RedisKeyValueStore<T> implements KeyValueStore<T> {
     await this.redis.set(this.key(key), JSON.stringify(value), "EX", ttl(ttlSeconds));
   }
 
+  public async update(key: string, value: T): Promise<boolean> {
+    // KEEPTTL で寿命を引き継ぎ、XX で既存キーだけを書き換える
+    const result = await this.redis.call(
+      "SET",
+      this.key(key),
+      JSON.stringify(value),
+      "KEEPTTL",
+      "XX",
+    );
+    return result === "OK";
+  }
+
   public async delete(key: string): Promise<void> {
     await this.redis.del(this.key(key));
   }

@@ -19,6 +19,7 @@ import {
   type ServiceMemberError,
 } from "../../../application/usecases/service-members.ts";
 import { clientAuth, type ClientEnv } from "./client-auth.ts";
+import { invalidJson } from "./helpers.ts";
 
 const tenantId: z.ZodString = idSchema;
 
@@ -65,10 +66,7 @@ export function adminRoutes(deps: AuthDeps): Hono<ClientEnv> {
 
   app.post(
     "/admin/service-members",
-    zValidator("json", inviteServiceMemberInputSchema, (result, c) => {
-      if (!result.success) return c.json({ error: "invalid_request" }, 400);
-      return undefined;
-    }),
+    zValidator("json", inviteServiceMemberInputSchema, invalidJson),
     async (c) => {
       const body = c.req.valid("json");
       const result = await inviteServiceMember(deps, c.get("client"), {
@@ -83,10 +81,7 @@ export function adminRoutes(deps: AuthDeps): Hono<ClientEnv> {
 
   app.delete(
     "/admin/service-members",
-    zValidator("json", revokeServiceMemberInputSchema, (result, c) => {
-      if (!result.success) return c.json({ error: "invalid_request" }, 400);
-      return undefined;
-    }),
+    zValidator("json", revokeServiceMemberInputSchema, invalidJson),
     async (c) => {
       const body = c.req.valid("json");
       const result = await revokeServiceMember(deps, c.get("client"), {

@@ -13,43 +13,28 @@ import {
   Input,
   Notice,
 } from "@sandbox/web-ui";
-import { ApiError, getJson, pickQuery } from "../../lib/api.ts";
+import { ExpiredCard } from "../../components/expired-card.tsx";
+import { getJson, loadOrExpired, pickQuery, type Loaded } from "../../lib/api.ts";
 import type { Route } from "./+types/login.route";
-
-type LoginData =
-  | { readonly kind: "form"; readonly context: LoginContextResponse }
-  | { readonly kind: "expired"; readonly message: string };
 
 /**
  * /login?rid=&error=。auth-api から rid と CSRF を受け取ってフォームを描く。
  * 送信は通常のフォーム POST で、成功すれば auth-api がサービスへ 303 する。
  */
-export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LoginData> {
+export function clientLoader({
+  request,
+}: Route.ClientLoaderArgs): Promise<Loaded<LoginContextResponse>> {
   const params = pickQuery(request.url, ["rid", "error"]);
-  try {
+  return loadOrExpired(async () => {
     const context = await getJson(loginApiResponseSchema, `/api/login?${params.toString()}`);
     if ("redirectTo" in context) throw redirect(context.redirectTo);
-    return { kind: "form", context };
-  } catch (error: unknown) {
-    if (error instanceof ApiError && error.code === "expired_request") {
-      return { kind: "expired", message: error.message };
-    }
-    throw error;
-  }
+    return context;
+  });
 }
 
 export default function Login({ loaderData }: Route.ComponentProps) {
-  if (loaderData.kind === "expired") {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>ログインをやり直してください</CardTitle>
-          <CardDescription>{loaderData.message}</CardDescription>
-        </CardHeader>
-      </Card>
-    );
-  }
-  const { context } = loaderData;
+  if (loaderData.kind === "expired") return <ExpiredCard message={loaderData.message} />;
+  const context = loaderData.data;
   return (
     <Card>
       <CardHeader>

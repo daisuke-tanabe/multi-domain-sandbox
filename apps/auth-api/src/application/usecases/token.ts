@@ -67,9 +67,9 @@ export async function authenticateClient(
 }
 
 export interface CodeExchangeInput {
-  readonly code: string | undefined;
-  readonly redirectUri: string | undefined;
-  readonly codeVerifier: string | undefined;
+  readonly code: string;
+  readonly redirectUri: string;
+  readonly codeVerifier: string;
 }
 
 /**
@@ -81,9 +81,6 @@ export async function exchangeAuthorizationCode(
   client: OidcClient,
   input: CodeExchangeInput,
 ): Promise<Result<TokenResponse, TokenError>> {
-  if (input.code === undefined || input.code === "")
-    return err({ kind: "invalid_grant", reason: "code_missing" });
-
   const codeKey = keyOf(input.code);
   const stored = await deps.stores.authorizationCodes.getAndDelete(codeKey);
   if (stored === undefined)
@@ -115,26 +112,27 @@ export async function exchangeAuthorizationCode(
   if (user === undefined) return err({ kind: "invalid_grant", reason: "user_missing" });
   if (!tenant.ok) return tenant;
 
-  const refreshToken = await createRefreshTokenFamily(deps, {
-    clientId: client.clientId,
-    userId: stored.userId,
-    tenantId: stored.tenantId,
-    sid: stored.sid,
-    ssoSessionId: stored.ssoSessionId,
-    scope: stored.scope,
-    authTime: stored.authTime,
-  });
+  const [refreshToken, tokens] = await Promise.all([
+    createRefreshTokenFamily(deps, {
+      clientId: client.clientId,
+      userId: stored.userId,
+      tenantId: stored.tenantId,
+      sid: stored.sid,
+      ssoSessionId: stored.ssoSessionId,
+      scope: stored.scope,
+      authTime: stored.authTime,
+    }),
+    issueTokens(deps, {
+      client,
+      user,
+      scope: stored.scope,
+      nonce: stored.nonce,
+      sid: stored.sid,
+      tenant: tenant.value,
+      authTime: stored.authTime,
+    }),
+  ]);
   await rememberConsumedCode(deps, codeKey, { used: true, familyId: refreshToken.record.familyId });
-
-  const tokens = await issueTokens(deps, {
-    client,
-    user,
-    scope: stored.scope,
-    nonce: stored.nonce,
-    sid: stored.sid,
-    tenant: tenant.value,
-    authTime: stored.authTime,
-  });
   deps.logger.info("tokens issued via authorization_code", {
     clientId: client.clientId,
     userId: user.id,
@@ -151,7 +149,7 @@ function validateCodeBinding(
     return err({ kind: "invalid_grant", reason: "client_mismatch" });
   if (stored.redirectUri !== input.redirectUri)
     return err({ kind: "invalid_grant", reason: "redirect_uri_mismatch" });
-  if (input.codeVerifier === undefined || !isValidCodeVerifier(input.codeVerifier)) {
+  if (!isValidCodeVerifier(input.codeVerifier)) {
     return err({ kind: "invalid_grant", reason: "code_verifier_invalid" });
   }
   if (computeCodeChallenge(input.codeVerifier) !== stored.codeChallenge) {
@@ -174,11 +172,8 @@ function rememberConsumedCode(
 export async function refreshAccessToken(
   deps: AuthDeps,
   client: OidcClient,
-  refreshTokenValue: string | undefined,
+  refreshTokenValue: string,
 ): Promise<Result<TokenResponse, TokenError>> {
-  if (refreshTokenValue === undefined || refreshTokenValue === "") {
-    return err({ kind: "invalid_grant", reason: "refresh_token_missing" });
-  }
   // 先に一回限りで消費する。同じ値を同時に提示されても成功するのは 1 つだけ
   const consumed = await consumeRefreshToken(deps, refreshTokenValue);
   if (consumed.kind === "unknown")
@@ -218,16 +213,18 @@ export async function refreshAccessToken(
   }
   const { user, tenant } = validated.value;
 
-  const next = await rotateRefreshToken(deps, stored);
-  const tokens = await issueTokens(deps, {
-    client,
-    user,
-    scope: stored.scope,
-    nonce: undefined,
-    sid: stored.sid,
-    tenant,
-    authTime: stored.authTime,
-  });
+  const [next, tokens] = await Promise.all([
+    rotateRefreshToken(deps, stored),
+    issueTokens(deps, {
+      client,
+      user,
+      scope: stored.scope,
+      nonce: undefined,
+      sid: stored.sid,
+      tenant,
+      authTime: stored.authTime,
+    }),
+  ]);
   deps.logger.info("tokens issued via refresh_token", {
     clientId: client.clientId,
     userId: user.id,
@@ -258,9 +255,8 @@ async function validateRefreshContext(
 export async function revokeRefreshToken(
   deps: AuthDeps,
   client: OidcClient,
-  tokenValue: string | undefined,
+  tokenValue: string,
 ): Promise<void> {
-  if (tokenValue === undefined || tokenValue === "") return;
   const stored: RefreshToken | undefined = await deps.stores.refreshTokens.get(keyOf(tokenValue));
   if (stored === undefined || stored.clientId !== client.clientId) return;
   await revokeRefreshTokenFamily(deps, stored.familyId);

@@ -206,16 +206,58 @@ describe("crm member management", () => {
     expect(self.status).toBe(400);
   });
 
-  test("a crm token is rejected on a wrong host and an unknown role is rejected", async () => {
+  test("an unknown role is rejected", async () => {
     const owner = await issueTestAccessToken(crm, { userId: ALICE_ID, tenantId: TANAKA_ID });
 
-    const wrongHost = await crm.app.request("http://api.cms.localhost:3004/v1/me", bearer(owner));
     const badRole = await crm.app.request(
       `${CRM_AUDIENCE}/v1/members`,
       bearer(owner, jsonBody({ email: "x@example.com", role: "editor" })),
     );
 
-    expect(wrongHost.status).toBe(404);
     expect(badRole.status).toBe(400);
+  });
+});
+
+describe("crm access token validation", () => {
+  let crm: CrmHarness;
+
+  beforeEach(async () => {
+    crm = await createCrmHarness();
+  });
+
+  test.each([
+    ["no bearer", undefined, 401, "invalid_request"],
+    ["expired token", { expiresInSeconds: -600 }, 401, "invalid_token"],
+    [
+      "another service's audience",
+      { audience: "http://api.cms.localhost:3004" },
+      401,
+      "invalid_token",
+    ],
+    ["another issuer", { issuer: "http://evil.localhost" }, 401, "invalid_token"],
+  ] as const)("rejects %s", async (_label, tokenInput, status, error) => {
+    const init =
+      tokenInput === undefined
+        ? {}
+        : bearer(
+            await issueTestAccessToken(crm, {
+              userId: ALICE_ID,
+              tenantId: TANAKA_ID,
+              ...tokenInput,
+            }),
+          );
+
+    const res = await crm.app.request(`${CRM_AUDIENCE}/v1/me`, init);
+
+    expect(res.status).toBe(status);
+    expect(res.headers.get("WWW-Authenticate")).toContain(`error="${error}"`);
+  });
+
+  test("answers 404 on a host that belongs to another service", async () => {
+    const owner = await issueTestAccessToken(crm, { userId: ALICE_ID, tenantId: TANAKA_ID });
+
+    const res = await crm.app.request("http://api.cms.localhost:3004/v1/me", bearer(owner));
+
+    expect(res.status).toBe(404);
   });
 });

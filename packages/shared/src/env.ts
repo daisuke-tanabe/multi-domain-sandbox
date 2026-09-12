@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TENANT_SLUG_PATTERN } from "./redirect-template.ts";
 
 /**
  * 環境変数の検証。各アプリの config.ts はスキーマだけを持ち、失敗時の扱いはここで揃える。
@@ -41,3 +42,21 @@ export function jsonArrayEnv<T extends z.ZodType>(item: T) {
 }
 
 export const publicSchemeEnv = z.enum(["http", "https"]);
+
+/** サービスの識別子。oidc_clients.client_id と同じ形 */
+export const clientIdEnv = z.string().regex(TENANT_SLUG_PATTERN);
+/** ハッシュが SHA-256 のみなので 32 バイト以上の乱数を要求する。base64url で 43 文字 */
+export const clientSecretEnv = z.string().min(43);
+
+/**
+ * https で公開する構成では本番の値を必須にする。欠けたものを issues として superRefine に渡す
+ */
+export function requireWhenSecure(
+  ctx: z.RefinementCtx,
+  issues: ReadonlyArray<readonly [path: string, message: string]>,
+  condition: string,
+): void {
+  for (const [path, message] of issues) {
+    ctx.addIssue({ code: "custom", path: [path], message: `${message} ${condition}` });
+  }
+}

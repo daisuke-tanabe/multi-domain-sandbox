@@ -1,18 +1,6 @@
 import { z } from "zod";
-import { jsonArrayEnv, parseEnv } from "@sandbox/shared";
-
-const mockUserSchema = z.object({
-  username: z.string().min(1),
-  password: z.string().min(1),
-  sub: z.string().min(1),
-  email: z.string().email(),
-  name: z.string().optional(),
-  /** 登録済みの認証アプリの secret。base32。無ければ初回ログインで登録する */
-  totpSecret: z
-    .string()
-    .regex(/^[A-Z2-7]+$/)
-    .optional(),
-});
+import { jsonArrayEnv, parseEnv, requireWhenSecure } from "@sandbox/shared";
+import { mockCognitoUserSchema } from "./infrastructure/mock-cognito.ts";
 
 const baseSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
@@ -32,7 +20,7 @@ const baseSchema = z.object({
 const cognitoSchema = z.discriminatedUnion("COGNITO_ADAPTER", [
   z.object({
     COGNITO_ADAPTER: z.literal("mock"),
-    MOCK_COGNITO_USERS: jsonArrayEnv(mockUserSchema).default([]),
+    MOCK_COGNITO_USERS: jsonArrayEnv(mockCognitoUserSchema).default([]),
   }),
   z.object({
     COGNITO_ADAPTER: z.literal("sdk"),
@@ -58,14 +46,11 @@ const configSchema = z
     // https で公開する構成では、開発用の既定値をそのまま使えないようにする
     if (!config.cookieSecure) return;
     const issues: Array<[string, string]> = [];
-    if (config.SIGNING_KEY_PEM === undefined)
-      issues.push(["SIGNING_KEY_PEM", "is required when ISSUER is https"]);
-    if (config.REDIS_URL === undefined)
-      issues.push(["REDIS_URL", "is required when ISSUER is https"]);
-    if (config.COGNITO_ADAPTER !== "sdk")
-      issues.push(["COGNITO_ADAPTER", "must be sdk when ISSUER is https"]);
-    if (config.SPA_DIR === undefined) issues.push(["SPA_DIR", "is required when ISSUER is https"]);
-    for (const [path, message] of issues) ctx.addIssue({ code: "custom", path: [path], message });
+    if (config.SIGNING_KEY_PEM === undefined) issues.push(["SIGNING_KEY_PEM", "is required"]);
+    if (config.REDIS_URL === undefined) issues.push(["REDIS_URL", "is required"]);
+    if (config.COGNITO_ADAPTER !== "sdk") issues.push(["COGNITO_ADAPTER", "must be sdk"]);
+    if (config.SPA_DIR === undefined) issues.push(["SPA_DIR", "is required"]);
+    requireWhenSecure(ctx, issues, "when ISSUER is https");
   });
 
 export type AuthServerConfig = z.infer<typeof configSchema>;

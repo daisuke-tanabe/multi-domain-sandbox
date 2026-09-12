@@ -5,7 +5,6 @@
 export const AUDIT_EVENT_KINDS = [
   "login_succeeded",
   "login_failed",
-  "session_touched",
   "environment_changed",
   "global_logout",
   "session_revoked",

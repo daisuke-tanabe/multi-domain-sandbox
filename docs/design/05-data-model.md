@@ -40,7 +40,6 @@ flowchart LR
     subgraph SessionStore ["Session Store  Redis想定"]
         sso["sso:sess:*"]
         ssosid["sso:sid:*"]
-        clients["sso:clients:*  集合"]
         authreq["sso:authreq:*"]
         code["sso:code:*"]
         rt["sso:rt:*"]
@@ -236,21 +235,23 @@ CREATE INDEX tenant_service_members_user_id_idx ON tenant_service_members (user_
 CREATE TABLE auth_sessions (
   id             TEXT PRIMARY KEY,            -- sid。ID Token に載せる公開識別子。Cookie の値ではない
   user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
   ip             TEXT NOT NULL,               -- X-Forwarded-For の先頭、なければ接続元
   user_agent     TEXT NOT NULL,               -- 512 文字まで
   created_at     TIMESTAMPTZ NOT NULL,
   last_seen_at   TIMESTAMPTZ NOT NULL,
   revoked_at     TIMESTAMPTZ,
-  revoke_reason  TEXT                         -- global_logout / user_revoked / service_member_revoked / refresh_token_reused / expired
+  revoke_reason  TEXT CHECK (revoke_reason IN ('global_logout', 'user_revoked')),
+  CHECK ((revoked_at IS NULL) = (revoke_reason IS NULL))
 );
-CREATE INDEX auth_sessions_user_id_idx ON auth_sessions (user_id, status, last_seen_at DESC);
+CREATE INDEX auth_sessions_active_idx ON auth_sessions (user_id, last_seen_at DESC)
+  WHERE revoked_at IS NULL;
 ```
 
 - ブラウザから作られた SSO Session の記録。揮発ストアの SsoSession とは別に残し、監査とポータルのセッション一覧に使う。判断事項D21
-- `createSsoSession` が作り、`/authorize` の到達で `touchSsoSession` が last_seen_at と ip と user_agent を更新する。前回と違えば `environment_changed` の監査イベントを残すが、それだけでは失効させない
-- 失効は Global Logout、ポータルからの失効、招待の解除、Refresh Token の再利用で status を revoked にし、理由を revoke_reason に残す。揮発ストアに既に無いセッションでも記録だけを revoked にできる
-- ポータルの一覧は status が active の行から作る。揮発ストアの寿命とは独立に残る
+- status 列は持たない。有効は `revoked_at IS NULL` で表し、期限切れはアイドル 2 時間と絶対 12 時間を created_at と last_seen_at から読み出し時に判定する。行には書かない
+- `createSsoSession` が作り、`/authorize` の到達で `touchSsoSession` が last_seen_at と ip と user_agent を更新する。前回と違えば `environment_changed` の監査イベントを残すが、それだけでは失効させない。通常の更新は監査しない
+- 失効は Global Logout とポータルからの失効で revoked_at と revoke_reason を書く。理由は `global_logout` か `user_revoked` で、両方 NULL か両方あるかのどちらかに制約する。揮発ストアに既に無いセッションでも記録だけを失効にできる
+- ポータルの一覧と Global Logout の通知先は `SessionRepository` の `listActiveByUser` と `findWithClients` が `auth_session_clients` と一緒に引く。`listActiveByUser` はアイドルと絶対の期限を SQL で適用する。揮発ストアの寿命とは独立に残る
 
 ### auth_session_clients
 
@@ -267,7 +268,7 @@ CREATE TABLE auth_session_clients (
 
 - その SSO Session で code を発行したサービスとテナントの組。`/authorize` の到達で upsert する
 - ポータルのセッション一覧で「入ったサービス」を出すことと、招待の解除でそのサービスとテナントに入っているセッションを絞り込むことに使う
-- 揮発ストアの `sso:clients` はサービス単位の集合で Global Logout の通知先。この表はテナントまで持つ
+- Global Logout と sid 指定の失効の Back-Channel Logout の通知先もこの表から引く。揮発ストアには通知先の集合を持たない
 
 ### audit_events
 
@@ -286,9 +287,11 @@ CREATE TABLE audit_events (
 );
 CREATE INDEX audit_events_user_id_idx ON audit_events (user_id, occurred_at DESC);
 CREATE INDEX audit_events_kind_idx ON audit_events (kind, occurred_at DESC);
+CREATE INDEX audit_events_session_id_idx ON audit_events (session_id, occurred_at DESC);
+CREATE INDEX audit_events_occurred_at_idx ON audit_events USING BRIN (occurred_at);
 ```
 
-- 監査イベント。kind は `login_succeeded` `login_failed` `session_touched` `environment_changed` `global_logout` `session_revoked` `refresh_token_reused` `refresh_token_client_mismatch` `authorization_code_reused` `service_member_invited` `service_member_revoked` `mfa_enrolled` `mfa_challenge_failed` `mfa_setup_expired`。定義は `apps/auth-api/src/domain/audit.ts`
+- 監査イベント。kind は `login_succeeded` `login_failed` `environment_changed` `global_logout` `session_revoked` `refresh_token_reused` `refresh_token_client_mismatch` `authorization_code_reused` `service_member_invited` `service_member_revoked` `mfa_enrolled` `mfa_challenge_failed` `mfa_setup_expired`。定義は `apps/auth-api/src/domain/audit.ts`
 - Token 値、Cookie 値、パスワード、TOTP の secret は入れない。`login_failed` は理由コードだけを残し、ユーザー名を残さない
 - 外部キーは張らない。users の行を消しても監査の記録は残す
 - 記録の失敗はエラーログに出すだけで、ユーザーの操作を止めない
@@ -465,14 +468,17 @@ end_users はログインする人ではなく CRM が管理する顧客デー�
 サービスの DB の全表に掛ける。判断事項D11。
 
 ```sql
+CREATE FUNCTION crm.current_tenant_id() RETURNS TEXT
+  LANGUAGE sql STABLE AS $$ SELECT current_setting('app.tenant_id', true) $$;
+
 ALTER TABLE crm.end_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm.end_users FORCE ROW LEVEL SECURITY;
 CREATE POLICY end_users_tenant_isolation ON crm.end_users
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+  USING (tenant_id = crm.current_tenant_id())
+  WITH CHECK (tenant_id = crm.current_tenant_id());
 ```
 
-members と permission_overrides にも同じポリシーを掛ける。API Server は `withTenant(pool, tenantId, fn)` でトランザクションを開き、`set_config('app.tenant_id', $1, true)` を Token 由来の値で実行してから SQL を発行する。未設定なら `current_setting` が NULL を返し、どの行にも一致しない。詳細は [07-api-auth-design.md](./07-api-auth-design.md)。
+members と permission_overrides にも同じポリシーを掛ける。ポリシーはスキーマごとの補助関数 `<schema>.current_tenant_id()` を通して `app.tenant_id` を読む。init の最後の DO ブロックがスキーマ内の全表に FORCE ROW LEVEL SECURITY が付いているか確かめ、欠けていれば例外で止める。API Server は `withTenant(pool, tenantId, fn)` でトランザクションを開き、`set_config('app.tenant_id', $1, true)` を Token 由来の値で実行してから SQL を発行する。未設定なら `current_setting` が NULL を返し、どの行にも一致しない。詳細は [07-api-auth-design.md](./07-api-auth-design.md)。
 
 ### 初期データ
 
@@ -498,14 +504,13 @@ suzuki は cms を契約していないため cms の DB に suzuki の行はな
 
 Redis 想定。すべて TTL 付き。ローカル検証はインメモリ Map。
 ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、`kv` `set` `counter` の 3 種類を返す。auth-api は `infrastructure/stores.ts` の `createAuthStores`、`*-web` は `startWebCore` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。テストは `createMemoryStoreFactory` を使う。
-一覧は `SetStore`、一回限りの消費は `getAndDelete`、ロックは `setIfAbsent`、レート制限は `CounterStore` を使う。値を読んで書き戻す形の一覧更新は持たない。
+一覧は `SetStore`、一回限りの消費は `getAndDelete`、ロックは `setIfAbsent`、レート制限は `CounterStore` を使う。値を読んで書き戻す形の一覧更新は持たない。TTL を延ばさずに値を書き換えるときは `update` を使う。Redis は SET の KEEPTTL と XX、インメモリは残りの期限を引き継ぐ。インメモリのストアは期限切れの項目を定期的に掃除する。
 auth-api の揮発ストアのキーに秘密値をそのまま使わない。Cookie の値、Refresh Token、認可コード、rid、CSRF の参照 ID、MFA の保留 ID `mid` は `packages/shared` の `keyDigest` の SHA-256 をキーにし、値の中にも生の秘密値を持たせない。`application/usecases/store-keys.ts` の `keyOf` がその入口。ストアの読み取りが漏れても、提示できる Cookie や Token を復元できない。判断事項D21。
 
 | プレフィックス | 種類 | キー | 内容 |
 | --- | --- | --- | --- |
 | `sso:sess` | kv | Cookie の値の SHA-256 | SSO Session |
 | `sso:sid` | kv | sid | sid → SSO Session のキー |
-| `sso:clients` | set | SSO Session のキー | code を発行した client_id の集合。Global Logout の通知先 |
 | `sso:authreq` | kv | rid の SHA-256 | 認可リクエスト |
 | `sso:code` | kv | code の SHA-256 | Authorization Code |
 | `sso:rt` | kv | Token の SHA-256 | Refresh Token |
@@ -540,8 +545,8 @@ type SsoSession = {
 cognito_sub は保持しない。users.id で引けるため必要になった時点で Identity DB から取る。
 逆引き `sso:sid` の `<sid> → SSO Session のキー` を持ち、Back-Channel Logout、Refresh Token 失効、ポータルと招待解除からの sid 指定の失効に使う。code と Refresh Token が持つ `ssoSessionId` もこのキーで、Cookie の値ではない。
 IP と User-Agent は揮発ストアには持たず、Identity DB の auth_sessions に記録する。
-code を発行したサービスは値には持たず、`sso:clients` の `<sso_session_id> → client_id の集合` に置く。例 `{crm, cms}`。Global Logout の通知先になる。集合にするのは、crm と cms への `/authorize` が同時に走ってもどちらの追加も落ちないようにするため。
-`POST /login` が成功したとき、Cookie が指す旧 SSO Session があれば `sso:sess` `sso:sid` `sso:clients` から破棄してから新しい ID を書く。
+code を発行したサービスとテナントは揮発ストアには持たず、Identity DB の `auth_session_clients` に記録する。Global Logout の通知先はそこから引く。
+`POST /login` が成功したとき、Cookie が指す旧 SSO Session があれば `sso:sess` `sso:sid` から破棄してから新しい ID を書く。
 
 ### 認可リクエスト
 

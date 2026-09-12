@@ -6,5 +6,5 @@ import { postRoutes } from "./posts/interface/routes.ts";
 startApiCore("cms-api", {
   definition: CMS,
   schema: CMS_SCHEMA,
-  routes: (pool) => [postRoutes({ posts: new PgPostRepository(pool) })],
+  routes: (pool) => [postRoutes(new PgPostRepository(pool))],
 });

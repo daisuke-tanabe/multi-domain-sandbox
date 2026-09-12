@@ -2,19 +2,18 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { LogoutResponse } from "@sandbox/api-contract";
-import { expandRedirectUriTemplate, type CookiePolicy } from "@sandbox/shared";
-import { issueCsrfToken, verifyCsrfToken } from "../../../application/usecases/csrf.ts";
+import { serviceOrigin, type CookiePolicy } from "@sandbox/shared";
+import { issueCsrfToken } from "../../../application/usecases/csrf.ts";
 import type { AuthDeps } from "../../../application/deps.ts";
 import { globalLogout } from "../../../application/usecases/global-logout.ts";
 import { loadSsoSession } from "../../../application/usecases/sso-session.ts";
-import { errorPage } from "../views/pages.ts";
 import {
-  clearSsoCookie,
-  noStore,
-  readCsrfCookie,
-  readSsoCookie,
+  csrfCookie,
+  invalidForm,
+  rejectInvalidCsrf,
   requestEnvironment,
-  writeCsrfCookie,
+  ssoCookie,
+  withQuery,
 } from "./helpers.ts";
 
 const logoutFormSchema = z.object({
@@ -31,55 +30,38 @@ const logoutFormSchema = z.object({
  */
 export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
+  const sso = ssoCookie(policy);
+  const csrf = csrfCookie(policy);
 
   app.get("/api/logout", async (c) => {
-    noStore(c);
-    const clientId = c.req.query("client_id");
-    const tenantSlug = c.req.query("tenant");
-    const returnTo = await returnTarget(deps, clientId, tenantSlug);
-    const session = await loadSsoSession(deps, readSsoCookie(c, policy));
+    const returnTo = await returnTarget(deps, c.req.query("client_id"), c.req.query("tenant"));
+    const session = await loadSsoSession(deps, sso.read(c));
     if (session === undefined) {
-      clearSsoCookie(c, policy);
+      sso.clear(c);
       return c.json({ authenticated: false, returnTo } satisfies LogoutResponse);
     }
-    const csrf = await issueCsrfToken(deps);
-    writeCsrfCookie(c, policy, csrf.cookieValue);
+    const issued = await issueCsrfToken(deps);
+    csrf.write(c, issued.cookieValue);
     return c.json({
       authenticated: true,
-      csrfToken: csrf.formToken,
+      csrfToken: issued.formToken,
       returnTo,
     } satisfies LogoutResponse);
   });
 
-  app.post(
-    "/logout",
-    zValidator("form", logoutFormSchema, (result, c) => {
-      if (!result.success)
-        return c.html(errorPage("無効なリクエストです", "入力内容が正しくありません。"), 400);
-      return undefined;
-    }),
-    async (c) => {
-      noStore(c);
-      const form = c.req.valid("form");
-      const csrfValid = await verifyCsrfToken(deps, readCsrfCookie(c, policy), form.csrf);
-      if (!csrfValid) {
-        deps.logger.warn("logout csrf mismatch");
-        return c.html(
-          errorPage("ページを再読み込みしてください", "フォームの有効期限が切れています。"),
-          403,
-        );
-      }
+  app.post("/logout", zValidator("form", logoutFormSchema, invalidForm), async (c) => {
+    const form = c.req.valid("form");
+    const rejected = await rejectInvalidCsrf(c, deps, policy, form.csrf);
+    if (rejected !== undefined) return rejected;
 
-      const session = await loadSsoSession(deps, readSsoCookie(c, policy));
-      if (session !== undefined) await globalLogout(deps, session, requestEnvironment(c));
-      clearSsoCookie(c, policy);
-      const params = new URLSearchParams();
-      if (form.client_id !== undefined) params.set("client_id", form.client_id);
-      if (form.tenant !== undefined) params.set("tenant", form.tenant);
-      const query = params.toString();
-      return c.redirect(query === "" ? "/logout" : `/logout?${query}`, 303);
-    },
-  );
+    const session = await loadSsoSession(deps, sso.read(c));
+    if (session !== undefined) await globalLogout(deps, session, requestEnvironment(c));
+    sso.clear(c);
+    return c.redirect(
+      withQuery("/logout", { client_id: form.client_id, tenant: form.tenant }),
+      303,
+    );
+  });
 
   return app;
 }
@@ -95,6 +77,8 @@ async function returnTarget(
     deps.identity.findTenantBySlug(tenantSlug),
   ]);
   if (client === undefined || tenant === undefined) return undefined;
-  const origin = new URL(expandRedirectUriTemplate(client.redirectUriTemplate, tenant.slug)).origin;
-  return { label: `${client.name} (${tenant.slug})`, href: `${origin}/` };
+  return {
+    label: `${client.name} (${tenant.slug})`,
+    href: `${serviceOrigin(client.redirectUriTemplate, tenant.slug)}/`,
+  };
 }

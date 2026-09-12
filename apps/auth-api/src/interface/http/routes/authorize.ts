@@ -9,14 +9,7 @@ import type { AuthDeps } from "../../../application/deps.ts";
 import { storePendingAuthorization } from "../../../application/usecases/pending-authorization.ts";
 import { loadSsoSession } from "../../../application/usecases/sso-session.ts";
 import { errorPage } from "../views/pages.ts";
-import {
-  buildRedirect,
-  clearSsoCookie,
-  noStore,
-  readSsoCookie,
-  redirectForOutcome,
-  requestEnvironment,
-} from "./helpers.ts";
+import { buildRedirect, redirectForOutcome, requestEnvironment, ssoCookie } from "./helpers.ts";
 
 /**
  * GET /authorize。docs/design/02-auth-sequences.md の 3.1 に対応する。
@@ -24,16 +17,17 @@ import {
 export function authorizeRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
 
+  const cookie = ssoCookie(policy);
+
   app.get("/authorize", async (c) => {
-    noStore(c);
     const validated = await validateAuthorizationRequest(deps.identity, c.req.query());
     if (!validated.ok) return respondValidationError(c, deps, validated.error);
     const request = validated.value;
 
-    const sessionId = readSsoCookie(c, policy);
+    const sessionId = cookie.read(c);
     const session = await loadSsoSession(deps, sessionId);
     if (session === undefined) {
-      if (sessionId !== undefined) clearSsoCookie(c, policy);
+      if (sessionId !== undefined) cookie.clear(c);
       const rid = await storePendingAuthorization(deps, request);
       return c.redirect(`/login?rid=${encodeURIComponent(rid)}`);
     }

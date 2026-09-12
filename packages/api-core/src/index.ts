@@ -10,6 +10,8 @@ export {
   authenticate,
   requirePermission,
   forbidden,
+  invalidJson,
+  notFoundResponse,
   type ApiEnv,
 } from "./interface/http/middleware.ts";
 export {
@@ -27,10 +29,12 @@ export type {
   PermissionEffect,
   TenantContext,
 } from "./domain/member.ts";
-export type { MemberRepository } from "./application/ports/member-repository.ts";
+export type {
+  MemberRepository,
+  MemberWithOverrides,
+} from "./application/ports/member-repository.ts";
 export type {
   AuthAdminClient,
   AuthAdminError,
   InvitedUser,
 } from "./application/ports/auth-admin.ts";
-export { notFound, type NotFoundError } from "./application/errors.ts";

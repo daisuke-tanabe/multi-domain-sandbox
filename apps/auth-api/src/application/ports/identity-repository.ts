@@ -16,6 +16,8 @@ import type {
 
 export interface IdentityRepository {
   findClient(clientId: string): Promise<OidcClient | undefined>;
+  /** OidcClient.id で引く。auth_session_clients の参照先 */
+  findClientById(id: string): Promise<OidcClient | undefined>;
   listClients(): Promise<ReadonlyArray<OidcClient>>;
   findUserByCognitoSub(cognitoSub: string): Promise<User | undefined>;
   findUserByEmail(email: string): Promise<User | undefined>;
@@ -25,6 +27,7 @@ export interface IdentityRepository {
   linkCognitoSub(userId: string, cognitoSub: string): Promise<User>;
   findTenantById(id: string): Promise<Tenant | undefined>;
   findTenantBySlug(slug: string): Promise<Tenant | undefined>;
+  findTenantsByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Tenant>>;
   /** oidcClientId は OidcClient.id */
   findContract(tenantId: string, oidcClientId: string): Promise<Contract | undefined>;
   findServiceMembership(

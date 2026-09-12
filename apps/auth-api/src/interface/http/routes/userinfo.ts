@@ -2,22 +2,22 @@ import { Hono } from "hono";
 import { readBearerToken, toJwks, verifyJwt } from "@sandbox/shared";
 import type { AuthDeps } from "../../../application/deps.ts";
 import { profileClaims } from "../../../application/usecases/issue-tokens.ts";
-import { noStore } from "./helpers.ts";
 
 /**
  * GET /userinfo。Access Token の aud に issuer が含まれることを確認して claims を返す。
  */
 export function userinfoRoutes(deps: AuthDeps): Hono {
   const app = new Hono();
+  // 公開鍵の JWKS は起動時に 1 回だけ組み立てる
+  const jwks = toJwks([deps.signingKey]);
 
   app.get("/userinfo", async (c) => {
-    noStore(c);
     const token = readBearerToken(c.req.header("Authorization"));
     if (token === undefined) {
       c.header("WWW-Authenticate", "Bearer");
       return c.json({ error: "invalid_request" }, 401);
     }
-    const verified = await verifyJwt(token, toJwks([deps.signingKey]), {
+    const verified = await verifyJwt(token, jwks, {
       issuer: deps.issuer,
       audience: deps.issuer,
       clock: deps.clock,

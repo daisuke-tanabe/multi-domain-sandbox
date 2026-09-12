@@ -79,7 +79,7 @@ export interface OidcClientDeps {
   readonly refreshLocks: KeyValueStore<string>;
   /** /auth/* のレート制限 */
   readonly rateLimits: CounterStore;
-  /** ロック待ちの sleep。テストでは即時に返す */
+  /** Refresh のロック待ち。テストでは短い実時間にする */
   readonly sleep: (ms: number) => Promise<void>;
   readonly clock: Clock;
   readonly cookiePolicy: CookiePolicy;

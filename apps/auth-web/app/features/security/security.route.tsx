@@ -1,4 +1,3 @@
-import { redirect } from "react-router";
 import { sessionsResponseSchema, type Session, type SessionsResponse } from "@sandbox/api-contract";
 import {
   Badge,
@@ -10,20 +9,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@sandbox/web-ui";
-import { ApiError, getJson } from "../../lib/api.ts";
+import { getJson, loadOrLogin } from "../../lib/api.ts";
 import type { Route } from "./+types/security.route";
 
 /**
  * セキュリティ。ログイン中のセッションの一覧と、他の端末の失効。
  * 失効はフォーム POST で auth-api に送り、auth-api がここへ戻す
  */
-export async function clientLoader(): Promise<SessionsResponse> {
-  try {
-    return await getJson(sessionsResponseSchema, "/api/sessions");
-  } catch (error: unknown) {
-    if (error instanceof ApiError && error.status === 401) throw redirect("/login");
-    throw error;
-  }
+export function clientLoader(): Promise<SessionsResponse> {
+  return loadOrLogin(() => getJson(sessionsResponseSchema, "/api/sessions"));
 }
 
 function formatTime(epochSeconds: number): string {

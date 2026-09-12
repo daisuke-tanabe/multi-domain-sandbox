@@ -107,7 +107,7 @@
 | 脅威 | 対策 |
 | --- | --- |
 | code / Refresh Token の同時提示 | 一回限りの消費は `KeyValueStore.getAndDelete` だけで行う。Redis は GETDEL、インメモリは await を挟まず読んで消す。読んでから別の呼び出しで消す手順を持たない |
-| 一覧の read-modify-write による要素の欠落 | Refresh Token 系列、sid に紐付く系列、SSO Session が code を発行した client_id、sid に紐付く Tenant Session は `SetStore` に置く。Redis は SADD / SREM / SMEMBERS で、2 つの追加が同時に走っても片方が消えない |
+| 一覧の read-modify-write による要素の欠落 | Refresh Token 系列、sid に紐付く系列、sid に紐付く Tenant Session は `SetStore` に置く。SSO Session が code を発行したサービスは Identity DB の `auth_session_clients` に upsert する。Redis は SADD / SREM / SMEMBERS で、2 つの追加が同時に走っても片方が消えない |
 | Refresh の二重実行 | `KeyValueStore.setIfAbsent` で SET NX のロックを取る。Tenant 側の Refresh ロックに使う |
 | レート制限カウンタの競合 | `CounterStore.increment` は INCR と EXPIRE NX で加算と TTL 付与を行う |
 
@@ -173,7 +173,7 @@ Identity DB の `audit_events` に残す。定義は `apps/auth-api/src/domain/a
 | `login_failed` | `POST /login` の失敗 | 理由コードと IP、User-Agent。ユーザー名は残さない。列挙の材料になるため。users.status が disabled のときだけ user_id |
 | `environment_changed` | `/authorize` の到達で IP か User-Agent が前回と違う | 前回と今回の IP と User-Agent、tenant_id、client_id |
 | `global_logout` | Global Logout | 通知に成功したサービスと失敗したサービス |
-| `session_revoked` | ポータルからの失効、招待解除に伴う失効、再利用検知による失効 | 理由と通知の結果 |
+| `session_revoked` | ポータルからの sid 指定の失効 | 理由と通知の結果 |
 | `refresh_token_reused` | rotated / revoked の Refresh Token の提示 | familyId、Token の client_id、提示した client_id |
 | `refresh_token_client_mismatch` | 別 Client からの Refresh Token の提示 | 同上 |
 | `authorization_code_reused` | 使用済み code の提示 | familyId、提示した client_id |

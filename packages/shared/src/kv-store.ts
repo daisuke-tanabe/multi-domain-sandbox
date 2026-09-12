@@ -7,6 +7,8 @@ import type { Clock } from "./clock.ts";
 export interface KeyValueStore<T> {
   get(key: string): Promise<T | undefined>;
   set(key: string, value: T, ttlSeconds: number): Promise<void>;
+  /** 既にあるキーの値だけを置き換え、TTL は変えない。無ければ false。失敗回数の更新などに使う */
+  update(key: string, value: T): Promise<boolean>;
   delete(key: string): Promise<void>;
   /** 取得と削除をアトミックに行う。Authorization Code や Refresh Token の一回限り消費に使う */
   getAndDelete(key: string): Promise<T | undefined>;
@@ -33,8 +35,18 @@ export interface CounterStore {
 
 type Entry<T> = { value: T; expiresAt: number };
 
+/** 書き込みがこの回数に達するたびに期限切れを掃除する。読まれないキーが溜まり続けないようにする */
+const SWEEP_EVERY = 256;
+
+function sweep<T extends { expiresAt: number }>(entries: Map<string, T>, now: number): void {
+  for (const [key, entry] of entries) {
+    if (entry.expiresAt <= now) entries.delete(key);
+  }
+}
+
 export class MemoryKeyValueStore<T> implements KeyValueStore<T> {
   private readonly entries = new Map<string, Entry<T>>();
+  private writes = 0;
 
   constructor(private readonly clock: Clock) {}
 
@@ -48,12 +60,25 @@ export class MemoryKeyValueStore<T> implements KeyValueStore<T> {
     return entry;
   }
 
+  private write(key: string, entry: Entry<T>): void {
+    this.entries.set(key, entry);
+    this.writes += 1;
+    if (this.writes % SWEEP_EVERY === 0) sweep(this.entries, this.clock.nowSeconds());
+  }
+
   public async get(key: string): Promise<T | undefined> {
     return this.live(key)?.value;
   }
 
   public async set(key: string, value: T, ttlSeconds: number): Promise<void> {
-    this.entries.set(key, { value, expiresAt: this.clock.nowSeconds() + ttlSeconds });
+    this.write(key, { value, expiresAt: this.clock.nowSeconds() + ttlSeconds });
+  }
+
+  public async update(key: string, value: T): Promise<boolean> {
+    const entry = this.live(key);
+    if (entry === undefined) return false;
+    this.entries.set(key, { value, expiresAt: entry.expiresAt });
+    return true;
   }
 
   public async delete(key: string): Promise<void> {
@@ -69,18 +94,14 @@ export class MemoryKeyValueStore<T> implements KeyValueStore<T> {
 
   public async setIfAbsent(key: string, value: T, ttlSeconds: number): Promise<boolean> {
     if (this.live(key) !== undefined) return false;
-    this.entries.set(key, { value, expiresAt: this.clock.nowSeconds() + ttlSeconds });
+    this.write(key, { value, expiresAt: this.clock.nowSeconds() + ttlSeconds });
     return true;
-  }
-
-  /** テスト用 */
-  public size(): number {
-    return this.entries.size;
   }
 }
 
 export class MemorySetStore implements SetStore {
   private readonly sets = new Map<string, { members: Set<string>; expiresAt: number }>();
+  private writes = 0;
 
   constructor(private readonly clock: Clock) {}
 
@@ -98,6 +119,8 @@ export class MemorySetStore implements SetStore {
     const members = this.live(key) ?? new Set<string>();
     members.add(member);
     this.sets.set(key, { members, expiresAt: this.clock.nowSeconds() + ttlSeconds });
+    this.writes += 1;
+    if (this.writes % SWEEP_EVERY === 0) sweep(this.sets, this.clock.nowSeconds());
   }
 
   public async remove(key: string, member: string): Promise<void> {
@@ -115,6 +138,7 @@ export class MemorySetStore implements SetStore {
 
 export class MemoryCounterStore implements CounterStore {
   private readonly counters = new Map<string, Entry<number>>();
+  private writes = 0;
 
   constructor(private readonly clock: Clock) {}
 
@@ -123,6 +147,8 @@ export class MemoryCounterStore implements CounterStore {
     const entry = this.counters.get(key);
     if (entry === undefined || entry.expiresAt <= now) {
       this.counters.set(key, { value: 1, expiresAt: now + ttlSeconds });
+      this.writes += 1;
+      if (this.writes % SWEEP_EVERY === 0) sweep(this.counters, now);
       return 1;
     }
     entry.value += 1;

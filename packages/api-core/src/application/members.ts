@@ -1,7 +1,6 @@
 import { err, ok, type Logger, type Result } from "@sandbox/shared";
 import type { Member, PermissionOverride } from "../domain/member.ts";
 import { resolvePermissions, type ServiceDefinition } from "../domain/service-definition.ts";
-import { notFound, type NotFoundError } from "./errors.ts";
 import type { AuthAdminClient, AuthAdminError } from "./ports/auth-admin.ts";
 import type { MemberRepository } from "./ports/member-repository.ts";
 
@@ -13,7 +12,7 @@ export interface MemberUsecaseDeps {
 }
 
 export type MemberError =
-  | NotFoundError
+  | { readonly kind: "not_found" }
   | { readonly kind: "cannot_remove_self" }
   | { readonly kind: "auth_admin"; readonly error: AuthAdminError };
 
@@ -39,13 +38,11 @@ export async function getMemberDetail(
   tenantId: string,
   userId: string,
 ): Promise<Result<MemberDetail, MemberError>> {
-  const member = await deps.members.find(tenantId, userId);
-  if (member === undefined) return err(notFound());
-  const overrides = await deps.members.listOverrides(tenantId, member.userId);
+  const found = await deps.members.findWithOverrides(tenantId, userId);
+  if (found === undefined) return err({ kind: "not_found" });
   return ok({
-    member,
-    overrides,
-    permissions: resolvePermissions(deps.definition, member.role, overrides),
+    ...found,
+    permissions: resolvePermissions(deps.definition, found.member.role, found.overrides),
   });
 }
 
@@ -76,7 +73,7 @@ export async function changeMemberRole(
   role: string,
 ): Promise<Result<Member, MemberError>> {
   const existing = await deps.members.find(tenantId, userId);
-  if (existing === undefined) return err(notFound());
+  if (existing === undefined) return err({ kind: "not_found" });
   return ok(await deps.members.upsert({ ...existing, role }));
 }
 
@@ -92,7 +89,7 @@ export async function replaceMemberOverrides(
   >
 > {
   const existing = await deps.members.find(tenantId, userId);
-  if (existing === undefined) return err(notFound());
+  if (existing === undefined) return err({ kind: "not_found" });
   await deps.members.replaceOverrides(tenantId, existing.userId, overrides);
   return ok({
     overrides,
@@ -108,7 +105,7 @@ export async function removeMember(
 ): Promise<Result<void, MemberError>> {
   if (userId === actorUserId) return err({ kind: "cannot_remove_self" });
   const existing = await deps.members.find(tenantId, userId);
-  if (existing === undefined) return err(notFound());
+  if (existing === undefined) return err({ kind: "not_found" });
   const revoked = await deps.authAdmin.revoke({ tenantId, userId });
   // auth 側に既に無い人でも、自分の DB の行は消して整合させる
   if (!revoked.ok && revoked.error.kind !== "user_not_found") {

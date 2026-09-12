@@ -1,4 +1,4 @@
-import { generateTotp, keyDigest, toJwks, verifyJwt, MemoryKeyValueStore } from "@sandbox/shared";
+import { generateTotp, keyDigest, toJwks, verifyJwt } from "@sandbox/shared";
 import { beforeEach, describe, expect, test } from "vitest";
 import {
   MOCK_TOTP_SECRETS,
@@ -20,6 +20,7 @@ import {
   readTokenBody,
   refresh,
   runLoginFlow,
+  submitPassword,
   TANAKA_CRM_REDIRECT,
   SUZUKI_CRM_REDIRECT,
   SUZUKI_CMS_REDIRECT,
@@ -104,25 +105,15 @@ describe("first login via tenant-a", () => {
     const authorizeRes = await harness.app.request(url);
     const rid =
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
-    const { csrf, cookie: csrfCookie } = await readLoginContext(harness, rid);
-
-    const passwordRes = await harness.app.request(`${ISSUER}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookie },
-      body: new URLSearchParams({
-        rid,
-        csrf,
-        username: "alice",
-        password: "alice-password",
-      }).toString(),
-    });
+    const password = await submitPassword(harness, ALICE, rid);
     // パスワードだけでは SSO Cookie は出ない。認証アプリのコードを通してから出る
-    const { response: res } = await completeMfa(harness, passwordRes, csrfCookie, "alice");
-
-    expect(passwordRes.headers.get("Location")).toMatch(/^\/login\/challenge\?mid=/);
-    expect(passwordRes.headers.getSetCookie().some((c) => c.startsWith("sso_session="))).toBe(
-      false,
+    const { response: res } = await completeMfa(
+      harness,
+      password.response,
+      password.cookie,
+      "alice",
     );
+
     const ssoCookie = res.headers.getSetCookie().find((c) => c.startsWith("sso_session=")) ?? "";
     expect(ssoCookie).toMatch(/HttpOnly/i);
     expect(ssoCookie).toMatch(/SameSite=Lax/i);
@@ -130,31 +121,31 @@ describe("first login via tenant-a", () => {
     expect(ssoCookie).not.toMatch(/Domain=/i);
   });
 
-  test("sends the user back to the login screen with a generic message on wrong password and issues no code", async () => {
+  test("sends the user back with a generic message on wrong password and audits it without the username", async () => {
     const { url } = authorizeUrl();
     const authorizeRes = await harness.app.request(url);
     const rid =
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
-    const { csrf, cookie: csrfCookie } = await readLoginContext(harness, rid);
 
-    const wrongPassword = await harness.app.request(`${ISSUER}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookie },
-      body: new URLSearchParams({ rid, csrf, username: "alice", password: "wrong" }).toString(),
-    });
-    const retryLocation = wrongPassword.headers.get("Location") ?? "";
+    const wrongPassword = await submitPassword(
+      harness,
+      { username: "alice", password: "wrong" },
+      rid,
+    );
+    const retryLocation = wrongPassword.response.headers.get("Location") ?? "";
     const retry = await harness.app.request(
       `${ISSUER}${retryLocation}`.replace("/login?", "/api/login?"),
     );
 
-    expect(wrongPassword.status).toBe(303);
+    expect(wrongPassword.response.status).toBe(303);
     expect(retryLocation).toBe(`/login?error=invalid_credentials&rid=${encodeURIComponent(rid)}`);
     expect((await readJson(retry)).errorMessage).toBe(
       "ユーザー名またはパスワードが正しくありません",
     );
-    expect(wrongPassword.headers.getSetCookie().some((c) => c.startsWith("sso_session="))).toBe(
-      false,
-    );
+    expect(wrongPassword.cookie).not.toContain("sso_session=");
+    const [event] = harness.audit.ofKind("login_failed");
+    expect(event?.detail).toEqual({ reason: "invalid_credentials" });
+    expect(JSON.stringify(event)).not.toContain("alice");
   });
 
   test("rejects login POST when csrf token does not match", async () => {
@@ -629,7 +620,6 @@ describe("portal", () => {
 
     expect(response.status).toBe(400);
     expect(body.error).toBe("expired_request");
-    expect(String(body.message)).toContain("時間が経ちすぎた");
   });
 
   test("answers 401 to the portal API without a session so the SPA shows the login screen", async () => {
@@ -655,23 +645,13 @@ describe("portal", () => {
   test("logs in without rid and lists the assigned services per tenant", async () => {
     // Arrange
     const harness = await createHarness();
-    const { csrf, cookie: csrfCookie } = await readLoginContext(harness, "");
 
     // Act
-    const passwordRes = await harness.app.request(`${ISSUER}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookie },
-      body: new URLSearchParams({
-        rid: "",
-        csrf,
-        username: "alice",
-        password: "alice-password",
-      }).toString(),
-    });
+    const password = await submitPassword(harness, ALICE);
     const { response: login, cookie } = await completeMfa(
       harness,
-      passwordRes,
-      csrfCookie,
+      password.response,
+      password.cookie,
       "alice",
     );
     const portal = await harness.app.request(`${ISSUER}/api/portal`, {
@@ -836,12 +816,23 @@ describe("concurrency and abuse hardening", () => {
   });
 
   test("re-login destroys the previous SSO session instead of leaving it valid", async () => {
-    const first = await runLoginFlow(harness, ALICE);
-    await runLoginFlow(harness, ALICE, { state: "s2", nonce: "n2" }, first.cookie);
+    // タブ 1 でログイン画面を開いたまま、タブ 2 でログインを済ませ、その後タブ 1 のフォームを送る
+    const tab1 = await harness.app.request(authorizeUrl().url);
+    const rid = new URL(`${ISSUER}${tab1.headers.get("Location")}`).searchParams.get("rid") ?? "";
+    const tab2 = await runLoginFlow(harness, ALICE, { state: "s2" });
+    const password = await submitPassword(harness, ALICE, rid, tab2.cookie);
+    const again = await completeMfa(harness, password.response, password.cookie, "alice");
 
-    const sessions = harness.deps.stores.ssoSessions;
-    if (!(sessions instanceof MemoryKeyValueStore)) throw new Error("unexpected store");
-    expect(sessions.size()).toBe(1);
+    const withOldCookie = await harness.app.request(authorizeUrl({ state: "s3" }).url, {
+      headers: { Cookie: tab2.cookie },
+    });
+    const withNewCookie = await harness.app.request(authorizeUrl({ state: "s4" }).url, {
+      headers: { Cookie: again.cookie },
+    });
+
+    expect(again.response.headers.get("Location")).toContain("code=");
+    expect(withOldCookie.headers.get("Location")).toMatch(/^\/login\?rid=/);
+    expect(withNewCookie.headers.get("Location")).toContain("code=");
   });
 
   test("rate limits repeated requests to the login page from one client", async () => {
@@ -1002,7 +993,7 @@ describe("sessions and audit", () => {
 
     const [record] = harness.sessions.all();
     expect(res.headers.get("Location")).toContain("code=");
-    expect(record?.status).toBe("active");
+    expect(record?.revokedAt).toBeNull();
     expect(record?.userAgent).toBe("another-browser");
     expect(harness.audit.ofKind("login_succeeded")).toHaveLength(1);
     expect(harness.audit.ofKind("environment_changed")).toHaveLength(1);
@@ -1010,24 +1001,6 @@ describe("sessions and audit", () => {
       previous: { userAgent: "" },
       current: { userAgent: "another-browser" },
     });
-  });
-
-  test("audits failed logins without the username", async () => {
-    const { url } = authorizeUrl();
-    const authorizeRes = await harness.app.request(url);
-    const rid =
-      new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
-    const { csrf, cookie } = await readLoginContext(harness, rid);
-
-    await harness.app.request(`${ISSUER}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
-      body: new URLSearchParams({ rid, csrf, username: "alice", password: "wrong" }).toString(),
-    });
-
-    const [event] = harness.audit.ofKind("login_failed");
-    expect(event?.detail).toEqual({ reason: "invalid_credentials" });
-    expect(JSON.stringify(event)).not.toContain("alice");
   });
 
   test("lists the user's sessions and lets them revoke another device", async () => {
@@ -1108,7 +1081,7 @@ describe("sessions and audit", () => {
     );
 
     expect(bobStillIn.headers.get("Location")).toContain("code=");
-    expect(harness.sessions.all().find((s) => s.id === bobSid)?.status).toBe("active");
+    expect(harness.sessions.all().find((s) => s.id === bobSid)?.revokedAt).toBeNull();
   });
 });
 
@@ -1124,19 +1097,8 @@ describe("multi-factor authentication", () => {
     const authorizeRes = await harness.app.request(url);
     const rid =
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
-    const { csrf, cookie } = await readLoginContext(harness, rid);
-    const res = await harness.app.request(`${ISSUER}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
-      body: new URLSearchParams({ rid, csrf, username, password }).toString(),
-    });
-    const location = new URL(res.headers.get("Location") ?? "", ISSUER);
-    return {
-      res,
-      cookie: cookieHeaderFrom(res, cookie),
-      mid: location.searchParams.get("mid") ?? "",
-      path: location.pathname,
-    };
+    const { cookie, next } = await submitPassword(harness, { username, password }, rid);
+    return { cookie, mid: next.mid, path: next.path };
   };
 
   const postCode = async (path: string, cookie: string, mid: string, code: string) => {

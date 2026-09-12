@@ -8,7 +8,7 @@ import {
 } from "@sandbox/shared";
 import { verifyAccessToken } from "./access-token.ts";
 import type { TenantContext } from "../domain/member.ts";
-import type { MemberRepository } from "./ports/member-repository.ts";
+import type { MemberRepository, MemberWithOverrides } from "./ports/member-repository.ts";
 import { resolvePermissions, type ServiceDefinition } from "../domain/service-definition.ts";
 
 export interface ResolveTenantContextDeps {
@@ -48,19 +48,11 @@ export async function resolveTenantContext(
   if (!verified.ok) return verified;
   const claims = verified.value;
 
-  const member =
-    (await deps.members.find(claims.tenantId, claims.userId)) ??
-    (await deps.members.upsert({
-      tenantId: claims.tenantId,
-      userId: claims.userId,
-      email: null,
-      name: null,
-      role: deps.definition.defaultRole,
-      status: "active",
-    }));
+  const { member, overrides } =
+    (await deps.members.findWithOverrides(claims.tenantId, claims.userId)) ??
+    (await createDefaultMember(deps, claims.tenantId, claims.userId));
   if (member.status !== "active") return err({ kind: "member_disabled" });
 
-  const overrides = await deps.members.listOverrides(claims.tenantId, claims.userId);
   return ok({
     tenantId: claims.tenantId,
     tenantSlug: claims.tenantSlug,
@@ -69,4 +61,20 @@ export async function resolveTenantContext(
     member,
     permissions: resolvePermissions(deps.definition, member.role, overrides),
   });
+}
+
+async function createDefaultMember(
+  deps: ResolveTenantContextDeps,
+  tenantId: string,
+  userId: string,
+): Promise<MemberWithOverrides> {
+  const member = await deps.members.upsert({
+    tenantId,
+    userId,
+    email: null,
+    name: null,
+    role: deps.definition.defaultRole,
+    status: "active",
+  });
+  return { member, overrides: [] };
 }

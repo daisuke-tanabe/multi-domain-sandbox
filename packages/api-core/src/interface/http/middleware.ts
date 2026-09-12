@@ -27,6 +27,16 @@ export function forbidden(c: Context): Response {
   return c.json({ error: "forbidden" }, 403);
 }
 
+/** ユースケースの not_found を 404 に写す。他テナントの ID も同じ応答にして存在を漏らさない */
+export function notFoundResponse(c: Context): Response {
+  return c.json({ error: "not_found" }, 404);
+}
+
+/** zValidator の失敗時の応答。各サービスのルートも同じ形で返す */
+export function invalidJson(result: { success: boolean }, c: Context): Response | undefined {
+  return result.success ? undefined : c.json({ error: "invalid_request" }, 400);
+}
+
 function respond(c: Context, logger: Logger, error: TenantContextError): Response {
   switch (error.kind) {
     case "unknown_host":

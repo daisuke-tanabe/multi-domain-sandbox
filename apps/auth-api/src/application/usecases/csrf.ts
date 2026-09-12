@@ -16,11 +16,7 @@ export interface IssuedCsrf {
 export async function issueCsrfToken(deps: AuthDeps): Promise<IssuedCsrf> {
   const cookieValue = randomToken();
   const formToken = randomToken();
-  await deps.stores.csrfTokens.set(
-    keyOf(cookieValue),
-    { token: formToken },
-    CSRF_TOKEN_TTL_SECONDS,
-  );
+  await deps.stores.csrfTokens.set(keyOf(cookieValue), formToken, CSRF_TOKEN_TTL_SECONDS);
   return { cookieValue, formToken };
 }
 
@@ -32,5 +28,5 @@ export async function verifyCsrfToken(
   if (cookieValue === undefined || formToken === undefined) return false;
   const stored = await deps.stores.csrfTokens.get(keyOf(cookieValue));
   if (stored === undefined) return false;
-  return timingSafeEqualString(stored.token, formToken);
+  return timingSafeEqualString(stored, formToken);
 }

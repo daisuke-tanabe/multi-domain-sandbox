@@ -1,19 +1,14 @@
 import type { ReactNode } from "react";
-import {
-  isRouteErrorResponse,
-  Links,
-  Meta,
-  Outlet,
-  Scripts,
-  ScrollRestoration,
-} from "react-router";
-import { AppShell, configureZodLocale, loadShell } from "@sandbox/web-ui";
+import { Outlet } from "react-router";
+import { AppShell, configureZodLocale, loadShell, RootDocument } from "@sandbox/web-ui";
 import "@sandbox/web-ui/styles.css";
-import type { Route } from "./+types/root";
 
 configureZodLocale();
 
 export const clientLoader = loadShell;
+// /session と /v1/me は画面遷移のたびに読み直さない。書き込み後は useAction の revalidate で更新する
+export const shouldRevalidate = () => false;
+export { HydrateFallback, RootErrorBoundary as ErrorBoundary } from "@sandbox/web-ui";
 
 const NAV = [
   { to: "/", label: "ホーム" },
@@ -22,23 +17,7 @@ const NAV = [
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  return (
-    <html lang="ja">
-      <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>CRM</title>
-        <link rel="icon" href="data:," />
-        <Meta />
-        <Links />
-      </head>
-      <body>
-        {children}
-        <ScrollRestoration />
-        <Scripts />
-      </body>
-    </html>
-  );
+  return <RootDocument title="CRM">{children}</RootDocument>;
 }
 
 export default function App() {
@@ -46,30 +25,5 @@ export default function App() {
     <AppShell nav={NAV}>
       <Outlet />
     </AppShell>
-  );
-}
-
-// build/client/index.html はこれで作られ、clientLoader が終わるまで表示される
-export function HydrateFallback() {
-  return <p className="p-8 text-sm text-muted-foreground">読み込み中...</p>;
-}
-
-export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  if (isRouteErrorResponse(error)) {
-    return (
-      <main className="mx-auto max-w-5xl px-6 py-8">
-        <h1 className="text-2xl font-semibold">
-          {error.status} {error.statusText}
-        </h1>
-      </main>
-    );
-  }
-  return (
-    <main className="mx-auto max-w-5xl px-6 py-8">
-      <h1 className="text-2xl font-semibold">エラーが発生しました</h1>
-      <p className="text-sm text-muted-foreground">
-        {error instanceof Error ? error.message : String(error)}
-      </p>
-    </main>
   );
 }

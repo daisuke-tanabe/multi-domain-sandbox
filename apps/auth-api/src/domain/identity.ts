@@ -6,7 +6,16 @@
  * 認可リクエストのテナントは redirect_uri をサービスのテンプレートに当てて slug を取り出し、tenants から引く。
  * identity が持つのは「誰がどのテナントのどのサービスに入れるか」まで。役割と権限はサービスの DB が持つ。
  */
-import type { ClientStatus, ContractStatus, TenantStatus, UserStatus } from "@sandbox/shared";
+import type {
+  ClientStatus,
+  ContractStatus,
+  MfaMethod,
+  ServiceMembershipStatus,
+  TenantStatus,
+  UserStatus,
+} from "@sandbox/shared";
+
+export type { MfaMethod, ServiceMembershipStatus } from "@sandbox/shared";
 
 export interface User {
   readonly id: string;
@@ -42,8 +51,6 @@ export interface OidcClient {
   readonly backchannelLogoutUri: string | null;
 }
 
-export type ServiceMembershipStatus = "active" | "disabled";
-
 /** テナント × サービスへの割り当て。役割は持たない */
 export interface ServiceMembership {
   readonly status: ServiceMembershipStatus;
@@ -77,9 +84,6 @@ export interface PortalEntry {
   readonly tenant: Tenant;
   readonly services: ReadonlyArray<PortalService>;
 }
-
-/** MFA の方式。初期は TOTP だけで、Passkey などはここに足す */
-export type MfaMethod = "totp";
 
 export interface UserMfaMethod {
   readonly method: MfaMethod;

@@ -28,7 +28,7 @@ flowchart TD
     H --> I["Response"]
 ```
 
-0 から 3 までは `packages/api-core/src/application/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `MemberRepository.find(tenantId, userId)` で member 行を取得、なければ `ServiceDefinition.defaultRole` で `upsert` → status の確認 → `listOverrides` で上書きを読む → `resolvePermissions(definition, role, overrides)` で権限を確定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
+0 から 3 までは `packages/api-core/src/application/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `MemberRepository.findWithOverrides(tenantId, userId)` で member 行と上書きを 1 つのトランザクションで取得、member 行がなければ `ServiceDefinition.defaultRole` で `upsert` → status の確認 → `resolvePermissions(definition, role, overrides)` で権限を確定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
 
 「入れるか」の判定はここにない。Auth Server が `/authorize` と refresh_token grant で user → tenant → 契約 → 割り当ての順に判定済みで、API は Token が有効であればこのテナントのこのサービスに入れる人だと扱う。割り当てを外された人は Auth Server がそのサービスの Refresh Token 系列を即時に失効させ、Back-Channel Logout で Tenant Session を消す。発行済みの Access Token は寿命の 15 分まで有効だが、BFF がもう使わない。API 側で即時に止めるなら members.status を disabled にする。
 
@@ -112,7 +112,7 @@ CMS。`apps/cms-api/src/definition.ts`。
 役割の既定に対して、個別の許可 / 拒否を重ねる。判断事項D16、D17。
 
 - 上書きは自サービスの DB の `<schema>.permission_overrides(tenant_id, user_id, permission, effect)` に持つ。effect は allow / deny
-- `MemberRepository.listOverrides(tenantId, userId)` が `app.tenant_id` を設定したトランザクションで読む。業務テーブルと同じ RLS ポリシーがかかる
+- `MemberRepository.findWithOverrides(tenantId, userId)` が member 行と一緒に `app.tenant_id` を設定した 1 つのトランザクションで読み、`{ member, overrides }` を返す。業務テーブルと同じ RLS ポリシーがかかる。`replaceOverrides` は unnest で全行を 1 文で入れ替える
 - `resolvePermissions(definition, role, overrides)` は 役割の既定 ∪ allow − deny を返す。deny が allow より優先し、`ServiceDefinition` にない permission 名の行は無視する
 - 例。alice は tanaka の cms で owner だが、cms の DB に `posts:create` の deny があるため `POST /v1/posts` は 403 になる。`GET /v1/posts` と `PATCH /v1/posts/:id` は通る
 - 例。suzuki の crm で viewer の alice に `end_users:unmask` の allow があるため、役割を変えずにマスクなしで読める
@@ -197,7 +197,8 @@ COMMIT;
 
 - API Server の DB ロールは NOBYPASSRLS。`crm_app` `cms_app`
 - `FORCE ROW LEVEL SECURITY` を掛けるため、表の所有者はアプリのロールと分ける。表は postgres が所有し、アプリのロールには DML だけを与える
-- members と permission_overrides にも同じポリシーを掛ける
+- members と permission_overrides にも同じポリシーを掛ける。ポリシーは `<schema>.current_tenant_id()` を通して `app.tenant_id` を読む。init の最後の DO ブロックがスキーマ内の全表に FORCE ROW LEVEL SECURITY が付いているか確かめ、欠けていれば例外で止める
+- pg のリポジトリは `@sandbox/shared` の `queryOne` `queryAll` `queryRequired` に zod の行スキーマを渡し、`.transform` でドメインの型に写す
 
 ### 禁止パターン
 

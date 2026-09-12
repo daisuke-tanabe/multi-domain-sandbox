@@ -4,6 +4,7 @@ import { secureHeaders } from "hono/secure-headers";
 import {
   clientIp,
   mountSpa,
+  mountSpaAssets,
   rateLimit,
   spaCsp,
   type CookiePolicy,
@@ -56,6 +57,12 @@ export function createAuthApp(options: AuthAppOptions): Hono {
     }),
   );
 
+  // 認証に関わる応答を bfcache や共有端末に残さない。静的アセットと /jwks は各 handler が上書きする
+  app.use(async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
+  mountSpaAssets(app, spa);
   // フォームと Token リクエストは数 KB で足りる。巨大な body でメモリを使わせない
   app.use(bodyLimit({ maxSize: 16 * 1024 }));
   // レート制限。IP 単位を基本にし、ログイン試行はユーザー名でも絞る

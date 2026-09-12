@@ -1,5 +1,8 @@
 import type { Member, PermissionOverride } from "../domain/member.ts";
-import type { MemberRepository } from "../application/ports/member-repository.ts";
+import type {
+  MemberRepository,
+  MemberWithOverrides,
+} from "../application/ports/member-repository.ts";
 
 /**
  * テスト用のインメモリ実装。
@@ -26,6 +29,15 @@ export class MemoryMemberRepository implements MemberRepository {
     return this.members.get(key(tenantId, userId));
   }
 
+  public async findWithOverrides(
+    tenantId: string,
+    userId: string,
+  ): Promise<MemberWithOverrides | undefined> {
+    const member = this.members.get(key(tenantId, userId));
+    if (member === undefined) return undefined;
+    return { member, overrides: this.overrides.get(key(tenantId, userId)) ?? [] };
+  }
+
   public async list(tenantId: string): Promise<ReadonlyArray<Member>> {
     return [...this.members.values()].filter((m) => m.tenantId === tenantId);
   }
@@ -44,13 +56,6 @@ export class MemoryMemberRepository implements MemberRepository {
   public async remove(tenantId: string, userId: string): Promise<void> {
     this.members.delete(key(tenantId, userId));
     this.overrides.delete(key(tenantId, userId));
-  }
-
-  public async listOverrides(
-    tenantId: string,
-    userId: string,
-  ): Promise<ReadonlyArray<PermissionOverride>> {
-    return this.overrides.get(key(tenantId, userId)) ?? [];
   }
 
   public async replaceOverrides(

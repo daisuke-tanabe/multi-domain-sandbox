@@ -16,32 +16,22 @@ import {
   Notice,
   Progress,
 } from "@sandbox/web-ui";
-import { ApiError, getJson, pickQuery } from "../../lib/api.ts";
+import { ExpiredCard } from "../../components/expired-card.tsx";
+import { ApiError, getJson, loadOrExpired, pickQuery, type Loaded } from "../../lib/api.ts";
 import type { Route } from "./+types/mfa-setup.route";
 
-type SetupData =
-  | { readonly kind: "form"; readonly mid: string; readonly setup: MfaSetupResponse }
-  | { readonly kind: "expired"; readonly message: string };
+type SetupData = Loaded<{ readonly mid: string; readonly setup: MfaSetupResponse }>;
 
 /**
  * /login/mfa-setup?mid=&error=。認証アプリの登録。
  * QR コードには期限があり、残り時間をプログレスバーで示す。期限が来たら新しい QR コードに切り替える
  */
-export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<SetupData> {
+export function clientLoader({ request }: Route.ClientLoaderArgs): Promise<SetupData> {
   const params = pickQuery(request.url, ["mid", "error"]);
-  const mid = params.get("mid") ?? "";
-  try {
-    const setup = await getJson(
-      mfaSetupResponseSchema,
-      `/api/login/mfa-setup?${params.toString()}`,
-    );
-    return { kind: "form", mid, setup };
-  } catch (error: unknown) {
-    if (error instanceof ApiError && error.code === "expired_request") {
-      return { kind: "expired", message: error.message };
-    }
-    throw error;
-  }
+  return loadOrExpired(async () => ({
+    mid: params.get("mid") ?? "",
+    setup: await getJson(mfaSetupResponseSchema, `/api/login/mfa-setup?${params.toString()}`),
+  }));
 }
 
 function useQrCode(uri: string): string | undefined {
@@ -171,20 +161,7 @@ function SetupForm({ mid, initial }: { mid: string; initial: MfaSetupResponse })
 }
 
 export default function MfaSetup({ loaderData }: Route.ComponentProps) {
-  if (loaderData.kind === "expired") {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>ログインをやり直してください</CardTitle>
-          <CardDescription>{loaderData.message}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button asChild>
-            <a href="/login">ログイン画面へ</a>
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
-  return <SetupForm key={loaderData.mid} mid={loaderData.mid} initial={loaderData.setup} />;
+  if (loaderData.kind === "expired") return <ExpiredCard message={loaderData.message} />;
+  const { mid, setup } = loaderData.data;
+  return <SetupForm key={mid} mid={mid} initial={setup} />;
 }

@@ -71,22 +71,29 @@ export function inlineScriptHashes(indexHtml: string): ReadonlyArray<string> {
 }
 
 /**
+ * ハッシュ付きの静的アセット。テナントやセッションに依らないので、認証系のミドルウェアより前に mount してよい。
+ * 本番だけ。開発の Vite は /assets を使わず、mountSpa の中継が扱う
+ */
+export function mountSpaAssets<E extends Env>(app: Hono<E>, spa: SpaOptions): void {
+  if (spa.kind !== "static") return;
+  if (!existsSync(join(spa.dir, "index.html"))) {
+    throw new Error(`SPA build not found at ${spa.dir}. Run react-router build first`);
+  }
+  app.use(
+    "/assets/*",
+    serveStatic({
+      root: spa.dir,
+      onFound: (_path, c) => c.header("Cache-Control", "public, max-age=31536000, immutable"),
+    }),
+  );
+}
+
+/**
  * サーバーの経路に当たらなかった GET を SPA に渡す。GET 以外は SPA が扱わないので notFound に落ちる。
  * 最後に mount する。index.html はログイン状態で描画が変わるので no-store にする。
  */
 export function mountSpa<E extends Env>(app: Hono<E>, spa: SpaOptions): void {
   if (spa.kind === "static") {
-    if (!existsSync(join(spa.dir, "index.html"))) {
-      throw new Error(`SPA build not found at ${spa.dir}. Run react-router build first`);
-    }
-    // ハッシュ付きアセットは長期キャッシュ。それ以外の静的ファイルは通常どおり
-    app.use(
-      "/assets/*",
-      serveStatic({
-        root: spa.dir,
-        onFound: (_path, c) => c.header("Cache-Control", "public, max-age=31536000, immutable"),
-      }),
-    );
     app.use("*", serveStatic({ root: spa.dir }));
     const indexHtml = readFileSync(join(spa.dir, "index.html"), "utf8");
     app.get("*", (c) => {

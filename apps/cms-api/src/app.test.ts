@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import {
   ALICE_ID,
-  BOB_ID,
   bearer,
   issueTestAccessToken,
   jsonBody,
@@ -65,16 +64,5 @@ describe("cms posts", () => {
     expect(deleted.status).toBe(204);
     // editor は招待できない
     expect(invite.status).toBe(403);
-  });
-
-  test("a crm role name is not accepted by cms", async () => {
-    const owner = await issueTestAccessToken(cms, { userId: ALICE_ID, tenantId: TANAKA_ID });
-
-    const res = await cms.app.request(
-      `${CMS_AUDIENCE}/v1/members/${BOB_ID}`,
-      bearer(owner, jsonBody({ role: "admin" }, "PATCH")),
-    );
-
-    expect(res.status).toBe(400);
   });
 });

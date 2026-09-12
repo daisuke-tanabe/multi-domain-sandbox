@@ -19,7 +19,7 @@ export interface AuthDeps {
   readonly cognito: CognitoAuthenticator;
   readonly signingKey: SigningKey;
   /** 先頭が現行鍵。残りは復号のみに使う旧鍵 */
-  readonly encryptionKeys: ReadonlyArray<EncryptionKey>;
+  readonly encryptionKeys: readonly [EncryptionKey, ...EncryptionKey[]];
   readonly logger: Logger;
   /** Back-Channel Logout の送信に使う。テストで差し替える */
   readonly fetch: FetchLike;

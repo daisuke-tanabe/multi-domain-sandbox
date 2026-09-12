@@ -12,7 +12,13 @@ import {
   type RenderError,
 } from "@sandbox/oidc-client";
 import type { SessionResponse } from "@sandbox/api-contract";
-import { mountSpa, spaCsp, timingSafeEqualString, type SpaOptions } from "@sandbox/shared";
+import {
+  mountSpa,
+  mountSpaAssets,
+  spaCsp,
+  timingSafeEqualString,
+  type SpaOptions,
+} from "@sandbox/shared";
 import { errorPage, type PageLabels } from "./views/pages.ts";
 
 export interface WebCoreAppOptions {
@@ -63,6 +69,8 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
   });
   // ALB のヘルスチェックはテナントのホストで来ないため、tenantContext の前に返す
   app.get("/healthz", (c) => c.json({ status: "ok" }));
+  // 静的アセットはテナントの解決もセッションの読み込みも要らない
+  mountSpaAssets(app, spa);
   // Back-Channel Logout はサーバー間通信で Host がテナントのホストにならないため、tenantContext の前に受ける
   app.route("/", backchannelRoutes(deps, provider));
   app.use(
@@ -127,12 +135,12 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
       if (result.error.kind === "session_expired") return c.json({ error: "unauthenticated" }, 401);
       return c.json({ error: "temporarily_unavailable" }, 503);
     }
+    // 本文はそのまま流す。API の Cache-Control などは引き継がず content-type だけ写す
     const upstream = result.value.response;
-    const body = await upstream.text();
     const headers = new Headers();
     const contentType = upstream.headers.get("content-type");
     if (contentType !== null) headers.set("content-type", contentType);
-    return new Response(body === "" ? null : body, { status: upstream.status, headers });
+    return new Response(upstream.body, { status: upstream.status, headers });
   });
 
   mountSpa(app, spa);

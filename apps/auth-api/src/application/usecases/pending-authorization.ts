@@ -40,8 +40,12 @@ export function loadPendingAuthorization(
   return deps.stores.authorizationRequests.get(keyOf(rid));
 }
 
-export function deletePendingAuthorization(deps: AuthDeps, rid: string): Promise<void> {
-  return deps.stores.authorizationRequests.delete(keyOf(rid));
+/** ログイン完了時に一回限りで取り出す */
+export function consumePendingAuthorization(
+  deps: AuthDeps,
+  rid: string,
+): Promise<AuthorizationRequest | undefined> {
+  return deps.stores.authorizationRequests.getAndDelete(keyOf(rid));
 }
 
 export type ResumeError =

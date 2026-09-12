@@ -1,33 +1,35 @@
 import type { Pool } from "pg";
 import { z } from "zod";
+import { queryAll, queryOne, queryRequired } from "@sandbox/shared";
 import { withTenant } from "./db.ts";
 import type { Member, PermissionOverride } from "../domain/member.ts";
-import type { MemberRepository } from "../application/ports/member-repository.ts";
+import type {
+  MemberRepository,
+  MemberWithOverrides,
+} from "../application/ports/member-repository.ts";
 
-const memberRow = z.object({
-  tenant_id: z.string(),
-  user_id: z.string(),
-  email: z.string().nullable(),
-  name: z.string().nullable(),
-  role: z.string(),
-  status: z.enum(["active", "disabled"]),
-});
-
-const overrideRow = z.object({
-  permission: z.string(),
-  effect: z.enum(["allow", "deny"]),
-});
-
-function toMember(row: z.infer<typeof memberRow>): Member {
-  return {
+const memberRow = z
+  .object({
+    tenant_id: z.string(),
+    user_id: z.string(),
+    email: z.string().nullable(),
+    name: z.string().nullable(),
+    role: z.string(),
+    status: z.enum(["active", "disabled"]),
+  })
+  .transform((row): Member => ({
     tenantId: row.tenant_id,
     userId: row.user_id,
     email: row.email,
     name: row.name,
     role: row.role,
     status: row.status,
-  };
-}
+  }));
+
+const overrideRow: z.ZodType<PermissionOverride> = z.object({
+  permission: z.string(),
+  effect: z.enum(["allow", "deny"]),
+});
 
 const COLUMNS = "tenant_id, user_id, email, name, role, status";
 
@@ -44,29 +46,45 @@ export class PgMemberRepository implements MemberRepository {
   }
 
   public find(tenantId: string, userId: string): Promise<Member | undefined> {
+    return withTenant(this.pool, tenantId, (client) =>
+      queryOne(client, memberRow, this.selectMember(), [tenantId, userId]),
+    );
+  }
+
+  public findWithOverrides(
+    tenantId: string,
+    userId: string,
+  ): Promise<MemberWithOverrides | undefined> {
     return withTenant(this.pool, tenantId, async (client) => {
-      const result = await client.query(
-        `SELECT ${COLUMNS} FROM ${this.schema}.members WHERE tenant_id = $1 AND user_id = $2`,
+      const member = await queryOne(client, memberRow, this.selectMember(), [tenantId, userId]);
+      if (member === undefined) return undefined;
+      const overrides = await queryAll(
+        client,
+        overrideRow,
+        `SELECT permission, effect FROM ${this.schema}.permission_overrides
+          WHERE tenant_id = $1 AND user_id = $2 ORDER BY permission`,
         [tenantId, userId],
       );
-      const first: unknown = result.rows[0];
-      return first === undefined ? undefined : toMember(memberRow.parse(first));
+      return { member, overrides };
     });
   }
 
   public list(tenantId: string): Promise<ReadonlyArray<Member>> {
-    return withTenant(this.pool, tenantId, async (client) => {
-      const result = await client.query(
+    return withTenant(this.pool, tenantId, (client) =>
+      queryAll(
+        client,
+        memberRow,
         `SELECT ${COLUMNS} FROM ${this.schema}.members WHERE tenant_id = $1 ORDER BY created_at`,
         [tenantId],
-      );
-      return result.rows.map((row) => toMember(memberRow.parse(row)));
-    });
+      ),
+    );
   }
 
   public upsert(member: Member): Promise<Member> {
-    return withTenant(this.pool, member.tenantId, async (client) => {
-      const result = await client.query(
+    return withTenant(this.pool, member.tenantId, (client) =>
+      queryRequired(
+        client,
+        memberRow,
         `INSERT INTO ${this.schema}.members (tenant_id, user_id, email, name, role, status)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (tenant_id, user_id) DO UPDATE
@@ -76,9 +94,8 @@ export class PgMemberRepository implements MemberRepository {
                status = EXCLUDED.status
          RETURNING ${COLUMNS}`,
         [member.tenantId, member.userId, member.email, member.name, member.role, member.status],
-      );
-      return toMember(memberRow.parse(result.rows[0]));
-    });
+      ),
+    );
   }
 
   public remove(tenantId: string, userId: string): Promise<void> {
@@ -87,20 +104,6 @@ export class PgMemberRepository implements MemberRepository {
         `DELETE FROM ${this.schema}.members WHERE tenant_id = $1 AND user_id = $2`,
         [tenantId, userId],
       );
-    });
-  }
-
-  public listOverrides(
-    tenantId: string,
-    userId: string,
-  ): Promise<ReadonlyArray<PermissionOverride>> {
-    return withTenant(this.pool, tenantId, async (client) => {
-      const result = await client.query(
-        `SELECT permission, effect FROM ${this.schema}.permission_overrides
-          WHERE tenant_id = $1 AND user_id = $2 ORDER BY permission`,
-        [tenantId, userId],
-      );
-      return result.rows.map((row) => overrideRow.parse(row));
     });
   }
 
@@ -114,13 +117,18 @@ export class PgMemberRepository implements MemberRepository {
         `DELETE FROM ${this.schema}.permission_overrides WHERE tenant_id = $1 AND user_id = $2`,
         [tenantId, userId],
       );
-      for (const override of overrides) {
-        await client.query(
-          `INSERT INTO ${this.schema}.permission_overrides (tenant_id, user_id, permission, effect)
-           VALUES ($1, $2, $3, $4)`,
-          [tenantId, userId, override.permission, override.effect],
-        );
-      }
+      if (overrides.length === 0) return;
+      // 配列を unnest して 1 文で入れる。50 件を往復させない
+      await client.query(
+        `INSERT INTO ${this.schema}.permission_overrides (tenant_id, user_id, permission, effect)
+         SELECT $1, $2, permission, effect
+           FROM unnest($3::text[], $4::text[]) AS t(permission, effect)`,
+        [tenantId, userId, overrides.map((o) => o.permission), overrides.map((o) => o.effect)],
+      );
     });
+  }
+
+  private selectMember(): string {
+    return `SELECT ${COLUMNS} FROM ${this.schema}.members WHERE tenant_id = $1 AND user_id = $2`;
   }
 }

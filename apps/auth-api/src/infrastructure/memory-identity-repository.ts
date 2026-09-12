@@ -1,4 +1,4 @@
-import { expandRedirectUriTemplate } from "@sandbox/shared";
+import { serviceOrigin } from "@sandbox/shared";
 import type {
   MfaMethod,
   UserMfaMethod,
@@ -41,8 +41,16 @@ export class MemoryIdentityRepository implements IdentityRepository {
     return this.data.clients.find((client) => client.clientId === clientId);
   }
 
+  public async findClientById(id: string): Promise<OidcClient | undefined> {
+    return this.data.clients.find((client) => client.id === id);
+  }
+
   public async listClients(): Promise<ReadonlyArray<OidcClient>> {
     return this.data.clients;
+  }
+
+  public async findTenantsByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Tenant>> {
+    return this.data.tenants.filter((tenant) => ids.includes(tenant.id));
   }
 
   private readonly mfaMethods = new Map<string, UserMfaMethod[]>();
@@ -159,8 +167,7 @@ export class MemoryIdentityRepository implements IdentityRepository {
           );
           const client = this.data.clients.find((c) => c.id === membership.oidcClientId);
           if (contract?.status !== "active" || client?.status !== "active") return [];
-          const origin = new URL(expandRedirectUriTemplate(client.redirectUriTemplate, tenant.slug))
-            .origin;
+          const origin = serviceOrigin(client.redirectUriTemplate, tenant.slug);
           return [{ clientId: client.clientId, name: client.name, origin }];
         });
       if (services.length > 0) entries.push({ tenant, services });

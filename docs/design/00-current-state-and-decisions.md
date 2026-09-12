@@ -268,10 +268,10 @@ MFA は全員必須。初期方式は認証アプリの TOTP で、Cognito は O
 - ポータルはテナントごとに、割り当てがあり契約と Client が active なサービスだけを並べ、役割を `<client_id> / <role>` で示す。割り当てがなければ「利用できるサービスがありません。管理者に招待を依頼してください。」を表示する。テナント単位の役割はポータルに出さない
 - Token は変わらない。ID Token と Access Token は sub、tenant_id、tenant_slug、sid、client_id を持ち、role も permission も載せない
 - api-core は `IdentityReader.findAccessContext(userId, tenantId, clientId)` で users、tenants、oidc_clients、tenant_service_members を 1 回の JOIN で引く。割り当ては Token の client_id に一致するものだけを見る
-- `business.member_permissions(tenant_id, user_id, client_id, permission, effect)`。effect は allow / deny。projects と同じ RLS ポリシーを持ち、`PermissionReader.listOverrides` が app.tenant_id を設定したトランザクションで読む。`resolvePermissions(role, overrides)` は役割の既定 ∪ allow − deny で、deny が優先し、未知の permission 名は無視する。`TenantContext` は clientId、role、permissions を持ち、`requirePermission` は permissions の集合で判定する。`/v1/me` は permissions をソート済み配列で返す
-- サンドボックスでは 1 つの DB を crm-api と cms-api が共有するため member_permissions に client_id 列を持つ。実運用では各サービスの DB がこの表を持ち、client_id 列は不要になる
+- 権限の上書きは各サービスの DB の `<schema>.permission_overrides(tenant_id, user_id, permission, effect)` に持つ。effect は allow / deny。業務テーブルと同じ RLS ポリシーを持ち、`MemberRepository.findWithOverrides` が member 行と一緒に app.tenant_id を設定した 1 つのトランザクションで読む。`resolvePermissions(role, overrides)` は役割の既定 ∪ allow − deny で、deny が優先し、未知の permission 名は無視する。`TenantContext` は clientId、role、permissions を持ち、`requirePermission` は permissions の集合で判定する。`/v1/me` は permissions をソート済み配列で返す
+- サービスごとに DB を分けたため、この表に client_id 列は持たない。サービスが違えば DB が違う
 - 会社のオンボーディング。CRM だけ契約する会社は tenants 1 行、tenant_services 1 行、利用者数分の tenant_service_members。後から CMS を足すときは tenant_services 1 行と CMS を使う人の割り当て。サービスごとのテナントも、会社ごとの Client 登録も要らない
-- provision は `SEED_SERVICE_MEMBERSHIPS` で tenant_service_members、`SEED_PERMISSION_OVERRIDES` で member_permissions を投入する
+- provision は `SEED_SERVICE_MEMBERSHIPS` で tenant_service_members を投入し、サービスの DB は `db/<service>/init` の `002_schema.sql` と `003_seed.sql` を適用して members と permission_overrides を用意する
 - シード。tenant_service_members は alice が tanaka × crm の owner、tanaka × cms の owner、suzuki × crm の viewer、bob が suzuki × crm の admin、carol は割り当てなし。member_permissions は alice が tanaka × cms で `projects:write` を deny。alice は tanaka.cms の owner だが Project を作れず、smoke と web のテストが「この操作を行う権限がありません」を確認する。tenant_members は alice が tanaka の owner、bob が suzuki の owner
 
 上記の具体化のうち、tenant_service_members の role 列、business スキーマと member_permissions の client_id 列、`IdentityReader` による API からの Identity DB 参照、provision の `SEED_PERMISSION_OVERRIDES`、projects のシードは D17 で置き換えた。現在の形は D17 を正とする。
@@ -444,10 +444,10 @@ D18 の時点では auth-api のログイン、ポータル、Global Logout の�
 
 具体化。
 
-- `identity.auth_sessions(id, user_id, status, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason)`。id は sid。`identity.auth_session_clients(session_id, oidc_client_id, tenant_id, first_seen_at, last_seen_at)`。`identity.audit_events(id, occurred_at, kind, user_id, session_id, tenant_id, client_id, ip, user_agent, detail)`。`identity.user_mfa_methods(user_id, method, enrolled_at)` は MFA の実装に先立って用意し、D22 で使う
-- 監査イベントの kind は `login_succeeded` `login_failed` `session_touched` `environment_changed` `global_logout` `session_revoked` `refresh_token_reused` `refresh_token_client_mismatch` `authorization_code_reused` `service_member_invited` `service_member_revoked` `mfa_enrolled` `mfa_challenge_failed` `mfa_setup_expired`。Token 値、Cookie 値、パスワード、TOTP の secret は残さない。`login_failed` はユーザー名を残さない
+- `identity.auth_sessions(id, user_id, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason)`。id は sid。status 列は持たず、有効は `revoked_at IS NULL` で表す。`identity.auth_session_clients(session_id, oidc_client_id, tenant_id, first_seen_at, last_seen_at)`。`identity.audit_events(id, occurred_at, kind, user_id, session_id, tenant_id, client_id, ip, user_agent, detail)`。`identity.user_mfa_methods(user_id, method, enrolled_at)` は MFA の実装に先立って用意し、D22 で使う
+- 監査イベントの kind は `login_succeeded` `login_failed` `environment_changed` `global_logout` `session_revoked` `refresh_token_reused` `refresh_token_client_mismatch` `authorization_code_reused` `service_member_invited` `service_member_revoked` `mfa_enrolled` `mfa_challenge_failed` `mfa_setup_expired`。Token 値、Cookie 値、パスワード、TOTP の secret は残さない。`login_failed` はユーザー名を残さない
 - IP は `X-Forwarded-For` の先頭、なければ接続元。User-Agent は 512 文字まで。Refresh はサーバー間通信で端末の環境を運ばないため比較しない
-- `revokeSsoSession(deps, session, reason)` に失効の手順をまとめる。Refresh Token 系列の失効 → Cognito RevokeToken → SSO Session 削除 → code を発行した Client への Back-Channel Logout → `auth_sessions` を revoked → 監査。理由は `global_logout` `user_revoked` `service_member_revoked` `refresh_token_reused` `expired`
+- `revokeSessionBySid(deps, sid, reason, env)` に失効の手順をまとめる。Refresh Token 系列の失効 → Cognito RevokeToken → SSO Session 削除 → code を発行した Client への Back-Channel Logout → `auth_sessions` の revoked_at と revoke_reason を書く → 監査。通知先は `auth_session_clients` から引く。理由は `global_logout` と `user_revoked` の 2 つで、DB の CHECK もこれに揃える。招待の解除と Refresh Token の再利用はサービス単位の失効で、SSO Session は落とさない
 - `GET /api/sessions` と `POST /sessions/revoke` を auth-api に足し、auth-web に `/security` を足す。対象は自分の sid だけで、他人の sid と現在のセッションは無視する。`/logout` と同じレート制限
 - `revokeClientAccess(userId, client, tenantId)` が招待解除の失効を担う。`DELETE /admin/service-members` が割り当てを消したあとに呼ぶ
 - `packages/shared` の `keyDigest` と `application/usecases/store-keys.ts` の `keyOf`。`SsoSession.id` は Cookie の値の SHA-256、`RefreshToken` と `AuthorizationCode` は Token と code の値を持たない。`sso:rtfamily` の要素もキーの SHA-256
@@ -493,7 +493,7 @@ D18 の時点では auth-api のログイン、ポータル、Global Logout の�
 - auth-web は `features/login/challenge.route.tsx` の「認証コードを入力」と `features/login/mfa-setup.route.tsx` の「認証アプリを登録」を持つ。登録画面は `qrcode` で otpauth URI を QR にし、secret を文字でも出し、残り時間をプログレスバーで示して 0 になったら `renew=1` で取り直す。`/security` は `mfa_methods` を「多要素認証」として出す
 - `packages/shared/src/totp.ts` に RFC 6238 の生成と検証、base32、otpauth URI。モックの Cognito はこれで本物の検証を行い、登録状態はプロセスのメモリに持つ。`MOCK_COGNITO_USERS` の `totpSecret` で alice / bob / carol を登録済みにし、dave は初回ログインで登録する
 - `identity.user_mfa_methods` は MFA を終えたログインのたびに `recordMfaMethod` で記録し、既に行があれば変えない。Cognito 側で登録済みなのに記録が無い人はここで揃う。方式は `MfaMethod` の判別共用体で当面 `totp` のみ。テナント単位の方針は将来の拡張
-- テストは `completeMfa` と `completeMfaThrough` でパスワードのあとに TOTP を送る。vitest は 149 件、chrome-check は 17 項目
+- テストは `completeMfa` と `completeMfaThrough` でパスワードのあとに TOTP を送る。vitest は 142 件、chrome-check は 17 項目
 
 ## 5. 移行計画
 
@@ -514,5 +514,6 @@ D18 の時点では auth-api のログイン、ポータル、Global Logout の�
 | 10 | shadcn/ui と Tailwind CSS v4、react-hook-form への置き換えと feature 単位のコロケーション。判断事項D20 | `pnpm chrome-check` の 14 項目が通り、空のフォームで項目ごとの検証エラーが出る |
 | 11 | セッションの記録と監査イベント、ポータルからのセッション失効、招待解除の即時失効、ストアのキーのハッシュ化。判断事項D21 | 141 件のテストと `pnpm chrome-check` の 16 項目が通り、招待解除後の Refresh が即時に拒否される |
 | 12 | MFA の全員必須化。認証アプリの TOTP のチャレンジと登録、QR の期限と再発行、Cognito の OPTIONAL 設定。判断事項D22 | 149 件のテストと `pnpm chrome-check` の 17 項目が通り、パスワードだけでは SSO Session が作られない |
+| 13 | コードとデータモデルの整理。共通ヘルパーへの集約、auth_sessions の status 列の削除、重ならないテストへの再編 | 142 件のテストと `pnpm smoke` の 9 項目、`pnpm chrome-check` の 17 項目が通る |
 
 既存システムがある適用先では、フェーズ2完了後に既存ログインを `/auth/login` へ差し替え、Cognito Tokenを直接使う箇所をAPI Server経由へ置き換える工程をフェーズ3と4の間に挟む。

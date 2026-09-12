@@ -51,7 +51,7 @@ export async function createCmsHarness(
     overrides: [
       { tenantId: TANAKA_ID, userId: ALICE_ID, permission: "posts:create", effect: "deny" },
     ],
-    routes: () => [postRoutes({ posts })],
+    routes: () => [postRoutes(posts)],
   });
   return { ...harness, posts };
 }

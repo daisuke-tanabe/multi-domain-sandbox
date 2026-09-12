@@ -1,4 +1,3 @@
-import { redirect } from "react-router";
 import { portalResponseSchema, type PortalResponse } from "@sandbox/api-contract";
 import {
   Button,
@@ -9,20 +8,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@sandbox/web-ui";
-import { ApiError, getJson } from "../../lib/api.ts";
+import { getJson, loadOrLogin } from "../../lib/api.ts";
 import type { Route } from "./+types/portal.route";
 
 /**
  * ポータル。テナントごとに、入れるサービスの入口を並べる。役割はサービス側が持つのでここには出ない。
  * SSO Session がなければ rid なしのログイン画面へ送る。
  */
-export async function clientLoader(): Promise<PortalResponse> {
-  try {
-    return await getJson(portalResponseSchema, "/api/portal");
-  } catch (error: unknown) {
-    if (error instanceof ApiError && error.status === 401) throw redirect("/login");
-    throw error;
-  }
+export function clientLoader(): Promise<PortalResponse> {
+  return loadOrLogin(() => getJson(portalResponseSchema, "/api/portal"));
 }
 
 export default function Portal({ loaderData }: Route.ComponentProps) {

@@ -87,7 +87,7 @@ sequenceDiagram
     Auth->>IdDB: user_mfa_methods に (user_id, totp) を記録
     Auth->>SsoStore: SSO Session作成。キーは Cookie 値の SHA-256<br/>{sid, user_id, cognito_tokens(暗号化), auth_time}
     Auth->>IdDB: auth_sessions に記録 {sid, user_id, ip, user_agent}<br/>audit_events に login_succeeded {mfa:"totp"}
-    Auth->>SsoStore: Cookie が指す旧 SSO Session があれば破棄<br/>sso:sess / sso:sid / sso:clients
+    Auth->>SsoStore: Cookie が指す旧 SSO Session があれば破棄<br/>sso:sess / sso:sid
     Note over Auth: Cognito Tokenはここから外に出さない
     Auth->>IdDB: アクセス判定。users.status → tenants.status<br/>→ tenant_services (tanaka, crm) → tenant_service_members (tanaka, crm, user_id)
     Auth->>IdDB: auth_sessions の last_seen_at と環境を更新<br/>auth_session_clients に (crm, tanaka) を記録
@@ -96,7 +96,7 @@ sequenceDiagram
         Note over Browser,TanakaCrm: TanakaCrm が理由に応じた 403 画面を表示。SSO Session は残る。以降は省略
     end
     Auth->>SsoStore: Authorization Code発行<br/>{code, client_id:crm, redirect_uri, scope, nonce,<br/>code_challenge, user_id, tenant_id, sid, auth_time} TTL 60秒
-    Auth->>SsoStore: sso:clients の集合に crm を追加
+    Auth->>IdDB: auth_session_clients に (crm, tanaka) を upsert
     Auth-->>Browser: 303 https://tanaka.crm.sandbox.com/auth/callback?code=AC1&state=S1<br/>Set-Cookie: sso_session=X1#59; HttpOnly#59; Secure#59; SameSite=Lax#59; Path=/<br/>Domain属性なし。auth.sandbox.comのみに限定
 
     Browser->>TanakaCrm: GET /auth/callback?code=AC1&state=S1<br/>Cookie: tenant_pre_auth=P1
@@ -166,7 +166,7 @@ sequenceDiagram
     alt 判定失敗
         Auth-->>Browser: 302 https://suzuki.crm.sandbox.com/auth/callback?error=access_denied&error_description=<理由>&state=S2
     end
-    Auth->>SsoStore: lastSeenAt更新。sso:clients は {crm} のまま
+    Auth->>SsoStore: lastSeenAt更新
     Auth->>IdDB: auth_sessions の last_seen_at と IP / User-Agent を更新<br/>auth_session_clients に (crm, suzuki) を追加<br/>前回と IP か User-Agent が違えば environment_changed を監査。失効はしない
     Auth->>SsoStore: Authorization Code発行 {code:AC2, client_id:crm, tenant_id:suzuki, sid, ...} TTL 60秒
     Auth-->>Browser: 302 https://suzuki.crm.sandbox.com/auth/callback?code=AC2&state=S2
@@ -204,7 +204,8 @@ sequenceDiagram
     Browser->>Auth: GET /authorize?... Cookie: sso_session=X1
     Auth->>IdDB: client_id=cms の取得。redirect_uri をテンプレートに当てて slug=tanaka → tenants から解決
     Auth->>IdDB: アクセス判定。tenant_services (tanaka, cms) あり。tenant_service_members (tanaka, cms, user_id) あり
-    Auth->>SsoStore: sso:clients に cms を追加。code 発行 {client_id:cms, tenant_id:tanaka, sid}
+    Auth->>IdDB: auth_session_clients に (cms, tanaka) を upsert
+    Auth->>SsoStore: code 発行 {client_id:cms, tenant_id:tanaka, sid}
     Auth-->>Browser: 302 https://tanaka.cms.sandbox.com/auth/callback?code=AC3&state=S3
     Browser->>TanakaCms: GET /auth/callback?code=AC3&state=S3
     TanakaCms->>Auth: POST /token client認証 cms:client_secret
@@ -246,7 +247,7 @@ tanaka.crm.sandbox.com → ログイン済み (tenant_session。キー crm:tanak
 suzuki.crm.sandbox.com → ログイン済み (tenant_session。キー crm:suzuki:T2)
 tanaka.cms.sandbox.com → ログイン済み (tenant_session。キー cms:tanaka:T3)
 suzuki.cms.sandbox.com → 403 not_contracted。セッションなし
-auth.sandbox.com       → SSO Session 1つ。sso:clients = {crm, cms}
+auth.sandbox.com       → SSO Session 1つ。auth_session_clients は (crm, tanaka) (crm, suzuki) (cms, tanaka)
 ```
 
 ## 3. Authorization Code Flow の詳細
@@ -280,7 +281,7 @@ flowchart TD
     J3 -- yes --> J4{"tenant_service_members に<br/>(tenant_id, client_id, user_id)<br/>が存在?"}
     J4 -- no --> E6["302 ... error_description=no_membership"]
     J4 -- "存在するが status!=active" --> E7["302 ... error_description=membership_inactive"]
-    J4 -- active --> K["code 発行 TTL 60秒<br/>sso:clients の集合に client_id を追加"]
+    J4 -- active --> K["code 発行 TTL 60秒<br/>auth_session_clients に client_id と tenant_id を upsert"]
     K --> L["302 redirect_uri?code&state"]
 ```
 
@@ -643,10 +644,11 @@ sequenceDiagram
     Auth-->>Browser: 200 {authenticated:true, csrfToken, returnTo:{label:"CRM (tanaka)", href:"https://tanaka.crm.sandbox.com/"}}<br/>Set-Cookie: auth_csrf
     Note over Browser: SPA が「Sandbox 全体からログアウトしますか」と<br/>csrf / client_id / tenant を hidden に持つフォームを描く
     Browser->>Auth: POST /logout {csrf, client_id=crm, tenant=tanaka}。HTML フォームの POST
-    Auth->>SsoStore: X1 取得。sso:clients={crm, cms} と sid を特定
+    Auth->>SsoStore: X1 取得。sid を特定
+    Auth->>IdDB: auth_session_clients から通知先の {crm, cms} を引く
     Auth->>SsoStore: sid に紐付く Refresh Token を全失効
     Auth->>Cognito: RevokeToken(Cognito RefreshToken)
-    Auth->>SsoStore: X1 と sso:sid / sso:clients を削除
+    Auth->>SsoStore: X1 と sso:sid を削除
     par Back-Channel Logout。サービスごとに1通。5 秒でタイムアウト
         Auth->>WebCrm: POST /auth/backchannel-logout<br/>logout_token (JWT: iss, aud=crm, sid, events)
         WebCrm->>WebCrm: logout_token 検証。crm:sid:<sid> から<br/>tanaka / suzuki の Tenant Session を全削除
@@ -664,7 +666,7 @@ sequenceDiagram
     Note over Browser: SPA が「Sandbox からログアウトしました」と<br/>「CRM (tanaka) に戻る」のリンクを描く<br/>crm の redirect_uri_template を tenant=tanaka で展開した origin
 ```
 
-通知先は `sso:clients` の集合に含まれるサービスのうち、`oidc_clients.status` が `active` で `backchannel_logout_uri` を持つもの。サービスは logout_token の sid で、テナントを問わず自サービスの全セッションを削除する。
+通知先は Identity DB の `auth_session_clients` にあるサービスのうち、`oidc_clients.status` が `active` で `backchannel_logout_uri` を持つもの。サービスは logout_token の sid で、テナントを問わず自サービスの全セッションを削除する。
 戻り先のリンクは `client_id` の `redirect_uri_template` を `tenant` で展開した URL の origin から `/api/logout` の `returnTo` として導く。`tenant` は SPA が描くフォームの hidden フィールドで POST まで引き継ぎ、POST 後の 303 で `/logout` のクエリに戻す。確認画面と完了画面は同じ `/logout` を SPA が `authenticated` で出し分ける。判断事項D19。
 各通知は `AbortSignal.timeout(5000)` を付けて送り、応答しないサービスがあっても 5 秒で打ち切る。通知に失敗したサービスの Tenant Session は、Access Token 期限切れ後の Refresh で `invalid_grant` となり自然に失効する。最大遅延は Access Token 寿命の15分。
 
@@ -767,7 +769,7 @@ sequenceDiagram
     Auth->>SsoStore: sso:sid から sid2 の SSO Session を引く
     Auth->>SsoStore: sid2 の Refresh Token 系列を全失効
     Auth->>Cognito: RevokeToken(sid2 の Cognito RefreshToken)
-    Auth->>SsoStore: sid2 の SSO Session と sso:sid / sso:clients を削除
+    Auth->>SsoStore: sid2 の SSO Session と sso:sid を削除
     Auth->>WebCrm: POST /auth/backchannel-logout logout_token (sid2)
     WebCrm-->>Auth: 200
     Auth->>IdDB: auth_sessions の sid2 を revoked (user_revoked) に更新<br/>audit_events に session_revoked

@@ -8,6 +8,7 @@ import {
   revokeRefreshToken,
 } from "../../../application/usecases/token.ts";
 import { clientAuth, type ClientEnv } from "./client-auth.ts";
+import { invalidJson } from "./helpers.ts";
 
 const tokenFormSchema = z.discriminatedUnion("grant_type", [
   z.object({
@@ -71,10 +72,7 @@ export function tokenRoutes(deps: AuthDeps): Hono<ClientEnv> {
   app.post(
     "/revoke",
     clientAuth(deps, "revoke"),
-    zValidator("form", revokeFormSchema, (result, c) => {
-      if (!result.success) return c.json({ error: "invalid_request" }, 400);
-      return undefined;
-    }),
+    zValidator("form", revokeFormSchema, invalidJson),
     async (c) => {
       await revokeRefreshToken(deps, c.get("client"), c.req.valid("form").token);
       return c.body(null, 200);

@@ -1,5 +1,5 @@
 import { ulid } from "ulid";
-import { notFound, type NotFoundError, type TenantContext } from "@sandbox/api-core";
+import type { TenantContext } from "@sandbox/api-core";
 import { err, ok, type Result } from "@sandbox/shared";
 import {
   presentEndUser,
@@ -9,60 +9,57 @@ import {
 } from "../domain/end-user.ts";
 import type { EndUserRepository } from "./end-user-repository.ts";
 
-export interface EndUserDeps {
-  readonly endUsers: EndUserRepository;
-}
-
 const UNMASK = "end_users:unmask";
+const NOT_FOUND = { kind: "not_found" } as const;
 
 /**
  * エンドユーザーのユースケース。読み取りは誰でも。個人情報は end_users:unmask が無ければマスクして返す。
  * 権限の最終判定は interface の requirePermission が行い、ここではマスクの要否だけを見る
  */
 export async function listEndUsers(
-  deps: EndUserDeps,
+  endUsers: EndUserRepository,
   ctx: TenantContext,
 ): Promise<{ endUsers: ReadonlyArray<EndUserView>; masked: boolean }> {
   const canUnmask = ctx.permissions.has(UNMASK);
-  const rows = await deps.endUsers.list(ctx.tenantId);
+  const rows = await endUsers.list(ctx.tenantId);
   return { endUsers: rows.map((row) => presentEndUser(row, canUnmask)), masked: !canUnmask };
 }
 
 export async function getEndUser(
-  deps: EndUserDeps,
+  endUsers: EndUserRepository,
   ctx: TenantContext,
   id: string,
-): Promise<Result<EndUserView, NotFoundError>> {
-  const user = await deps.endUsers.findById(ctx.tenantId, id);
-  if (user === undefined) return err(notFound());
+): Promise<Result<EndUserView, typeof NOT_FOUND>> {
+  const user = await endUsers.findById(ctx.tenantId, id);
+  if (user === undefined) return err(NOT_FOUND);
   return ok(presentEndUser(user, ctx.permissions.has(UNMASK)));
 }
 
 export async function createEndUser(
-  deps: EndUserDeps,
+  endUsers: EndUserRepository,
   ctx: TenantContext,
   input: EndUserInput,
 ): Promise<EndUserView> {
-  const created = await deps.endUsers.create(ctx.tenantId, ulid(), input);
+  const created = await endUsers.create(ctx.tenantId, ulid(), input);
   return presentEndUser(created, ctx.permissions.has(UNMASK));
 }
 
 export async function updateEndUser(
-  deps: EndUserDeps,
+  endUsers: EndUserRepository,
   ctx: TenantContext,
   id: string,
   input: EndUserInputPatch,
-): Promise<Result<EndUserView, NotFoundError>> {
-  const updated = await deps.endUsers.update(ctx.tenantId, id, input);
-  if (updated === undefined) return err(notFound());
+): Promise<Result<EndUserView, typeof NOT_FOUND>> {
+  const updated = await endUsers.update(ctx.tenantId, id, input);
+  if (updated === undefined) return err(NOT_FOUND);
   return ok(presentEndUser(updated, ctx.permissions.has(UNMASK)));
 }
 
 export async function deleteEndUser(
-  deps: EndUserDeps,
+  endUsers: EndUserRepository,
   ctx: TenantContext,
   id: string,
-): Promise<Result<void, NotFoundError>> {
-  const removed = await deps.endUsers.remove(ctx.tenantId, id);
-  return removed ? ok(undefined) : err(notFound());
+): Promise<Result<void, typeof NOT_FOUND>> {
+  const removed = await endUsers.remove(ctx.tenantId, id);
+  return removed ? ok(undefined) : err(NOT_FOUND);
 }

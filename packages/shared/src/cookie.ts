@@ -1,3 +1,6 @@
+import type { Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+
 /**
  * Cookie 名と属性の規約。docs/design/03-cookie-design.md に対応する。
  * 本番は __Host- / __Secure- プレフィックスを付け、ローカル HTTP ではプレフィックスなしにする。
@@ -35,4 +38,29 @@ export function shortLivedCookieAttributes(
   maxAgeSeconds: number,
 ): CookieAttributes {
   return { path, httpOnly: true, secure: policy.secure, sameSite: "Lax", maxAge: maxAgeSeconds };
+}
+
+export interface CookieAccessor {
+  readonly name: string;
+  read(c: Context): string | undefined;
+  write(c: Context, value: string): void;
+  clear(c: Context): void;
+}
+
+/**
+ * 1 つの Cookie の読み書きと削除をまとめる。auth-api の SSO / CSRF、oidc-client のセッション / pre-auth が使う。
+ */
+export function cookieAccessor(
+  base: string,
+  scope: CookieScope,
+  policy: CookiePolicy,
+  attributes: CookieAttributes,
+): CookieAccessor {
+  const name = cookieName(base, scope, policy);
+  return {
+    name,
+    read: (c) => getCookie(c, name),
+    write: (c, value) => setCookie(c, name, value, attributes),
+    clear: (c) => deleteCookie(c, name, { path: attributes.path, secure: policy.secure }),
+  };
 }

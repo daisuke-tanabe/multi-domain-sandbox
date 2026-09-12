@@ -1,4 +1,4 @@
-import { createSessionExpiry, encrypt, randomToken } from "@sandbox/shared";
+import { createSessionExpiry, randomToken } from "@sandbox/shared";
 import { SSO_SESSION_ABSOLUTE_SECONDS, SSO_SESSION_IDLE_SECONDS } from "../../domain/policy.ts";
 import type { OidcClient, User } from "../../domain/identity.ts";
 import { environmentChanged, type RequestEnvironment } from "../../domain/session.ts";
@@ -6,6 +6,7 @@ import type { CognitoAuthenticated } from "../ports/cognito.ts";
 import type { SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "../deps.ts";
 import { recordAudit } from "./audit.ts";
+import { sealCognitoTokens } from "./cognito-tokens.ts";
 import { keyOf } from "./store-keys.ts";
 
 const expiry = createSessionExpiry({
@@ -64,15 +65,12 @@ export async function createSsoSession(
   environment: RequestEnvironment,
 ): Promise<CreatedSsoSession> {
   const now = deps.clock.nowSeconds();
-  const currentKey = deps.encryptionKeys[0];
-  if (currentKey === undefined) throw new Error("No encryption key configured");
-
   const cookieValue = randomToken();
   const session: SsoSession = {
     id: keyOf(cookieValue),
     sid: randomToken(),
     userId: user.id,
-    encryptedCognitoTokens: encrypt(JSON.stringify(authenticated.tokens), currentKey),
+    encryptedCognitoTokens: sealCognitoTokens(deps, authenticated.tokens),
     authTime: now,
     createdAt: now,
     lastSeenAt: now,
@@ -83,13 +81,10 @@ export async function createSsoSession(
     deps.sessions.create({
       id: session.sid,
       userId: user.id,
-      status: "active",
       ip: environment.ip,
       userAgent: environment.userAgent,
       createdAt: now,
       lastSeenAt: now,
-      revokedAt: null,
-      revokeReason: null,
     }),
   ]);
   return { session, cookieValue };
@@ -98,7 +93,6 @@ export async function createSsoSession(
 /**
  * /authorize 到達時に lastSeenAt を更新し、code を発行した client とテナントを記録する。
  * ブラウザの環境が前回と違えば監査イベントを残す。それだけでは失効させない。
- * client の記録は集合に足すだけなので、並行する /authorize で取りこぼさない。
  */
 export async function touchSsoSession(
   deps: AuthDeps,
@@ -109,15 +103,12 @@ export async function touchSsoSession(
 ): Promise<SsoSession> {
   const now = deps.clock.nowSeconds();
   const updated: SsoSession = { ...session, lastSeenAt: now };
-  const ttl = expiry.remainingTtl(updated, now);
-  const recorded = await deps.sessions.find(session.sid);
-  await Promise.all([
-    deps.stores.ssoSessions.set(updated.id, updated, ttl),
-    deps.stores.sessionClients.add(updated.id, client.clientId, ttl),
+  const [previous] = await Promise.all([
     deps.sessions.touch(session.sid, environment, now),
+    deps.stores.ssoSessions.set(updated.id, updated, expiry.remainingTtl(updated, now)),
     deps.sessions.recordClient(session.sid, client.id, tenantId, now),
   ]);
-  if (recorded !== undefined && environmentChanged(recorded, environment)) {
+  if (previous !== undefined && environmentChanged(previous, environment)) {
     await recordAudit(deps, {
       kind: "environment_changed",
       userId: session.userId,
@@ -126,27 +117,15 @@ export async function touchSsoSession(
       clientId: client.clientId,
       ip: environment.ip,
       userAgent: environment.userAgent,
-      detail: {
-        previous: { ip: recorded.ip, userAgent: recorded.userAgent },
-        current: { ip: environment.ip, userAgent: environment.userAgent },
-      },
+      detail: { previous, current: environment },
     });
   }
   return updated;
-}
-
-/** この SSO Session で code を発行した client_id の一覧 */
-export function listAuthorizedClients(
-  deps: AuthDeps,
-  session: SsoSession,
-): Promise<ReadonlyArray<string>> {
-  return deps.stores.sessionClients.members(session.id);
 }
 
 export async function destroySsoSession(deps: AuthDeps, session: SsoSession): Promise<void> {
   await Promise.all([
     deps.stores.ssoSessions.delete(session.id),
     deps.stores.sidIndex.delete(session.sid),
-    deps.stores.sessionClients.delete(session.id),
   ]);
 }

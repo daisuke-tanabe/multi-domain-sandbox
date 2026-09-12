@@ -1,13 +1,13 @@
 import type { Hono } from "hono";
 import {
   FakeClock,
-  generateSigningKey,
   signJwt,
   silentLogger,
   StaticJwksSource,
   toJwks,
   type SigningKey,
 } from "@sandbox/shared";
+import { readJsonObject, testSigningKey } from "@sandbox/shared/test-support";
 import { MemoryAuthAdminClient } from "./infrastructure/memory-auth-admin.ts";
 import { MemoryMemberRepository } from "./infrastructure/memory-member-repository.ts";
 import { createApiApp } from "./interface/http/app.ts";
@@ -47,7 +47,7 @@ export interface ApiHarnessOptions {
  */
 export async function createApiHarness(options: ApiHarnessOptions): Promise<ApiHarness> {
   const clock = options.clock ?? new FakeClock(1_700_000_000);
-  const key = options.signingKey ?? (await generateSigningKey());
+  const key = options.signingKey ?? (await testSigningKey());
   const members = new MemoryMemberRepository(options.members ?? [], options.overrides ?? []);
   const authAdmin = new MemoryAuthAdminClient();
   const app = createApiApp({
@@ -114,8 +114,4 @@ export function jsonBody(body: unknown, method = "POST"): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
-export async function readJson(response: Response): Promise<Record<string, unknown>> {
-  const body: unknown = await response.json();
-  if (typeof body !== "object" || body === null) throw new Error("expected JSON object");
-  return { ...body };
-}
+export const readJson = readJsonObject;

@@ -3,9 +3,14 @@ import { z } from "zod";
 import {
   clientStatusSchema,
   contractStatusSchema,
-  expandRedirectUriTemplate,
+  epochSecondsColumn,
+  mfaMethodSchema,
+  queryAll,
   queryOne,
+  queryRequired,
+  serviceOrigin,
   tenantStatusSchema,
+  toTimestamp,
   userStatusSchema,
 } from "@sandbox/shared";
 import type {
@@ -30,10 +35,9 @@ const userRow = z.object({
   status: userStatusSchema,
 });
 
-const mfaMethodRow = z.object({
-  method: z.enum(["totp"]),
-  enrolled_at: z.coerce.date(),
-});
+const mfaMethodRow = z
+  .object({ method: mfaMethodSchema, enrolled_at: epochSecondsColumn })
+  .transform((row): UserMfaMethod => ({ method: row.method, enrolledAt: row.enrolled_at }));
 
 const tenantRow = z.object({
   id: z.string(),
@@ -42,17 +46,37 @@ const tenantRow = z.object({
   status: tenantStatusSchema,
 });
 
-const clientRow = z.object({
-  id: z.string(),
-  client_id: z.string(),
-  name: z.string(),
-  audience: z.string(),
-  redirect_uri_template: z.string(),
-  secret_hashes: z.array(z.string()),
-  allowed_scopes: z.array(z.string()),
-  status: clientStatusSchema,
-  backchannel_logout_uri: z.string().nullable(),
-});
+const clientRow = z
+  .object({
+    id: z.string(),
+    client_id: z.string(),
+    name: z.string(),
+    audience: z.string(),
+    redirect_uri_template: z.string(),
+    secret_hashes: z.array(z.string()),
+    allowed_scopes: z.array(z.string()),
+    status: clientStatusSchema,
+    backchannel_logout_uri: z.string().nullable(),
+  })
+  .transform((row): OidcClient => ({
+    id: row.id,
+    clientId: row.client_id,
+    name: row.name,
+    audience: row.audience,
+    redirectUriTemplate: row.redirect_uri_template,
+    secretHashes: row.secret_hashes,
+    allowedScopes: row.allowed_scopes,
+    status: row.status,
+    backchannelLogoutUri: row.backchannel_logout_uri,
+  }));
+
+const CLIENT_SELECT = `SELECT c.id, c.client_id, c.name, c.audience, c.redirect_uri_template, c.allowed_scopes,
+              c.status, c.backchannel_logout_uri,
+              COALESCE(
+                (SELECT array_agg(s.secret_hash) FROM identity.oidc_client_secrets s
+                  WHERE s.oidc_client_id = c.id AND s.status = 'active'),
+                '{}') AS secret_hashes
+         FROM identity.oidc_clients c`;
 
 const membershipStatusSchema = z.enum(["active", "disabled"]);
 const membershipRow = z.object({ status: membershipStatusSchema });
@@ -88,69 +112,25 @@ const TENANT_COLUMNS = "id, slug, name, status";
 export class PgIdentityRepository implements IdentityRepository {
   constructor(private readonly pool: Pool) {}
 
-  public async findClient(clientId: string): Promise<OidcClient | undefined> {
-    const row = await queryOne(
-      this.pool,
-      clientRow,
-      `SELECT c.id, c.client_id, c.name, c.audience, c.redirect_uri_template, c.allowed_scopes,
-              c.status, c.backchannel_logout_uri,
-              COALESCE(
-                (SELECT array_agg(s.secret_hash) FROM identity.oidc_client_secrets s
-                  WHERE s.oidc_client_id = c.id AND s.status = 'active'),
-                '{}') AS secret_hashes
-         FROM identity.oidc_clients c
-        WHERE c.client_id = $1`,
-      [clientId],
-    );
-    if (row === undefined) return undefined;
-    return {
-      id: row.id,
-      clientId: row.client_id,
-      name: row.name,
-      audience: row.audience,
-      redirectUriTemplate: row.redirect_uri_template,
-      secretHashes: row.secret_hashes,
-      allowedScopes: row.allowed_scopes,
-      status: row.status,
-      backchannelLogoutUri: row.backchannel_logout_uri,
-    };
+  public findClient(clientId: string): Promise<OidcClient | undefined> {
+    return queryOne(this.pool, clientRow, `${CLIENT_SELECT} WHERE c.client_id = $1`, [clientId]);
   }
 
-  public async listClients(): Promise<ReadonlyArray<OidcClient>> {
-    const result = await this.pool.query(
-      `SELECT c.id, c.client_id, c.name, c.audience, c.redirect_uri_template, c.allowed_scopes,
-              c.status, c.backchannel_logout_uri,
-              COALESCE(
-                (SELECT array_agg(s.secret_hash) FROM identity.oidc_client_secrets s
-                  WHERE s.oidc_client_id = c.id AND s.status = 'active'),
-                '{}') AS secret_hashes
-         FROM identity.oidc_clients c ORDER BY c.client_id`,
-    );
-    return result.rows.map((raw) => {
-      const row = clientRow.parse(raw);
-      return {
-        id: row.id,
-        clientId: row.client_id,
-        name: row.name,
-        audience: row.audience,
-        redirectUriTemplate: row.redirect_uri_template,
-        secretHashes: row.secret_hashes,
-        allowedScopes: row.allowed_scopes,
-        status: row.status,
-        backchannelLogoutUri: row.backchannel_logout_uri,
-      };
-    });
+  public findClientById(id: string): Promise<OidcClient | undefined> {
+    return queryOne(this.pool, clientRow, `${CLIENT_SELECT} WHERE c.id = $1`, [id]);
+  }
+
+  public listClients(): Promise<ReadonlyArray<OidcClient>> {
+    return queryAll(this.pool, clientRow, `${CLIENT_SELECT} ORDER BY c.client_id`);
   }
 
   public async listMfaMethods(userId: string): Promise<ReadonlyArray<UserMfaMethod>> {
-    const result = await this.pool.query(
+    return queryAll(
+      this.pool,
+      mfaMethodRow,
       `SELECT method, enrolled_at FROM identity.user_mfa_methods WHERE user_id = $1 ORDER BY enrolled_at`,
       [userId],
     );
-    return result.rows.map((raw) => {
-      const row = mfaMethodRow.parse(raw);
-      return { method: row.method, enrolledAt: Math.floor(row.enrolled_at.getTime() / 1000) };
-    });
   }
 
   public async recordMfaMethod(
@@ -161,7 +141,7 @@ export class PgIdentityRepository implements IdentityRepository {
     await this.pool.query(
       `INSERT INTO identity.user_mfa_methods (user_id, method, enrolled_at) VALUES ($1, $2, $3)
        ON CONFLICT (user_id, method) DO NOTHING`,
-      [userId, method, new Date(enrolledAt * 1000)],
+      [userId, method, toTimestamp(enrolledAt)],
     );
   }
 
@@ -188,24 +168,26 @@ export class PgIdentityRepository implements IdentityRepository {
   }
 
   public async createUser(user: NewUser): Promise<User> {
-    const result = await this.pool.query(
+    const row = await queryRequired(
+      this.pool,
+      userRow,
       `INSERT INTO identity.users (id, cognito_sub, email, name)
        VALUES ($1, $2, $3, $4)
        RETURNING ${USER_COLUMNS}`,
       [user.id, user.cognitoSub, user.email, user.name],
     );
-    return toUser(userRow.parse(result.rows[0]));
+    return toUser(row);
   }
 
   public async linkCognitoSub(userId: string, cognitoSub: string): Promise<User> {
-    const result = await this.pool.query(
+    const row = await queryRequired(
+      this.pool,
+      userRow,
       `UPDATE identity.users SET cognito_sub = $2 WHERE id = $1 AND cognito_sub IS NULL
        RETURNING ${USER_COLUMNS}`,
       [userId, cognitoSub],
     );
-    const first: unknown = result.rows[0];
-    if (first === undefined) throw new Error(`user ${userId} could not be linked`);
-    return toUser(userRow.parse(first));
+    return toUser(row);
   }
 
   public findTenantById(id: string): Promise<Tenant | undefined> {
@@ -214,6 +196,16 @@ export class PgIdentityRepository implements IdentityRepository {
       tenantRow,
       `SELECT ${TENANT_COLUMNS} FROM identity.tenants WHERE id = $1`,
       [id],
+    );
+  }
+
+  public findTenantsByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Tenant>> {
+    if (ids.length === 0) return Promise.resolve([]);
+    return queryAll(
+      this.pool,
+      tenantRow,
+      `SELECT ${TENANT_COLUMNS} FROM identity.tenants WHERE id = ANY($1)`,
+      [[...ids]],
     );
   }
 
@@ -278,7 +270,9 @@ export class PgIdentityRepository implements IdentityRepository {
     tenantId: string,
     oidcClientId: string,
   ): Promise<ReadonlyArray<ServiceMember>> {
-    const result = await this.pool.query(
+    const rows = await queryAll(
+      this.pool,
+      memberRow,
       `SELECT u.id, u.cognito_sub, u.email, u.name, u.status, m.status AS membership_status
          FROM identity.tenant_service_members m
          JOIN identity.users u ON u.id = m.user_id
@@ -286,15 +280,14 @@ export class PgIdentityRepository implements IdentityRepository {
         ORDER BY u.email`,
       [tenantId, oidcClientId],
     );
-    return result.rows.map((raw) => {
-      const row = memberRow.parse(raw);
-      return { user: toUser(row), status: row.membership_status };
-    });
+    return rows.map((row) => ({ user: toUser(row), status: row.membership_status }));
   }
 
   public async listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>> {
     // 割り当てがあり、契約と Client が有効なサービスだけを並べる
-    const result = await this.pool.query(
+    const rows = await queryAll(
+      this.pool,
+      portalRow,
       `SELECT t.id AS tenant_id, t.slug, t.name, t.status,
               c.client_id, c.name AS client_name, c.redirect_uri_template
          FROM identity.tenant_service_members m
@@ -308,8 +301,7 @@ export class PgIdentityRepository implements IdentityRepository {
     );
     // t.slug 順なので、テナントが変わるたびに新しいエントリを積む
     const entries: Array<{ tenant: Tenant; services: PortalService[] }> = [];
-    for (const raw of result.rows) {
-      const row = portalRow.parse(raw);
+    for (const row of rows) {
       let entry = entries.at(-1);
       if (entry === undefined || entry.tenant.id !== row.tenant_id) {
         entry = {
@@ -321,7 +313,7 @@ export class PgIdentityRepository implements IdentityRepository {
       entry.services.push({
         clientId: row.client_id,
         name: row.client_name,
-        origin: new URL(expandRedirectUriTemplate(row.redirect_uri_template, row.slug)).origin,
+        origin: serviceOrigin(row.redirect_uri_template, row.slug),
       });
     }
     return entries;

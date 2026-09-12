@@ -1,4 +1,4 @@
-import { encrypt, err, ok, type Result } from "@sandbox/shared";
+import { err, ok, randomToken, type Result } from "@sandbox/shared";
 import { ulid } from "ulid";
 import { MFA_PENDING_TTL_SECONDS } from "../../domain/policy.ts";
 import type { MfaMethod, User } from "../../domain/identity.ts";
@@ -11,11 +11,11 @@ import type {
 import type { MfaPending, SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "../deps.ts";
 import { recordAudit } from "./audit.ts";
+import { sealCognitoTokens } from "./cognito-tokens.ts";
 import { createSsoSession } from "./sso-session.ts";
 import { keyOf } from "./store-keys.ts";
-import { randomToken } from "@sandbox/shared";
 
-export type LoginError = CognitoAuthError | { kind: "user_disabled" };
+export type LoginError = CognitoAuthError;
 
 export interface LoginSuccess {
   readonly user: User;
@@ -26,12 +26,10 @@ export interface LoginSuccess {
 
 /**
  * パスワード認証の結果。MFA は全員必須なので、SSO Session ができるのは MFA を終えた後だけ。
- *   logged_in      : 既に MFA を終えている経路では使わない。将来の方式追加のために残す
  *   totp_required  : 登録済み。認証アプリのコードを求める
  *   setup_required : 未登録。認証アプリの登録を求める
  */
 export type LoginOutcome =
-  | { readonly kind: "logged_in"; readonly login: LoginSuccess }
   | { readonly kind: "totp_required"; readonly pendingId: string }
   | { readonly kind: "setup_required"; readonly pendingId: string };
 
@@ -65,21 +63,17 @@ export async function login(
       cognitoSession: outcome.value.session,
       rid,
       attempts: 0,
-      expiresAt: deps.clock.nowSeconds() + MFA_PENDING_TTL_SECONDS,
     });
     return ok({ kind: "totp_required", pendingId });
   }
 
   const { authenticated } = outcome.value;
-  const currentKey = deps.encryptionKeys[0];
-  if (currentKey === undefined) throw new Error("No encryption key configured");
   const pendingId = await storePending(deps, {
     kind: "totp_setup",
-    username: credentials.username,
     sub: authenticated.sub,
     email: authenticated.email,
     name: authenticated.name ?? null,
-    encryptedTokens: encrypt(JSON.stringify(authenticated.tokens), currentKey),
+    encryptedTokens: sealCognitoTokens(deps, authenticated.tokens),
     rid,
     encryptedSecret: null,
     secretIssuedAt: null,
@@ -131,13 +125,17 @@ export function loadPending(deps: AuthDeps, pendingId: string): Promise<MfaPendi
   return deps.stores.mfaPending.get(keyOf(pendingId));
 }
 
-export function savePending(
+export function savePending(deps: AuthDeps, pendingId: string, pending: MfaPending): Promise<void> {
+  return deps.stores.mfaPending.set(keyOf(pendingId), pending, MFA_PENDING_TTL_SECONDS);
+}
+
+/** 期限を延ばさずに値だけを書き換える。失敗回数の更新に使う */
+export function updatePending(
   deps: AuthDeps,
   pendingId: string,
   pending: MfaPending,
-  ttlSeconds: number = MFA_PENDING_TTL_SECONDS,
-): Promise<void> {
-  return deps.stores.mfaPending.set(keyOf(pendingId), pending, ttlSeconds);
+): Promise<boolean> {
+  return deps.stores.mfaPending.update(keyOf(pendingId), pending);
 }
 
 export function deletePending(deps: AuthDeps, pendingId: string): Promise<void> {

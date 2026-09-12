@@ -77,7 +77,7 @@ export async function createCrmHarness(
     overrides: [
       { tenantId: SUZUKI_ID, userId: ALICE_ID, permission: "end_users:unmask", effect: "allow" },
     ],
-    routes: () => [endUserRoutes({ endUsers })],
+    routes: () => [endUserRoutes(endUsers)],
   });
   return { ...harness, endUsers };
 }

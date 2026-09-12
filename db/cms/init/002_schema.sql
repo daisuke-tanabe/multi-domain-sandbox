@@ -52,22 +52,42 @@ CREATE INDEX posts_tenant_id_idx ON cms.posts (tenant_id, created_at DESC);
 CREATE TRIGGER posts_touch_updated_at BEFORE UPDATE ON cms.posts
   FOR EACH ROW EXECUTE FUNCTION cms.touch_updated_at();
 
+-- すべてのテーブルを tenant_id で分離する。app.tenant_id 未設定時は NULL を返し、どの行にも一致しない
+CREATE FUNCTION cms.current_tenant_id() RETURNS TEXT
+  LANGUAGE sql STABLE PARALLEL SAFE
+  RETURN current_setting('app.tenant_id', true);
+
 ALTER TABLE cms.members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cms.members FORCE ROW LEVEL SECURITY;
 CREATE POLICY members_tenant_isolation ON cms.members
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+  USING (tenant_id = cms.current_tenant_id())
+  WITH CHECK (tenant_id = cms.current_tenant_id());
 
 ALTER TABLE cms.permission_overrides ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cms.permission_overrides FORCE ROW LEVEL SECURITY;
 CREATE POLICY permission_overrides_tenant_isolation ON cms.permission_overrides
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+  USING (tenant_id = cms.current_tenant_id())
+  WITH CHECK (tenant_id = cms.current_tenant_id());
 
 ALTER TABLE cms.posts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cms.posts FORCE ROW LEVEL SECURITY;
 CREATE POLICY posts_tenant_isolation ON cms.posts
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+  USING (tenant_id = cms.current_tenant_id())
+  WITH CHECK (tenant_id = cms.current_tenant_id());
+
+-- 新しいテーブルを足したときに FORCE ROW LEVEL SECURITY を忘れていないか、init の最後で確かめる
+DO $$
+DECLARE
+  missing TEXT;
+BEGIN
+  SELECT string_agg(c.relname, ', ') INTO missing
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'cms' AND c.relkind = 'r' AND NOT c.relforcerowsecurity;
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'tables without FORCE ROW LEVEL SECURITY: %', missing;
+  END IF;
+END
+$$;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON cms.members, cms.permission_overrides, cms.posts TO cms_app;

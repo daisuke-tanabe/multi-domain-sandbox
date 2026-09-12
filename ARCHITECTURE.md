@@ -17,7 +17,7 @@ apps/crm-api          api.crm.sandbox.com。CRM の Resource Server。definition
 apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ構成
 apps/cms-api          api.cms.sandbox.com。CMS の Resource Server。definition.ts に役割と権限、posts/ に投稿の feature を 4 層で持つ
 packages/api-contract HTTP のリクエストとレスポンスの zod スキーマと型。サーバーの入力検証と SPA の型、フォーム検証、受信検証で同じものを使う。依存は zod だけ
-packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限、SPA の配信 (spa.ts)
+packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg の問い合わせ補助、識別子の enum、セッション期限、SPA の配信 (spa.ts)、テスト補助 (test-support)
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
 packages/web-core     apps/*-web の BFF 本体。/auth/* の受け口、/session、/api/* の中継、SPA の配信、エラー画面、設定スキーマ、起動関数を持つ
 packages/web-ui       apps/*-web が共有する React コード。lib/ に BFF との通信、ルートの clientLoader、書き込みの useAction、components/ に共通の枠と shadcn/ui の部品 components/ui、features/ にホームと管理アカウントの画面、styles.css に Tailwind の入口
@@ -32,15 +32,15 @@ apps/crm-web / cms-web は BFF の起動口と、そのサービスの画面だ�
 ```text
 apps/crm-web/
   src/main.ts             startWebCore("crm-web") を呼ぶだけ。設定スキーマと依存の組み立ては packages/web-core/src/config.ts と start.ts
-  app/root.tsx            Layout、clientLoader = loadShell、HydrateFallback、ErrorBoundary。styles.css の import と configureZodLocale() の呼び出し
+  app/root.tsx            packages/web-ui の RootDocument、HydrateFallback、RootErrorBoundary を置き、clientLoader = loadShell と shouldRevalidate を宣言する。styles.css の import と configureZodLocale() の呼び出し
   app/routes.ts           ルート定義。feature ごとの *.route.tsx を指す
   app/features/home/home.route.tsx      ホーム。packages/web-ui の HomePage を置くだけ
   app/features/end-users/               CRM 固有の feature。end-users.route.tsx、end-users.api.ts、end-user-form.tsx、end-user-table.tsx。cms-web は features/posts/
   app/features/members/members.route.tsx  packages/web-ui の MembersPage を置くだけ
   react-router.config.ts  ssr: false、appDirectory app、buildDirectory build
-  vite.config.ts          tailwindcss と reactRouter プラグイン。127.0.0.1:5173 で待ち受け、cms-web は 5174
-  tsconfig.json           src 用
-  tsconfig.app.json       app 用。bundler 解決、react-jsx、.react-router/types
+  vite.config.ts          packages/web-ui の spaViteConfig にポートを渡すだけ。127.0.0.1:5173 で待ち受け、cms-web は 5174、auth-web は 5175
+  tsconfig.json           src 用。tsconfig.base.json を継承する
+  tsconfig.app.json       app 用。ブラウザ向けの設定は tsconfig.spa.json にあり、ここは include と .react-router/types だけを足す
 ```
 
 apps/crm-api / cms-api は `definition.ts` でサービスの役割と権限を `defineService` で宣言し、サービス固有の feature を 4 層で持つ。`main.ts` は定義、スキーマ名、routes を `startApiCore` に渡す。Token 検証、member 行の解決、権限の確定、`/v1/me`、管理アカウントの `/v1/members` は `packages/api-core` が提供し、apps 側には書かない。
@@ -94,15 +94,15 @@ web から api への呼び出しは公開 URL をそのまま使う。api は a
 
 - SPA は Token を見ない。Cookie 付きの同一オリジン fetch だけを行い、API は必ず `/api/*` 経由で呼ぶ。`API_BASE_URL` をブラウザに渡さない
 - `/api/*` はセッションがなければ 401 `unauthenticated`。GET / HEAD / OPTIONS 以外は `X-CSRF-Token` ヘッダが `/session` の `csrfToken` と一致しなければ 403。body は JSON のみ受け付け、それ以外は 415。上限は 64 KB。API がセッション切れを返したら 401 にし、SPA が `/auth/login?return_to=<現在のパス>` へ遷移して再ログインする
-- ルートの `clientLoader` は `packages/web-ui` の `loadShell` を使う。`/session` を読み、未ログインなら `/auth/login` へ送り、ログイン済みなら `/v1/me` を読んで `useShell` と `usePermissions` に渡す。`?logged_out=1` のときだけログアウト済み画面を出す
-- 共通の React コードは `packages/web-ui` に置く。BFF との通信 `lib/api.ts`、loader の `lib/shell.ts`、枠の `components/app-shell.tsx`、両サービス共通の `features/members/`、`styles.css`。`apps/*-web/app` には `routes.ts` と feature ディレクトリだけを置き、通信や CSRF の扱いを書かない。feature は `<name>.route.tsx` `<name>.api.ts` と部品を同じディレクトリに持つ
+- ルートの `clientLoader` は `packages/web-ui` の `loadShell` を使う。`/session` を読み、未ログインなら `/auth/login` へ送り、ログイン済みなら `/v1/me` を読んで `useShell` と `usePermissions` に渡す。`?logged_out=1` のときだけログアウト済み画面を出す。画面遷移では読み直さないよう `shouldRevalidate` を false にし、書き込み後は `useAction` の revalidate で更新する
+- 共通の React コードは `packages/web-ui` に置く。BFF との通信 `lib/api.ts`、loader の `lib/shell.ts`、`<html>` と ErrorBoundary の `components/root-document.tsx`、枠の `components/app-shell.tsx`、両サービス共通の `features/members/`、`styles.css`、Vite 設定の `vite.ts`。`apps/*-web/app` には `routes.ts` と feature ディレクトリだけを置き、通信や CSRF の扱いを書かない。feature は `<name>.route.tsx` `<name>.api.ts` と部品を同じディレクトリに持つ
 - フォームは react-hook-form と契約の入力スキーマ、UI 部品は shadcn/ui。詳細は `DESIGN.md`
 - 画面の出し分けは `/v1/me` の `permissions` で行う。ナビゲーションは `permission` を持つ項目を確定した権限で絞り、ボタンは該当する permission がなければ出さない。最終判定は API が行う
 - 静的配信では CSP の `script-src` を `'self'` と `index.html` のインラインスクリプトの sha256 ハッシュに限定し、`'unsafe-inline'` を使わない。`/assets/*` は immutable で長期キャッシュし、それ以外の GET は `index.html` を返す
 - Vite への中継は開発専用。`'unsafe-inline'` と Vite の origin および ws origin への `connect-src` を許すため、`PUBLIC_SCHEME=https` では `SPA_DIR` を必須にして中継モードで起動できないようにする
 - `SPA_DIR` も `SPA_DEV_SERVER_URL` もなければ最小の HTML だけを返し警告を出す。テストはこのモードで `/auth/*` `/session` `/api/*` を検証する
 - 不明なホストの 400 や未契約の 403 のように、SPA へ渡す前に起きるエラーは `packages/web-core/src/views` のサーバー側 HTML で返す。それ以外の画面をサーバー側で描かない
-- SPA の配信とそれに応じた CSP は `packages/shared/src/spa.ts` の `mountSpa` と `spaCsp` に集約する。web-core と auth-api で同じものを使う
+- SPA の配信とそれに応じた CSP は `packages/shared/src/spa.ts` の `mountSpa` と `spaCsp` に集約する。web-core と auth-api で同じものを使う。`/assets/*` はテナントの解決もセッションの読み込みも要らないため、`mountSpaAssets` をそれらのミドルウェアより前に mount する
 
 ## auth-web と auth-api の契約
 

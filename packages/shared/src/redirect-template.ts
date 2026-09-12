@@ -28,3 +28,8 @@ export function matchRedirectUriTemplate(
   const slug = redirectUri.slice(prefix.length, redirectUri.length - suffix.length);
   return TENANT_SLUG_PATTERN.test(slug) ? slug : undefined;
 }
+
+/** テナント向けの redirect_uri から導いた origin。ポータルのリンクや Logout の戻り先に使う */
+export function serviceOrigin(redirectUriTemplate: string, tenantSlug: string): string {
+  return new URL(expandRedirectUriTemplate(redirectUriTemplate, tenantSlug)).origin;
+}

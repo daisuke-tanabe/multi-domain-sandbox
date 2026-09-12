@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { toTimestamp } from "@sandbox/shared";
 import type { AuditEvent } from "../domain/audit.ts";
 import type { AuditRepository } from "../application/ports/audit-repository.ts";
 
@@ -12,7 +13,7 @@ export class PgAuditRepository implements AuditRepository {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         event.id,
-        new Date(event.occurredAt * 1000),
+        toTimestamp(event.occurredAt),
         event.kind,
         event.userId,
         event.sessionId,

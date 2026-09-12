@@ -1,22 +1,23 @@
 import { randomBytes } from "node:crypto";
 import type { Hono } from "hono";
+import { z } from "zod";
 import {
   computeCodeChallenge,
   FakeClock,
   generateCodeVerifier,
-  generateSigningKey,
+  generateTotp,
   createMemoryStoreFactory,
   hashSecret,
   parseEncryptionKey,
   silentLogger,
   type FetchLike,
 } from "@sandbox/shared";
+import { readJsonObject, testSigningKey } from "@sandbox/shared/test-support";
 import { MemoryAuditRepository } from "./infrastructure/memory-audit-repository.ts";
 import { MemoryIdentityRepository } from "./infrastructure/memory-identity-repository.ts";
 import { MemorySessionRepository } from "./infrastructure/memory-session-repository.ts";
 import { createAuthStores } from "./infrastructure/stores.ts";
 import { MockCognitoAuthenticator } from "./infrastructure/mock-cognito.ts";
-import { generateTotp } from "@sandbox/shared";
 import { createAuthApp } from "./interface/http/app.ts";
 import type { AuthDeps } from "./application/deps.ts";
 
@@ -181,7 +182,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
   const encryptionKey = parseEncryptionKey("test", randomBytes(32).toString("base64"));
   if (!encryptionKey.ok) throw new Error("encryption key setup failed");
 
-  const sessions = new MemorySessionRepository();
+  const sessions = new MemorySessionRepository(clock);
   const audit = new MemoryAuditRepository();
   const deps: AuthDeps = {
     issuer: ISSUER,
@@ -191,7 +192,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
     sessions,
     audit,
     cognito: new MockCognitoAuthenticator(mockUsers, clock),
-    signingKey: await generateSigningKey(),
+    signingKey: await testSigningKey(),
     encryptionKeys: [encryptionKey.value],
     logger: silentLogger,
     fetch: options.fetch ?? (async () => new Response(null, { status: 502 })),
@@ -294,20 +295,13 @@ export async function runLoginFlow(
   }
 
   const rid = new URL(`${ISSUER}${location}`).searchParams.get("rid") ?? "";
-  const { csrf, cookie: loginCookie } = await readLoginContext(harness, rid, existingCookie);
-
-  const form = new URLSearchParams({
-    rid,
-    csrf,
-    username: credentials.username,
-    password: credentials.password,
-  });
-  const loginRes = await harness.app.request(`${ISSUER}/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: loginCookie },
-    body: form.toString(),
-  });
-  const completed = await completeMfa(harness, loginRes, loginCookie, credentials.username);
+  const password = await submitPassword(harness, credentials, rid, existingCookie);
+  const completed = await completeMfa(
+    harness,
+    password.response,
+    password.cookie,
+    credentials.username,
+  );
   const finalLocation = completed.response.headers.get("Location");
   if (finalLocation === null) {
     throw new Error(
@@ -315,6 +309,27 @@ export async function runLoginFlow(
     );
   }
   return { redirect: new URL(finalLocation), codeVerifier, cookie: completed.cookie };
+}
+
+/**
+ * /api/login で CSRF を受け取り、パスワードを POST /login に送る。
+ * 応答は MFA のチャレンジか登録への 303。next にその先のパスと mid を入れて返す
+ */
+export async function submitPassword(
+  harness: TestHarness,
+  credentials: { username: string; password: string },
+  rid: string = "",
+  existingCookie: string = "",
+): Promise<{ response: Response; cookie: string; next: { path: string; mid: string } }> {
+  const { csrf, cookie } = await readLoginContext(harness, rid, existingCookie);
+  const result = await post(harness, "/login", cookie, {
+    rid,
+    csrf,
+    username: credentials.username,
+    password: credentials.password,
+  });
+  const next = new URL(result.response.headers.get("Location") ?? "", ISSUER);
+  return { ...result, next: { path: next.pathname, mid: next.searchParams.get("mid") ?? "" } };
 }
 
 /**
@@ -413,36 +428,19 @@ export async function refresh(
   });
 }
 
-export interface TokenBody {
-  readonly access_token: string;
-  readonly id_token: string;
-  readonly refresh_token: string;
-  readonly token_type: string;
-  readonly expires_in: number;
-}
-
-function isTokenBody(value: unknown): value is TokenBody {
-  if (typeof value !== "object" || value === null) return false;
-  const record: Record<string, unknown> = { ...value };
-  return (
-    typeof record.access_token === "string" &&
-    typeof record.id_token === "string" &&
-    typeof record.refresh_token === "string" &&
-    typeof record.token_type === "string" &&
-    typeof record.expires_in === "number"
-  );
-}
+const tokenBodySchema = z.object({
+  access_token: z.string(),
+  id_token: z.string(),
+  refresh_token: z.string(),
+  token_type: z.string(),
+  expires_in: z.number(),
+});
+export type TokenBody = z.infer<typeof tokenBodySchema>;
 
 /** Token レスポンスを型付きで読む。形が違えばテストを失敗させる */
 export async function readTokenBody(response: Response): Promise<TokenBody> {
-  const body: unknown = await response.json();
-  if (!isTokenBody(body)) throw new Error(`unexpected token response: ${JSON.stringify(body)}`);
-  return body;
+  return tokenBodySchema.parse(await response.json());
 }
 
 /** 任意の JSON をレコードとして読む */
-export async function readJson(response: Response): Promise<Record<string, unknown>> {
-  const body: unknown = await response.json();
-  if (typeof body !== "object" || body === null) throw new Error("expected JSON object");
-  return { ...body };
-}
+export const readJson = readJsonObject;

@@ -8,6 +8,7 @@ import {
   type Clock,
   type Result,
 } from "@sandbox/shared";
+import { z } from "zod";
 import type {
   CognitoAuthenticated,
   CognitoAuthenticator,
@@ -15,8 +16,22 @@ import type {
   CognitoAuthOutcome,
   CognitoCredentials,
   CognitoMfaError,
-  MockCognitoUser,
 } from "../application/ports/cognito.ts";
+
+/** モックのテストユーザー。config の MOCK_COGNITO_USERS はこのスキーマで検証する */
+export const mockCognitoUserSchema = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
+  sub: z.string().min(1),
+  email: z.string().email(),
+  name: z.string().optional(),
+  /** 登録済みの認証アプリの secret。base32。無ければ初回ログインで登録する */
+  totpSecret: z
+    .string()
+    .regex(/^[A-Z2-7]+$/)
+    .optional(),
+});
+export type MockCognitoUser = z.infer<typeof mockCognitoUserSchema>;
 
 const MOCK_TOKEN_LIFETIME_SECONDS = 60 * 60;
 const MOCK_SESSION_LIFETIME_SECONDS = 3 * 60;

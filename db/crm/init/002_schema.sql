@@ -56,23 +56,42 @@ CREATE INDEX end_users_tenant_id_idx ON crm.end_users (tenant_id, created_at);
 CREATE TRIGGER end_users_touch_updated_at BEFORE UPDATE ON crm.end_users
   FOR EACH ROW EXECUTE FUNCTION crm.touch_updated_at();
 
--- すべてのテーブルを tenant_id で分離する。app.tenant_id 未設定時は current_setting が NULL を返し、どの行にも一致しない
+-- すべてのテーブルを tenant_id で分離する。app.tenant_id 未設定時は NULL を返し、どの行にも一致しない
+CREATE FUNCTION crm.current_tenant_id() RETURNS TEXT
+  LANGUAGE sql STABLE PARALLEL SAFE
+  RETURN current_setting('app.tenant_id', true);
+
 ALTER TABLE crm.members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm.members FORCE ROW LEVEL SECURITY;
 CREATE POLICY members_tenant_isolation ON crm.members
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+  USING (tenant_id = crm.current_tenant_id())
+  WITH CHECK (tenant_id = crm.current_tenant_id());
 
 ALTER TABLE crm.permission_overrides ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm.permission_overrides FORCE ROW LEVEL SECURITY;
 CREATE POLICY permission_overrides_tenant_isolation ON crm.permission_overrides
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+  USING (tenant_id = crm.current_tenant_id())
+  WITH CHECK (tenant_id = crm.current_tenant_id());
 
 ALTER TABLE crm.end_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm.end_users FORCE ROW LEVEL SECURITY;
 CREATE POLICY end_users_tenant_isolation ON crm.end_users
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+  USING (tenant_id = crm.current_tenant_id())
+  WITH CHECK (tenant_id = crm.current_tenant_id());
+
+-- 新しいテーブルを足したときに FORCE ROW LEVEL SECURITY を忘れていないか、init の最後で確かめる
+DO $$
+DECLARE
+  missing TEXT;
+BEGIN
+  SELECT string_agg(c.relname, ', ') INTO missing
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'crm' AND c.relkind = 'r' AND NOT c.relforcerowsecurity;
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'tables without FORCE ROW LEVEL SECURITY: %', missing;
+  END IF;
+END
+$$;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON crm.members, crm.permission_overrides, crm.end_users TO crm_app;
