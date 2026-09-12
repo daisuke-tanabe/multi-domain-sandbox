@@ -8,8 +8,8 @@ import {
   type ApiHarnessOptions,
 } from "@sandbox/api-core/test-support";
 import { CRM } from "./definition.ts";
-import { MemoryEndUserRepository } from "./end-users/repository.ts";
-import { endUserRoutes } from "./end-users/routes.ts";
+import { MemoryEndUserRepository } from "./end-users/infrastructure/memory-end-user-repository.ts";
+import { endUserRoutes } from "./end-users/interface/routes.ts";
 
 export const CRM_AUDIENCE = "http://api.crm.localhost:3002";
 
@@ -77,7 +77,7 @@ export async function createCrmHarness(
     overrides: [
       { tenantId: SUZUKI_ID, userId: ALICE_ID, permission: "end_users:unmask", effect: "allow" },
     ],
-    routes: () => [endUserRoutes(endUsers)],
+    routes: () => [endUserRoutes({ endUsers })],
   });
   return { ...harness, endUsers };
 }

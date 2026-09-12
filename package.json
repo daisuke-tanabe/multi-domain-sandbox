@@ -8,14 +8,15 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "oxlint .",
+    "lint": "oxlint . && tsx scripts/check-layers.ts",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d",
     "smoke": "tsx scripts/smoke.ts",
-    "chrome-check": "tsx scripts/chrome-check.ts"
+    "chrome-check": "tsx scripts/chrome-check.ts",
+    "check-layers": "tsx scripts/check-layers.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

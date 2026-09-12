@@ -8,12 +8,12 @@ import {
   RemoteJwksSource,
   systemClock,
 } from "@sandbox/shared";
-import { HttpAuthAdminClient } from "./adapters/auth-admin-client.ts";
-import { PgMemberRepository } from "./adapters/pg-member-repository.ts";
-import { createApiApp } from "./app.ts";
-import type { ApiEnv } from "./auth/middleware.ts";
+import { HttpAuthAdminClient } from "./infrastructure/auth-admin-client.ts";
+import { PgMemberRepository } from "./infrastructure/pg-member-repository.ts";
+import { createApiApp } from "./interface/http/app.ts";
+import type { ApiEnv } from "./interface/http/middleware.ts";
 import { loadApiCoreConfig } from "./config.ts";
-import type { ServiceDefinition } from "./service-definition.ts";
+import type { ServiceDefinition } from "./domain/service-definition.ts";
 
 export interface ServiceApiSpec {
   readonly definition: ServiceDefinition;

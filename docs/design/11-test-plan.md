@@ -223,7 +223,7 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003。SPA は配らず、簡易ブラウザの `Browser.fetch` `readJson` `readSession` と、`/auth/login?return_to=<path>` から入る `loginThrough` で `/session` と `/api/*` を検証する。`loginThrough` は auth の `/login?rid=` に着いたら `/api/login?rid=` で rid と CSRF を受け取り、フォーム POST で `/login` に送る |
 | Chrome 確認 | `scripts/chrome-check.ts` は auth-web の SPA が `/api/login` を読んで「Sandbox にログイン」を描くまで待ってからフォームを埋める。ポータルは「Sandbox ポータル」、ログアウト確認は「ログアウトする」、完了は「Sandbox からログアウトしました」の文字列を待つ |
 | api インスタンス | サービスごとに別インスタンス。`apps/crm-api/src/test-support.ts` と `apps/cms-api/src/test-support.ts` が実物の定義と routes で組み立て、web-core の harness もこれを使う。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
-| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
+| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/application/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |
 | 時刻 | 注入可能なクロックで期限切れを再現 |
 

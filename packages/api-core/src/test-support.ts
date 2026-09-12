@@ -8,12 +8,12 @@ import {
   toJwks,
   type SigningKey,
 } from "@sandbox/shared";
-import { MemoryAuthAdminClient } from "./adapters/memory-auth-admin.ts";
-import { MemoryMemberRepository } from "./adapters/memory-member-repository.ts";
-import { createApiApp } from "./app.ts";
-import type { ApiEnv } from "./auth/middleware.ts";
-import type { Member, PermissionOverride } from "./ports/member-repository.ts";
-import type { ServiceDefinition } from "./service-definition.ts";
+import { MemoryAuthAdminClient } from "./infrastructure/memory-auth-admin.ts";
+import { MemoryMemberRepository } from "./infrastructure/memory-member-repository.ts";
+import { createApiApp } from "./interface/http/app.ts";
+import type { ApiEnv } from "./interface/http/middleware.ts";
+import type { Member, PermissionOverride } from "./domain/member.ts";
+import type { ServiceDefinition } from "./domain/service-definition.ts";
 
 export const ISSUER = "http://auth.localhost:3000";
 export const TANAKA_ID = "tenant-tanaka";

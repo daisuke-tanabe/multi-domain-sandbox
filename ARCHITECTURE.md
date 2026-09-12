@@ -13,9 +13,9 @@ pnpm workspace のモノレポ。
 apps/auth-api         auth.sandbox.com。OpenID Provider。/authorize /token /login /logout /admin と、auth-web の SPA の配信、SPA 向けの /api/login /api/portal /api/logout
 apps/auth-web         auth-api が同一オリジンで配る React Router の SPA。ログイン、ポータル、Global Logout の画面。サーバーは持たない
 apps/crm-web          <tenant>.crm.sandbox.com。CRM の Web。React Router の SPA と、それを配る薄い BFF。src/main.ts が BFF を起動し、app/ に画面
-apps/crm-api          api.crm.sandbox.com。CRM の Resource Server。definition.ts に役割と権限、end-users/ にエンドユーザーの routes と repository
+apps/crm-api          api.crm.sandbox.com。CRM の Resource Server。definition.ts に役割と権限、end-users/ にエンドユーザーの feature を domain / application / infrastructure / interface の 4 層で持つ
 apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ構成
-apps/cms-api          api.cms.sandbox.com。CMS の Resource Server。definition.ts に役割と権限、posts/ に投稿の routes と repository
+apps/cms-api          api.cms.sandbox.com。CMS の Resource Server。definition.ts に役割と権限、posts/ に投稿の feature を 4 層で持つ
 packages/api-contract HTTP のリクエストとレスポンスの zod スキーマと型。サーバーの入力検証と SPA の型、フォーム検証、受信検証で同じものを使う。依存は zod だけ
 packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限、SPA の配信 (spa.ts)
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
@@ -43,7 +43,7 @@ apps/crm-web/
   tsconfig.app.json       app 用。bundler 解決、react-jsx、.react-router/types
 ```
 
-apps/crm-api / cms-api は `definition.ts` でサービスの役割と権限を `defineService` で宣言し、サービス固有の routes と repository を持つ。`main.ts` は定義、スキーマ名、routes を `startApiCore` に渡す。Token 検証、member 行の解決、権限の確定、`/v1/me`、管理アカウントの `/v1/members` は `packages/api-core` が提供し、apps 側には書かない。
+apps/crm-api / cms-api は `definition.ts` でサービスの役割と権限を `defineService` で宣言し、サービス固有の feature を 4 層で持つ。`main.ts` は定義、スキーマ名、routes を `startApiCore` に渡す。Token 検証、member 行の解決、権限の確定、`/v1/me`、管理アカウントの `/v1/members` は `packages/api-core` が提供し、apps 側には書かない。
 サービスごとに web と api を 1 プロセスずつ動かし、共通の実装は packages に置いて共有する。
 サービスを増やすときは apps に web と api を 1 組追加し、web 側に `app/` の routes とサービス固有の画面、api 側に `definition.ts` と routes を書き、`db/<service>/init` に members と permission_overrides を含む DB を用意し、`.env` でサービス固有の値を渡す。
 `*-web` はクライアントを意味する。ただし Token と Cookie をブラウザへ出さない BFF 方式のため、SPA の配信と `/auth/*`、`/session`、`/api/*` の中継を担う薄いサーバーは必ず残す。
@@ -136,18 +136,46 @@ HTTP 境界の形は `packages/api-contract` の zod スキーマで 1 か所に
 
 ## レイヤー規約
 
-各アプリは Ports & Adapters で構成する。
+バックエンドはクリーンアーキテクチャの 4 層で構成する。依存は内側へ向く。domain は何にも依存せず、application は domain だけ、infrastructure は application と domain、interface はすべてを参照できる。逆向きの import は `scripts/check-layers.ts` が検出し、`pnpm lint` で失敗させる。
+
+| 層 | 置くもの | 使ってよい外部依存 |
+| --- | --- | --- |
+| domain | エンティティと値の型、純粋な業務規則。マスクの規則、役割から権限を確定する規則、寿命の既定値 | なし。`@sandbox/shared` の型と純粋関数まで |
+| application | ユースケースと ports。ユースケースは deps と入力を受け取り Result を返す。ports はリポジトリ、外部サービス、ストアのインターフェース | zod、`@sandbox/shared`。hono と pg は不可 |
+| infrastructure | ports の実装。pg、memory、HTTP クライアント、Cognito SDK、ストア | pg、AWS SDK、fetch など何でも |
+| interface | Hono の routes、middleware、app の組み立て、サーバー側 HTML。契約のスキーマで入力を検証し、ユースケースを呼び、結果を契約の型に写す | hono、`@sandbox/api-contract` |
+
+サービスの apps は feature を先に切り、その中に 4 層を置く。共通基盤の packages/api-core と apps/auth-api は層を先に切る。
 
 ```text
-src/
-  main.ts            起動。設定読み込みと依存の組み立て。packages では start.ts が担い、apps の main.ts はそれを呼ぶだけ
-  app.ts             Hono アプリの組み立て。テストから import する
-  config.ts          環境変数の検証と型付き設定
-  routes/            HTTP ハンドラ。入力検証と応答のみ
-  usecases/          業務ロジック。Result を返す
-  ports/             インターフェース。ストア、リポジトリ、外部サービス
-  adapters/          ports の実装。memory / pg / mock-cognito
+apps/crm-api/src/
+  main.ts                  起動。definition と routes を startApiCore に渡すだけ
+  definition.ts            役割と権限の宣言
+  end-users/
+    domain/end-user.ts     型とマスクの規則
+    application/           ports (end-user-repository.ts) とユースケース (end-users.ts)
+    infrastructure/        pg-end-user-repository.ts、memory-end-user-repository.ts
+    interface/routes.ts    Hono の routes
+
+packages/api-core/src/
+  domain/                  member.ts、service-definition.ts
+  application/             ports/、resolve-tenant-context.ts、members.ts、access-token.ts
+  infrastructure/          pg-member-repository.ts、memory-*.ts、auth-admin-client.ts、db.ts
+  interface/http/          app.ts、middleware.ts、routes/
+  config.ts start.ts index.ts test-support.ts   合成の起点。層の外に置き、どの層も参照できる
+
+apps/auth-api/src/
+  domain/                  identity.ts の型、policy.ts の既定値
+  application/             ports/、deps.ts、usecases/
+  infrastructure/          pg / memory の IdentityRepository、Cognito のアダプタ、stores
+  interface/http/          app.ts、routes/、views/
+  config.ts main.ts test-support.ts
 ```
+
+- routes は入力検証、ユースケース呼び出し、契約の型への写しだけを行う。業務の分岐やリポジトリの直接呼び出しを routes に書かない
+- ユースケースの失敗は Result の error で返し、HTTP のステータスへの写しは interface が行う
+- 層の外に置く合成の起点 (main、start、config、index、test-support、definition) は例外で、どの層も参照できる。逆に各層からこれらを参照しない
+- テストは対象と同じディレクトリに置く。feature の中でも同じ
 
 - routes は ports を直接呼ばず usecases を呼ぶ
 - usecases は adapters を import しない。ports だけに依存する

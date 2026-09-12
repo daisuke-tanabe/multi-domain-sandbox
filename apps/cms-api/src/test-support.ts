@@ -6,8 +6,8 @@ import {
   type ApiHarnessOptions,
 } from "@sandbox/api-core/test-support";
 import { CMS } from "./definition.ts";
-import { MemoryPostRepository } from "./posts/repository.ts";
-import { postRoutes } from "./posts/routes.ts";
+import { MemoryPostRepository } from "./posts/infrastructure/memory-post-repository.ts";
+import { postRoutes } from "./posts/interface/routes.ts";
 
 export const CMS_AUDIENCE = "http://api.cms.localhost:3004";
 
@@ -51,7 +51,7 @@ export async function createCmsHarness(
     overrides: [
       { tenantId: TANAKA_ID, userId: ALICE_ID, permission: "posts:create", effect: "deny" },
     ],
-    routes: () => [postRoutes(posts)],
+    routes: () => [postRoutes({ posts })],
   });
   return { ...harness, posts };
 }

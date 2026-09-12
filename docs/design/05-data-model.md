@@ -407,7 +407,7 @@ suzuki は cms を契約していないため cms の DB に suzuki の行はな
 ## Session Store
 
 Redis 想定。すべて TTL 付き。ローカル検証はインメモリ Map。
-ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、`kv` `set` `counter` の 3 種類を返す。auth-api は `adapters/stores.ts` の `createAuthStores`、`*-web` は `startWebCore` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。テストは `createMemoryStoreFactory` を使う。
+ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、`kv` `set` `counter` の 3 種類を返す。auth-api は `infrastructure/stores.ts` の `createAuthStores`、`*-web` は `startWebCore` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。テストは `createMemoryStoreFactory` を使う。
 一覧は `SetStore`、一回限りの消費は `getAndDelete`、ロックは `setIfAbsent`、レート制限は `CounterStore` を使う。値を読んで書き戻す形の一覧更新は持たない。
 
 | プレフィックス | 種類 | 内容 |
@@ -466,7 +466,7 @@ type AuthorizationRequest = {
 };
 ```
 
-`/authorize` で検証済みの値だけを保存する。ログイン成功後は `usecases/pending-authorization.ts` が Client がまだ active でテナントが存在することだけを確かめ、パラメータは再検証せずにアクセス判定と code 発行へ進む。
+`/authorize` で検証済みの値だけを保存する。ログイン成功後は `application/usecases/pending-authorization.ts` が Client がまだ active でテナントが存在することだけを確かめ、パラメータは再検証せずにアクセス判定と code 発行へ進む。
 
 ### Authorization Code
 

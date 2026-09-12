@@ -11,11 +11,11 @@ import {
   silentLogger,
   type FetchLike,
 } from "@sandbox/shared";
-import { MemoryIdentityRepository } from "./adapters/memory-identity-repository.ts";
-import { createAuthStores } from "./adapters/stores.ts";
-import { MockCognitoAuthenticator } from "./adapters/mock-cognito.ts";
-import { createAuthApp } from "./app.ts";
-import type { AuthDeps } from "./usecases/deps.ts";
+import { MemoryIdentityRepository } from "./infrastructure/memory-identity-repository.ts";
+import { createAuthStores } from "./infrastructure/stores.ts";
+import { MockCognitoAuthenticator } from "./infrastructure/mock-cognito.ts";
+import { createAuthApp } from "./interface/http/app.ts";
+import type { AuthDeps } from "./application/deps.ts";
 
 /**
  * テスト用の固定データ。db/init/004_seed.sql と同じ関係にする。

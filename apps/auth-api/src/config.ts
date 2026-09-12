@@ -64,7 +64,6 @@ const configSchema = z
   });
 
 export type AuthServerConfig = z.infer<typeof configSchema>;
-export type MockCognitoUser = z.infer<typeof mockUserSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AuthServerConfig {
   return parseEnv("auth-api", configSchema, env);

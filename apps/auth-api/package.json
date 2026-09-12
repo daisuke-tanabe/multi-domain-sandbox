@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./app": "./src/app.ts",
+    "./app": "./src/interface/http/app.ts",
     "./test-support": "./src/test-support.ts"
   },
   "scripts": {

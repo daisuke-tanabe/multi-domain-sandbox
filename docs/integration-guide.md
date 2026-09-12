@@ -1178,20 +1178,20 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `docs/deploy.md` | AWS 構成と手順 |
 | `db/identity/init/002_identity.sql` `003_seed.sql` | Identity DB。サービス、client_secret、テナント、契約、サービスごとの割り当て、会社横断の役割のスキーマとシード。redirect_uri はサービスの `redirect_uri_template` 列。割り当てに役割はない |
 | `db/crm/init/002_schema.sql` `003_seed.sql` `db/cms/init/002_schema.sql` `003_seed.sql` | サービスごとの DB。`members` と `permission_overrides` と業務テーブル、FORCE ROW LEVEL SECURITY、所有者と分けた NOBYPASSRLS のアプリロール。`001_roles.sql` はローカル専用で、AWS では `tools/provision` がロールを作って同じ SQL を適用する |
-| `apps/auth-api/src/routes/admin.ts` `apps/auth-api/src/usecases/service-members.ts` | サービス向けの管理 API。client_secret_basic で認証し、自サービスへの割り当てだけを操作させる。メールでの事前作成 |
-| `apps/auth-api/src/usecases/login.ts` | ログイン時の users の解決。cognito_sub → メールでの紐付け → JIT 作成 |
+| `apps/auth-api/src/interface/http/routes/admin.ts` `apps/auth-api/src/application/usecases/service-members.ts` | サービス向けの管理 API。client_secret_basic で認証し、自サービスへの割り当てだけを操作させる。メールでの事前作成 |
+| `apps/auth-api/src/application/usecases/login.ts` | ログイン時の users の解決。cognito_sub → メールでの紐付け → JIT 作成 |
 | `packages/shared/src/redirect-template.ts` `packages/shared/src/secret-hash.ts` | redirect_uri テンプレートの照合と展開、client_secret の SHA-256 ハッシュと複数 secret の照合 |
 | `packages/shared/src/kv-store.ts` `packages/shared/src/rate-limit.ts` | `KeyValueStore` の `getAndDelete` / `setIfAbsent`、`SetStore`、`CounterStore` と、固定窓のレート制限ミドルウェア。Redis 実装は `redis-store.ts` |
 | `packages/shared/src/jwks.ts` | JWKS の取得と JWT 検証。10 分キャッシュ、未知の kid での 1 回再取得、60 秒の再取得制限、同時要求の集約、失敗時のキャッシュ利用。Auth Server の Cognito 検証、OIDC Client、API Server が共有する |
 | `packages/shared/src/oidc-protocol.ts` | Auth Server と OIDC Client の間のワイヤ契約。access_denied の理由一覧、期限切れを表す `error_description`、Bearer ヘッダの読み書き |
 | `packages/oidc-client` | サービス側に移植する OIDC Client 実装。Host からのサービス / テナント解決、tenant_slug 照合を含む |
-| `apps/auth-api/src/usecases` | Auth Server の判定ロジック。契約とサービスへの割り当ての確認順序はここ |
+| `apps/auth-api/src/application/usecases` | Auth Server の判定ロジック。契約とサービスへの割り当ての確認順序はここ |
 | `packages/web-core` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、`/session`、`/api/*` の中継と CSRF 検証、SPA の配信と CSP、エラー画面。`src/spa.ts` に静的配信と開発時の中継 |
 | `packages/web-ui` | crm-web / cms-web が共有する React コード。`api.ts` の `/session` `/api/*` の呼び出しと 401 での再ログイン、`shell.tsx` のルート clientLoader と共通の枠、`members-page.tsx` の管理アカウント画面 |
 | `packages/api-contract` | HTTP 境界の zod スキーマと型。api-core の `/v1/me` `/v1/members`、crm の end-users、cms の posts、auth-api の `/api/*` と `/admin/service-members`、BFF の `/session`。サーバーは zValidator と `satisfies` で、SPA は受信時の parse で同じスキーマを使う |
 | `apps/crm-web/app` `apps/cms-web/app` | React Router v8 の SPA。`root.tsx` `routes.ts` と、CRM はエンドユーザー、CMS は投稿の画面。`react-router.config.ts` は `ssr: false` |
-| `packages/api-core/src/usecases/resolve-tenant-context.ts` `packages/api-core/src/service-definition.ts` | API 側の Host → aud 確認、Token 検証、自サービス DB の members の取得と既定の役割での作成、役割の既定に `permission_overrides` を重ねる権限の確定。`ServiceDefinition` で役割と権限の語彙を宣言する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
-| `packages/api-core/src/routes/members.ts` `packages/api-core/src/adapters/auth-admin-client.ts` | 管理アカウントの一覧、招待、役割変更、権限の上書き、削除。招待と削除は Auth Server の管理 API を client_secret_basic で呼ぶ |
+| `packages/api-core/src/application/resolve-tenant-context.ts` `packages/api-core/src/domain/service-definition.ts` | API 側の Host → aud 確認、Token 検証、自サービス DB の members の取得と既定の役割での作成、役割の既定に `permission_overrides` を重ねる権限の確定。`ServiceDefinition` で役割と権限の語彙を宣言する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
+| `packages/api-core/src/application/members.ts` `packages/api-core/src/interface/http/routes/members.ts` `packages/api-core/src/infrastructure/auth-admin-client.ts` | 管理アカウントの一覧、招待、役割変更、権限の上書き、削除。招待と削除は Auth Server の管理 API を client_secret_basic で呼ぶ |
 | `apps/crm-api/src/definition.ts` `apps/cms-api/src/definition.ts` | サービスごとの役割と権限の宣言。CRM は owner / admin / member / viewer と `end_users:*`、CMS は owner / editor / viewer と `posts:*` |
 | `scripts/smoke.ts` | 実 HTTP での受け入れ確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービス SSO と未契約サービスの拒否まで通す |
 | `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する。CSP のような fetch では見えない問題を検出する |

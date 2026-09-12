@@ -28,7 +28,7 @@ flowchart TD
     H --> I["Response"]
 ```
 
-0 から 3 までは `packages/api-core/src/usecases/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `MemberRepository.find(tenantId, userId)` で member 行を取得、なければ `ServiceDefinition.defaultRole` で `upsert` → status の確認 → `listOverrides` で上書きを読む → `resolvePermissions(definition, role, overrides)` で権限を確定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
+0 から 3 までは `packages/api-core/src/application/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `MemberRepository.find(tenantId, userId)` で member 行を取得、なければ `ServiceDefinition.defaultRole` で `upsert` → status の確認 → `listOverrides` で上書きを読む → `resolvePermissions(definition, role, overrides)` で権限を確定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
 
 「入れるか」の判定はここにない。Auth Server が `/authorize` と refresh_token grant で user → tenant → 契約 → 割り当ての順に判定済みで、API は Token が有効であればこのテナントのこのサービスに入れる人だと扱う。割り当てを外された人は Refresh で `invalid_grant` になり、Access Token 寿命の 15 分以内に API を呼べなくなる。
 
@@ -214,7 +214,7 @@ COMMIT;
 
 ## 共通ルート。管理アカウント
 
-`packages/api-core/src/routes/members.ts`。どのサービスにも付く。招待と削除は Auth Server の管理 API で「入れるか」を変え、役割と上書きは自 DB に持つ。
+`packages/api-core/src/interface/http/routes/members.ts` が入力検証と契約への写し、`application/members.ts` がユースケース。どのサービスにも付く。招待と削除は Auth Server の管理 API で「入れるか」を変え、役割と上書きは自 DB に持つ。
 
 | エンドポイント | 要求 permission | 内容 |
 | --- | --- | --- |
@@ -229,7 +229,7 @@ Auth Server の応答の写像。`tenant_not_found` と `not_contracted` は 403
 
 ### AuthAdminClient
 
-`packages/api-core/src/ports/auth-admin.ts` の port と `adapters/auth-admin-client.ts` の `HttpAuthAdminClient`。`AUTH_BACKCHANNEL_URL` の `/admin/service-members` を `Authorization: Basic base64(CLIENT_ID:CLIENT_SECRET)` で呼ぶ。5 秒でタイムアウトする。テストは `MemoryAuthAdminClient` を注入する。
+`packages/api-core/src/application/ports/auth-admin.ts` の port と `infrastructure/auth-admin-client.ts` の `HttpAuthAdminClient`。`AUTH_BACKCHANNEL_URL` の `/admin/service-members` を `Authorization: Basic base64(CLIENT_ID:CLIENT_SECRET)` で呼ぶ。5 秒でタイムアウトする。テストは `MemoryAuthAdminClient` を注入する。
 
 ```typescript
 interface AuthAdminClient {

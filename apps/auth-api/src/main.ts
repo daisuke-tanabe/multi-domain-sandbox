@@ -10,13 +10,13 @@ import {
   spaOptionsFromEnv,
   systemClock,
 } from "@sandbox/shared";
-import { SdkCognitoAuthenticator } from "./adapters/cognito-sdk.ts";
-import { MockCognitoAuthenticator } from "./adapters/mock-cognito.ts";
-import { PgIdentityRepository } from "./adapters/pg-identity-repository.ts";
-import { createAuthStores } from "./adapters/stores.ts";
-import { createAuthApp } from "./app.ts";
+import { SdkCognitoAuthenticator } from "./infrastructure/cognito-sdk.ts";
+import { MockCognitoAuthenticator } from "./infrastructure/mock-cognito.ts";
+import { PgIdentityRepository } from "./infrastructure/pg-identity-repository.ts";
+import { createAuthStores } from "./infrastructure/stores.ts";
+import { createAuthApp } from "./interface/http/app.ts";
 import { loadConfig } from "./config.ts";
-import type { AuthDeps } from "./usecases/deps.ts";
+import type { AuthDeps } from "./application/deps.ts";
 
 const logger = createLogger("auth-api");
 const config = loadConfig();

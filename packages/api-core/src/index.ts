@@ -1,12 +1,17 @@
-export { createApiApp, type ApiAppOptions } from "./app.ts";
+export { createApiApp, type ApiAppOptions } from "./interface/http/app.ts";
 export { loadApiCoreConfig, type ApiCoreConfig } from "./config.ts";
 export { startApiCore, type ServiceApiSpec } from "./start.ts";
-export { withTenant } from "./db.ts";
-export { PgMemberRepository } from "./adapters/pg-member-repository.ts";
-export { MemoryMemberRepository } from "./adapters/memory-member-repository.ts";
-export { HttpAuthAdminClient } from "./adapters/auth-admin-client.ts";
-export { MemoryAuthAdminClient } from "./adapters/memory-auth-admin.ts";
-export { authenticate, requirePermission, forbidden, type ApiEnv } from "./auth/middleware.ts";
+export { withTenant } from "./infrastructure/db.ts";
+export { PgMemberRepository } from "./infrastructure/pg-member-repository.ts";
+export { MemoryMemberRepository } from "./infrastructure/memory-member-repository.ts";
+export { HttpAuthAdminClient } from "./infrastructure/auth-admin-client.ts";
+export { MemoryAuthAdminClient } from "./infrastructure/memory-auth-admin.ts";
+export {
+  authenticate,
+  requirePermission,
+  forbidden,
+  type ApiEnv,
+} from "./interface/http/middleware.ts";
 export {
   defineService,
   allPermissions,
@@ -14,13 +19,18 @@ export {
   MEMBER_PERMISSIONS,
   type ServiceDefinition,
   type MemberPermission,
-} from "./service-definition.ts";
+} from "./domain/service-definition.ts";
 export type {
   Member,
-  MemberRepository,
   MemberStatus,
   PermissionOverride,
   PermissionEffect,
   TenantContext,
-} from "./ports/member-repository.ts";
-export type { AuthAdminClient, AuthAdminError, InvitedUser } from "./ports/auth-admin.ts";
+} from "./domain/member.ts";
+export type { MemberRepository } from "./application/ports/member-repository.ts";
+export type {
+  AuthAdminClient,
+  AuthAdminError,
+  InvitedUser,
+} from "./application/ports/auth-admin.ts";
+export { notFound, type NotFoundError } from "./application/errors.ts";
