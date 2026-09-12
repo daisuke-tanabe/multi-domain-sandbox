@@ -23,6 +23,27 @@ export const loginApiResponseSchema = z.union([
 ]);
 export type LoginApiResponse = z.infer<typeof loginApiResponseSchema>;
 
+/** 認証アプリのコード入力画面の材料 */
+export const loginChallengeResponseSchema = z.object({
+  csrfToken: z.string(),
+  method: z.literal("totp"),
+  errorMessage: z.string().optional(),
+});
+export type LoginChallengeResponse = z.infer<typeof loginChallengeResponseSchema>;
+
+/** 認証アプリの登録画面の材料。expiresAt を過ぎたら renew=1 で取り直す */
+export const mfaSetupResponseSchema = z.object({
+  csrfToken: z.string(),
+  method: z.literal("totp"),
+  account: z.string(),
+  secret: z.string(),
+  otpauthUri: z.string(),
+  /** epoch 秒 */
+  expiresAt: z.number(),
+  errorMessage: z.string().optional(),
+});
+export type MfaSetupResponse = z.infer<typeof mfaSetupResponseSchema>;
+
 export const portalServiceSchema = z.object({
   name: z.string(),
   clientId: z.string(),
@@ -72,8 +93,16 @@ export const sessionSchema = z.object({
 });
 export type Session = z.infer<typeof sessionSchema>;
 
+export const mfaMethodSchema = z.object({
+  method: z.enum(["totp"]),
+  /** epoch 秒 */
+  enrolled_at: z.number(),
+});
+export type MfaMethodView = z.infer<typeof mfaMethodSchema>;
+
 export const sessionsResponseSchema = z.object({
   sessions: z.array(sessionSchema),
+  mfa_methods: z.array(mfaMethodSchema),
   /** 失効フォームに入れる CSRF トークン */
   csrfToken: z.string(),
 });

@@ -5,7 +5,7 @@
 テストは Unit / Integration / E2E / Security の4層で構成する。
 E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「他テナントデータ拒否」「別サービス SSO と契約判定」の5シナリオを必須とし、これが通ることを各フェーズの完了条件にする。
 エラーケース一覧の各行を Integration テストに1対1で対応させる。
-現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 136 件が通っている。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。auth-api のテストも SPA は配らず、auth-web と同じ経路で `/api/login` `/api/portal` `/api/logout` の JSON とフォーム POST の応答を検証する。React の画面は `*-web` も auth-web も `scripts/chrome-check.ts` が実 Chrome で描画して 14 項目を確認する。react-hook-form の検証は空のエンドユーザーフォームを送って項目ごとにエラーが出ること、入力すると一覧に加わることで確認する。
+現在の自動テストは auth-api / crm-api / cms-api / web-core / shared で 149 件が通っている。MFA は全員必須のため、auth-api と web-core のログインは `completeMfa` と `completeMfaThrough` でパスワードのあとに TOTP を送って終える。Redis 実装の 2 件は `REDIS_URL` があるときだけ動く。oidc-client は web-core のテストを通して検証し、api-core は crm-api / cms-api のテストを通して検証する。crm-web / cms-web の `src/main.ts` は `packages/web-core` の起動関数を呼ぶだけのため BFF のテストは共有パッケージ側に置き、crm-api / cms-api はサービス固有の routes を持つため各 app にテストを置く。web-core の E2E は実物の crm-api / cms-api を `test-support` から接続し、SPA は配らずに `/auth/*` `/session` `/api/*` を検証する。auth-api のテストも SPA は配らず、auth-web と同じ経路で `/api/login` `/api/portal` `/api/logout` `/api/sessions` の JSON とフォーム POST の応答を検証する。セッションの記録と監査イベントはインメモリの `SessionRepository` と `AuditRepository` で確認する。React の画面は `*-web` も auth-web も `scripts/chrome-check.ts` が実 Chrome で描画して 17 項目を確認する。react-hook-form の検証は空のエンドユーザーフォームを送って項目ごとにエラーが出ること、入力すると一覧に加わることで確認する。
 
 ## テストピラミッド
 
@@ -35,6 +35,9 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | Cognito Token 暗号化 | 暗号化して復号で元に戻る。鍵 ID が保存される |
 | Cognito アダプタ | 例外種別ごとの理由コード写像 |
 | セッション寿命 | アイドルと絶対の判定境界 |
+| 環境の比較 `environmentChanged` | IP か User-Agent の片方でも違えば変化とみなす |
+| ストアのキー `keyOf` | Cookie の値、Refresh Token、code、rid、CSRF の参照 ID、MFA の保留 ID が SHA-256 でキーになり、ストアに生の値が残らない |
+| TOTP `packages/shared/src/totp.ts` | RFC 6238 の SHA-1 テストベクタと一致する。base32 が往復する。前後 1 ステップのずれを許し、それ以外を拒否する。otpauth URI が発行者、アカウント、secret、SHA1、6 桁、30 秒を持つ |
 
 ### 共有ストア
 
@@ -86,6 +89,10 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | A14-A15 | `/login?rid=` へ遷移し Cookie が削除される |
 | L1-L12 | 各エラーの応答と文言。失敗は `/login?error=<kind>&rid=` への 303 で、文言は `/api/login?rid=&error=` の `errorMessage` で確認する。L3-L5 が同一文言。L1 は `/api/login` が 400 `expired_request` |
 | ログイン画面 | `/api/login?rid=` が CSRF Cookie を発行し `rid` と `csrfToken` を返す。`/api/login` に `Cache-Control: no-store` が付く。rid なしで SSO Session があれば `redirectTo: "/"` |
+| X3 | 登録済みの alice はパスワードのあと `/login/challenge?mid=` へ 303 され、SSO Cookie はまだ無い。誤ったコードは `/login/challenge?mid=&error=code_mismatch` へ戻り、`/api/login/challenge` が「コードが正しくありません」を返し、`mfa_challenge_failed` が残る。正しいコードで code が発行され `login_succeeded` の detail が `{mfa: "totp"}` |
+| X5 | 未登録の dave はパスワードのあと `/login/mfa-setup?mid=` へ 303 され、`/api/login/mfa-setup` が `secret` `otpauthUri` `expiresAt` を返す。その secret のコードで `POST /login/mfa-setup` を送ると `mfa_enrolled` が残り、`user_mfa_methods` に `totp` ができ、`/authorize` の続きへ 303 する。次のログインでは Cognito がチャレンジを返し `/login/challenge` になる |
+| X5 | 3 分を過ぎてから `GET /api/login/mfa-setup` を呼ぶと新しい secret が返り `mfa_setup_expired` が残る。古い secret のコードは `setup_expired`、新しい secret のコードで登録が終わる |
+| X1 | 保留状態の 5 分を過ぎてから `POST /login/challenge` を送ると `/login?error=challenge_expired` へ 303 し、`/api/login` が「時間切れです。もう一度ログインしてください」を返す |
 | T1-T16 | 各エラーの OAuth エラーコード。T1 は誤った secret と revoked 済みの secret の両方で invalid_client。T4 で Refresh Token 系列が失効。T15 で契約解除後の Refresh が invalid_grant |
 | M2 | secret ローテーション。新 secret を active で追加した直後は新旧どちらの Basic 認証でも /token が 200。旧行を revoked にすると旧 secret だけ invalid_client |
 | 正常 | code 交換で id_token / access_token / refresh_token が返る。expires_in=900 |
@@ -101,6 +108,12 @@ E2E は「初回ログイン」「別テナント SSO」「Tenant Logout」「�
 | 管理 API | 招待と初回ログインの紐付け。crm の secret で dave のメールを tanaka に招待すると 201 で `linked: false`。dave がログインすると code が発行され、一覧の `linked` が true になり、`findUserByCognitoSub` が招待時の user_id を返す |
 | 管理 API | R4。cms の secret で cms を契約していない suzuki に招待すると 403 |
 | 管理 API | 割り当ての解除。alice を tanaka × crm から DELETE で外すと 204 で、次の認可が `access_denied` `no_membership` になる |
+| 管理 API | 招待解除の即時失効。alice が同じ SSO Session で tanaka.crm と tanaka.cms に入った状態で tanaka × crm から外すと、crm の Refresh Token は `invalid_grant`、cms の Refresh は通り、crm にだけ Back-Channel Logout が届く。`service_member_revoked` に対象の sid が残る |
+| セッションの記録 | ログインで `auth_sessions` に IP と User-Agent が記録され `login_succeeded` が残る。別の IP と User-Agent で `/authorize` に到達すると `environment_changed` が前回と今回の環境を持って残り、セッションは失効しない |
+| セッションの記録 | ログイン失敗で `login_failed` が理由コードと IP、User-Agent で残り、detail にユーザー名を含まない |
+| セキュリティ画面 | `/api/sessions` が本人の active なセッションを `current` と入ったサービス付きで返し、`csrfToken` を発行する。`POST /sessions/revoke` で別の端末のセッションを失効させると `/security` へ 303 し、その sid の Refresh が `invalid_grant` になり、一覧から消える。SSO Session なしの `/api/sessions` は 401 |
+| セキュリティ画面 | 他人の sid を `session_id` に入れても何も失効せず `/security` へ 303 する |
+| ストアのキー | ログイン後の `sso:sess` に Cookie の値のキーがなく、SHA-256 のキーだけがある |
 | Global Logout | `/api/logout?client_id=crm&tenant=tanaka` が SSO Session ありで `authenticated: true` と `csrfToken`。`POST /logout` で `sso:clients` のサービスごとに1通の logout_token。aud がサービス。完了後は `/logout?client_id=crm&tenant=tanaka` へ 303 し、`/api/logout` が `authenticated: false` と `returnTo` `{label: "CRM (tanaka)", href}` を返す。href は redirect_uri_template を tenant で展開した origin |
 | 並行性と悪用 | 同じ Refresh Token を同時に 2 回提示すると成功は 1 つで、もう一方は invalid_grant。系列は失効せず、成功側の新 Token で次の Refresh が通る |
 | 並行性と悪用 | 別 Client の Basic 認証で Refresh Token を提示すると invalid_grant になり、その後の正規 Client からの提示も invalid_grant。系列全体が失効する |
@@ -157,7 +170,7 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 
 | # | シナリオ | 確認内容 |
 | --- | --- | --- |
-| E1 | 初回ログイン | tanaka.crm 未ログイン → SPA が `/session` を見て `/auth/login` へ → ログイン画面 → 認証 → ホームに owner と権限の表。Cookie が tanaka.crm と auth にそれぞれ1つ。Domain 属性なし |
+| E1 | 初回ログイン | tanaka.crm 未ログイン → SPA が `/session` を見て `/auth/login` へ → ログイン画面 → パスワード → 「認証コードを入力」で認証アプリのコード → ホームに owner と権限の表。Cookie が tanaka.crm と auth にそれぞれ1つ。Domain 属性なし。パスワードだけでは SSO Cookie が発行されない |
 | E2 | 別テナント SSO | E1 後に suzuki.crm へアクセス → ログイン画面を経由せずホームに viewer。ネットワークログにログイン画面の GET がないこと |
 | E3 | Tenant Logout | tanaka.crm でログアウト → tanaka.crm は未ログイン、suzuki.crm と tanaka.cms はログイン済み。auth の Cookie は残る |
 | E4 | 他テナントデータ拒否 | tanaka の Token で suzuki の end_user ID を指定 → 404 |
@@ -172,6 +185,8 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | E13 | サービスごとの権限 | tanaka.cms では owner と表示されるが、cms 側の deny により `posts:create` が no で `posts:update` が yes。smoke と web のテストで確認する |
 | E14 | ポータル | alice のポータルに「Sandbox ポータル」と tanaka の CRM と CMS、suzuki の CRM が並び、suzuki.cms は出ない。役割は出ない。carol は「利用できるサービスがありません」 |
 | E15 | 招待と初回ログイン | alice が tanaka の crm に dave を招待 → identity に dave の users 行と割り当て、crm の DB に member 行。dave がログインすると同じ users 行に sub が紐付き tanaka.crm に入れる。auth-api のテストで確認する |
+| E16 | セキュリティ画面 | alice が auth の `/security` を開くと「セキュリティ」と「この端末」の印が付いた現在のセッションが出て、入ったサービスとして「CRM / Tanaka Inc.」が並び、「多要素認証」に認証アプリが出る。chrome-check で確認する。別の端末の失効は auth-api のテストで確認する |
+| E17 | 認証アプリの登録 | 未登録の dave がパスワードのあと「認証アプリを登録」で QR を読み取りコードを送ると登録が終わり、`user_mfa_methods` に残る。QR は 3 分で失効し、新しい QR に切り替わる。auth-api のテストで確認する |
 
 各シナリオで以下を横断的に検証する。
 
@@ -210,20 +225,26 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | S22 | 契約のないテナントへ招待 | 403 not_contracted。users にも tenant_service_members にも行が増えない |
 | S23 | 招待済みのメールで別の Cognito ユーザーがログイン | 既存行に紐付かず、ログインが拒否される |
 | S24 | 語彙にない role や permission | 400 invalid_request。members と permission_overrides に書かれない |
+| S25 | 他人の sid で `POST /sessions/revoke` | 何も失効せず `/security` へ 303。存在の有無を漏らさない |
+| S26 | 招待解除後の Refresh | 解除されたサービスの Refresh Token は即時に `invalid_grant`。同じ人の他サービスの Refresh は通る |
+| S27 | 揮発ストアの読み取り | ストアのキーと値から Cookie の値、Refresh Token、code を復元できない |
+| S28 | 別の環境からの `/authorize` | `environment_changed` が残り警告ログが出るが、セッションは失効せず code は発行される |
+| S29 | パスワードだけで SSO Session を得る | `POST /login` は SSO Cookie を発行せず `/login/challenge` か `/login/mfa-setup` へ 303。誤ったコードでは code が発行されず `mfa_challenge_failed` が残る |
+| S30 | 期限切れの QR のコードを送る | `setup_expired` で拒否され、Cognito に送られない。古い secret は新しい secret に置き換わる |
 
 ## テスト環境
 
 | 項目 | 内容 |
 | --- | --- |
-| Cognito | `CognitoAuthenticator` インターフェースのモック実装。固定ユーザー alice / bob / carol / dave と失敗パターンを設定できる。dave は identity にいない |
-| Session Store | インメモリ実装。TTL を進めるためのテスト用クロック |
-| Identity DB | テストはインメモリの `IdentityRepository`。RLS テストはローカル PostgreSQL 必須 |
+| Cognito | `CognitoAuthenticator` インターフェースのモック実装。固定ユーザー alice / bob / carol / dave と失敗パターンを設定できる。dave は identity にいない。TOTP は `packages/shared/src/totp.ts` で本物の検証を行い、`MOCK_TOTP_SECRETS` の alice / bob / carol は登録済み、dave は未登録で始まる。登録状態はインスタンスのメモリに持つ |
+| Session Store | インメモリ実装。TTL を進めるためのテスト用クロック。MFA の保留状態と QR の期限切れもクロックを進めて再現する |
+| Identity DB | テストはインメモリの `IdentityRepository` と、セッションの記録と監査のインメモリ `SessionRepository` `AuditRepository`。RLS テストはローカル PostgreSQL 必須 |
 | サービスの DB | テストは `MemoryMemberRepository` と各サービスのインメモリ Repository。`MemoryAuthAdminClient` が auth-api の管理 API を代替する |
-| auth インスタンス | `apps/auth-api/src/test-support.ts` が SPA を配らない `createAuthApp` を組み立てる。`readLoginContext(harness, rid, cookie)` が auth-web と同じく `/api/login?rid=` を呼び、フォームに入れる `csrf` と Cookie ヘッダと JSON の `body` を返す。`runLoginFlow` はこれで CSRF を受け取ってから `POST /login` する。HTML からトークンを抜き出す補助は持たない |
-| web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003。SPA は配らず、簡易ブラウザの `Browser.fetch` `readJson` `readSession` と、`/auth/login?return_to=<path>` から入る `loginThrough` で `/session` と `/api/*` を検証する。`loginThrough` は auth の `/login?rid=` に着いたら `/api/login?rid=` で rid と CSRF を受け取り、フォーム POST で `/login` に送る |
-| Chrome 確認 | `scripts/chrome-check.ts` は 16 項目。auth-web の SPA が `/api/login` を読んで「Sandbox にログイン」を描くまで待ってからフォームを埋める。ポータルは「Sandbox ポータル」、ログアウト確認は「ログアウトする」、完了は「Sandbox からログアウトしました」の文字列を待つ。tanaka.crm では空のエンドユーザーフォームを送って項目ごとに `[data-slot=field-error]` が 1 つずつ出ることと、入力して送ると作成したユーザーが表に出ることを確認する。参照する文言は `CONTENT.md` の「変えてはいけない文言」に列挙する |
+| auth インスタンス | `apps/auth-api/src/test-support.ts` が SPA を配らない `createAuthApp` を組み立てる。`readLoginContext(harness, rid, cookie)` が auth-web と同じく `/api/login?rid=` を呼び、フォームに入れる `csrf` と Cookie ヘッダと JSON の `body` を返す。`runLoginFlow` はこれで CSRF を受け取ってから `POST /login` し、`completeMfa(harness, response, cookie, username)` が 303 先の `/login/challenge` か `/login/mfa-setup` を辿って `MOCK_TOTP_SECRETS` から作ったコードを送り、MFA を終えた応答を返す。HTML からトークンを抜き出す補助は持たない |
+| web インスタンス | crm と cms の2サービス。`packages/web-core/src/test-support.ts` がサービスごとに別インスタンスを作る。BASE_HOST は crm.localhost:3001 / cms.localhost:3003。SPA は配らず、簡易ブラウザの `Browser.fetch` `readJson` `readSession` と、`/auth/login?return_to=<path>` から入る `loginThrough` で `/session` と `/api/*` を検証する。`loginThrough` は auth の `/login?rid=` に着いたら `/api/login?rid=` で rid と CSRF を受け取り、フォーム POST で `/login` に送り、`completeMfaThrough` が認証アプリのコードを送って `/auth/callback` まで辿る。簡易ブラウザは `nowSeconds()` のクロックを持ち、TOTP はその時刻で作る |
+| Chrome 確認 | `scripts/chrome-check.ts` は 17 項目。auth-web の SPA が `/api/login` を読んで「Sandbox にログイン」を描くまで待ってからフォームを埋め、「認証コードを入力」が出たら alice のモックの secret から TOTP を計算して送る。ポータルは「Sandbox ポータル」、セキュリティ画面は「この端末」と「セキュリティ」と「CRM / Tanaka Inc.」、ログアウト確認は「ログアウトする」、完了は「Sandbox からログアウトしました」の文字列を待つ。tanaka.crm では空のエンドユーザーフォームを送って項目ごとに `[data-slot=field-error]` が 1 つずつ出ることと、入力して送ると作成したユーザーが表に出ることを確認する。参照する文言は `CONTENT.md` の「変えてはいけない文言」に列挙する |
 | api インスタンス | サービスごとに別インスタンス。`apps/crm-api/src/test-support.ts` と `apps/cms-api/src/test-support.ts` が実物の定義と routes で組み立て、web-core の harness もこれを使う。API_BASE_URL は http://api.crm.localhost:3002 / http://api.cms.localhost:3004 |
-| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/application/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` の各 `.test.ts` |
+| テストファイル | `apps/auth-api/src/app.test.ts`、`apps/auth-api/src/application/usecases/authorization-request.test.ts`、`apps/crm-api/src/app.test.ts`、`apps/cms-api/src/app.test.ts`、`packages/web-core/src/app.test.ts`、`packages/shared/src/` の `encryption` `jwks` `jwt` `kv-store` `random` `redirect-template` `redis-store` `return-to` `secret-hash` `totp` の各 `.test.ts` |
 | 署名鍵 | テスト用 RSA 鍵ペアを固定生成 |
 | 時刻 | 注入可能なクロックで期限切れを再現 |
 
@@ -244,5 +265,7 @@ crm-api のテストは `apps/crm-api/src/app.test.ts`、cms-api は `apps/cms-a
 | 3. Tenant Web Application | E1 / E2 / E8 / E9 / E12 |
 | 4. API Server | E4 / E10 / E13 / P 系 / S7-S10 / S16 / S19-S20 / S24 |
 | 5. Logout とエラー | E3 / E5-E7 / 全エラーケース / S1-S6 / S11-S15 / S17-S18 |
-| 6. 拡張 | E11 / MFA シーケンス |
+| 6. 拡張 | E11 |
 | 7. サービスごとの DB と招待 | E15 / Q 系 / R 系 / S21-S23 |
+| 11. セッションの記録と監査 | E16 / O9-O14 / S25-S28 |
+| 12. MFA | E1 の認証コード / E17 / X 系 / S29-S30 |

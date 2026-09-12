@@ -1,11 +1,22 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import type { LoginContextResponse, LoginRedirectResponse } from "@sandbox/api-contract";
+import type {
+  LoginChallengeResponse,
+  LoginContextResponse,
+  LoginRedirectResponse,
+  MfaSetupResponse,
+} from "@sandbox/api-contract";
 import type { CookiePolicy } from "@sandbox/shared";
 import { issueCsrfToken, verifyCsrfToken } from "../../../application/usecases/csrf.ts";
 import type { AuthDeps } from "../../../application/deps.ts";
-import { login, type LoginError } from "../../../application/usecases/login.ts";
+import { login, type LoginError, type LoginSuccess } from "../../../application/usecases/login.ts";
+import {
+  beginTotpSetup,
+  completeTotpChallenge,
+  completeTotpSetup,
+  type MfaFlowError,
+} from "../../../application/usecases/mfa.ts";
 import {
   deletePendingAuthorization,
   loadPendingAuthorization,
@@ -30,62 +41,109 @@ const loginFormSchema = z.object({
   password: z.string().min(1).max(256),
 });
 
-const LOGIN_ERROR_KINDS = [
-  "invalid_credentials",
-  "user_disabled",
-  "user_not_confirmed",
-  "password_reset_required",
-  "challenge_required",
-  "unavailable",
-] as const satisfies ReadonlyArray<LoginError["kind"]>;
+const codeFormSchema = z.object({
+  mid: z.string().min(1).max(128),
+  csrf: z.string().min(1),
+  code: z.string().regex(/^\d{6}$/),
+});
 
-const GENERIC_FAILURE = "ユーザー名またはパスワードが正しくありません";
+/** /login?error= と /login/challenge?error= に載せる種類。文言は /api/login 系が返す */
+const ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  invalid_credentials: "ユーザー名またはパスワードが正しくありません",
+  user_disabled: "ユーザー名またはパスワードが正しくありません",
+  user_not_confirmed: "アカウントが確認されていません",
+  password_reset_required: "パスワードの再設定が必要です",
+  challenge_required: "この認証方式は現在未対応です",
+  unavailable: "一時的なエラーです。しばらくしてから再試行してください",
+  challenge_expired: "時間切れです。もう一度ログインしてください",
+  code_mismatch: "コードが正しくありません。認証アプリの最新のコードを入力してください",
+  setup_expired: "QR コードの有効期限が切れました。新しい QR コードを読み取ってください",
+};
+
 const EXPIRED_REQUEST_MESSAGE =
   "ログイン画面を開いてから時間が経ちすぎたか、認証サーバーが再起動しました。利用したいサービスの URL をブラウザで開き直してログインしてください。";
+const EXPIRED_MFA_MESSAGE = "時間切れです。もう一度ログインしてください。";
 
-/**
- * 失敗理由をユーザー向け文言に写像する。ユーザー列挙を防ぐため認証失敗系は同一文言にする。
- */
-function loginErrorMessage(kind: LoginError["kind"]): string {
-  switch (kind) {
-    case "invalid_credentials":
-    case "user_disabled":
-      return GENERIC_FAILURE;
-    case "user_not_confirmed":
-      return "アカウントが確認されていません";
-    case "password_reset_required":
-      return "パスワードの再設定が必要です";
-    case "challenge_required":
-      return "この認証方式は現在未対応です";
-    case "unavailable":
-      return "一時的なエラーです。しばらくしてから再試行してください";
-    default:
-      return exhaustive(kind);
-  }
+function errorMessageOf(c: Context): { errorMessage: string } | Record<never, never> {
+  const kind = c.req.query("error") ?? "";
+  const message = ERROR_MESSAGES[kind];
+  return message === undefined ? {} : { errorMessage: message };
 }
 
-function exhaustive(value: never): never {
-  throw new Error(`Unhandled login error: ${String(value)}`);
+function withQuery(path: string, params: Record<string, string>): string {
+  const query = new URLSearchParams(
+    Object.entries(params).filter(([, value]) => value !== ""),
+  ).toString();
+  return query === "" ? path : `${path}?${query}`;
 }
 
-function isLoginErrorKind(value: string): value is LoginError["kind"] {
-  return (LOGIN_ERROR_KINDS as ReadonlyArray<string>).includes(value);
-}
-
-/** 失敗したら種類だけをクエリに載せて SPA のログイン画面へ戻す。文言は /api/login が返す */
-function loginRetryPath(rid: string, kind: LoginError["kind"]): string {
-  const params = new URLSearchParams({ error: kind });
-  if (rid !== "") params.set("rid", rid);
-  return `/login?${params.toString()}`;
+function loginErrorKind(error: LoginError): string {
+  return error.kind;
 }
 
 /**
- * ログイン。画面は apps/auth-web の SPA が描く。
- *   GET  /api/login  SPA がフォームを描くための rid、CSRF、エラー文言
- *   POST /login      フォーム POST。成功は /authorize の続きへ、失敗は /login?error= へ戻す
+ * ログイン。画面は apps/auth-web の SPA が描く。MFA は全員必須。
+ *   GET  /api/login              SPA がフォームを描くための rid、CSRF、エラー文言
+ *   POST /login                  フォーム POST。パスワード認証のあと TOTP のチャレンジか登録へ 303
+ *   GET  /api/login/challenge    認証アプリのコード入力画面の材料
+ *   POST /login/challenge        コードを検証し、通れば /authorize の続きへ
+ *   GET  /api/login/mfa-setup    QR コードの材料。期限が来たら renew=1 で新しい secret を発行
+ *   POST /login/mfa-setup        登録中の secret のコードを検証し、TOTP を必須にしてログインを完了する
  */
 export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
   const app = new Hono();
+
+  const invalidForm = (result: { success: boolean }, c: Context) =>
+    result.success
+      ? undefined
+      : c.html(errorPage("無効なリクエストです", "入力内容が正しくありません。"), 400);
+
+  const csrfGuard = async (c: Context, formToken: string): Promise<Response | undefined> => {
+    const valid = await verifyCsrfToken(deps, readCsrfCookie(c, policy), formToken);
+    if (valid) return undefined;
+    deps.logger.warn("login csrf mismatch");
+    return c.html(
+      errorPage("ページを再読み込みしてください", "フォームの有効期限が切れています。"),
+      403,
+    );
+  };
+
+  /** MFA を終えたログインの仕上げ。Cookie を書き、保留していた認可リクエストを再開する */
+  const finish = async (c: Context, result: LoginSuccess, rid: string): Promise<Response> => {
+    // 古い SSO Session を残さない。Cookie を上書きするだけでは前のセッションが期限まで生き続ける
+    const previous = await loadSsoSession(deps, readSsoCookie(c, policy));
+    if (previous !== undefined) await destroySsoSession(deps, previous);
+    writeSsoCookie(c, policy, result.cookieValue);
+    const request = rid === "" ? undefined : await loadPendingAuthorization(deps, rid);
+    if (request === undefined) return c.redirect("/", 303);
+    await deletePendingAuthorization(deps, rid);
+    const outcome = await resumePendingAuthorization(
+      deps,
+      request,
+      result.session,
+      requestEnvironment(c),
+    );
+    return c.redirect(redirectForOutcome(deps.issuer, request, outcome), 303);
+  };
+
+  const respondMfaError = (
+    c: Context,
+    error: MfaFlowError,
+    retryPath: string,
+    mid: string,
+  ): Response => {
+    switch (error.kind) {
+      case "code_mismatch":
+      case "setup_expired":
+        return c.redirect(withQuery(retryPath, { mid, error: error.kind }), 303);
+      case "expired":
+        return c.redirect(withQuery("/login", { error: "challenge_expired" }), 303);
+      case "user_disabled":
+        return c.redirect(withQuery("/login", { error: "user_disabled" }), 303);
+      case "unavailable":
+        return c.redirect(withQuery("/login", { error: "unavailable" }), 303);
+    }
+  };
 
   app.get("/api/login", async (c) => {
     noStore(c);
@@ -102,62 +160,95 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
-    const errorKind = c.req.query("error") ?? "";
     return c.json({
       rid,
       csrfToken: csrf.formToken,
-      ...(isLoginErrorKind(errorKind) && { errorMessage: loginErrorMessage(errorKind) }),
+      ...errorMessageOf(c),
     } satisfies LoginContextResponse);
   });
 
-  app.post(
-    "/login",
-    zValidator("form", loginFormSchema, (result, c) => {
-      if (!result.success)
-        return c.html(errorPage("無効なリクエストです", "入力内容が正しくありません。"), 400);
-      return undefined;
-    }),
-    async (c) => {
-      noStore(c);
-      const form = c.req.valid("form");
+  app.post("/login", zValidator("form", loginFormSchema, invalidForm), async (c) => {
+    noStore(c);
+    const form = c.req.valid("form");
+    const guarded = await csrfGuard(c, form.csrf);
+    if (guarded !== undefined) return guarded;
 
-      const csrfValid = await verifyCsrfToken(deps, readCsrfCookie(c, policy), form.csrf);
-      if (!csrfValid) {
-        deps.logger.warn("login csrf mismatch");
-        return c.html(
-          errorPage("ページを再読み込みしてください", "フォームの有効期限が切れています。"),
-          403,
-        );
-      }
+    if (form.rid !== "" && (await loadPendingAuthorization(deps, form.rid)) === undefined) {
+      return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
+    }
 
-      const request = form.rid === "" ? undefined : await loadPendingAuthorization(deps, form.rid);
-      if (form.rid !== "" && request === undefined) {
-        return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
-      }
-
-      const environment = requestEnvironment(c);
-      const result = await login(
-        deps,
-        { username: form.username, password: form.password },
-        environment,
+    const result = await login(
+      deps,
+      { username: form.username, password: form.password },
+      requestEnvironment(c),
+      form.rid,
+    );
+    if (!result.ok) {
+      return c.redirect(
+        withQuery("/login", { error: loginErrorKind(result.error), rid: form.rid }),
+        303,
       );
-      if (!result.ok) return c.redirect(loginRetryPath(form.rid, result.error.kind), 303);
+    }
+    switch (result.value.kind) {
+      case "totp_required":
+        return c.redirect(withQuery("/login/challenge", { mid: result.value.pendingId }), 303);
+      case "setup_required":
+        return c.redirect(withQuery("/login/mfa-setup", { mid: result.value.pendingId }), 303);
+      case "logged_in":
+        return finish(c, result.value.login, form.rid);
+    }
+  });
 
-      // 古い SSO Session を残さない。Cookie を上書きするだけでは前のセッションが期限まで生き続ける
-      const previous = await loadSsoSession(deps, readSsoCookie(c, policy));
-      if (previous !== undefined) await destroySsoSession(deps, previous);
-      writeSsoCookie(c, policy, result.value.cookieValue);
-      if (request === undefined) return c.redirect("/", 303);
-      await deletePendingAuthorization(deps, form.rid);
-      const outcome = await resumePendingAuthorization(
-        deps,
-        request,
-        result.value.session,
-        environment,
-      );
-      return c.redirect(redirectForOutcome(deps.issuer, request, outcome), 303);
-    },
-  );
+  app.get("/api/login/challenge", async (c) => {
+    noStore(c);
+    const csrf = await issueCsrfToken(deps);
+    writeCsrfCookie(c, policy, csrf.cookieValue);
+    return c.json({
+      csrfToken: csrf.formToken,
+      method: "totp",
+      ...errorMessageOf(c),
+    } satisfies LoginChallengeResponse);
+  });
+
+  app.post("/login/challenge", zValidator("form", codeFormSchema, invalidForm), async (c) => {
+    noStore(c);
+    const form = c.req.valid("form");
+    const guarded = await csrfGuard(c, form.csrf);
+    if (guarded !== undefined) return guarded;
+    const result = await completeTotpChallenge(deps, form.mid, form.code, requestEnvironment(c));
+    if (!result.ok) return respondMfaError(c, result.error, "/login/challenge", form.mid);
+    return finish(c, result.value.login, result.value.rid);
+  });
+
+  app.get("/api/login/mfa-setup", async (c) => {
+    noStore(c);
+    const mid = c.req.query("mid") ?? "";
+    const setup = await beginTotpSetup(deps, mid, { renew: c.req.query("renew") === "1" });
+    if (!setup.ok) {
+      return c.json({ error: "expired_request", message: EXPIRED_MFA_MESSAGE }, 400);
+    }
+    const csrf = await issueCsrfToken(deps);
+    writeCsrfCookie(c, policy, csrf.cookieValue);
+    return c.json({
+      csrfToken: csrf.formToken,
+      method: "totp",
+      account: setup.value.account,
+      secret: setup.value.secret,
+      otpauthUri: setup.value.otpauthUri,
+      expiresAt: setup.value.expiresAt,
+      ...errorMessageOf(c),
+    } satisfies MfaSetupResponse);
+  });
+
+  app.post("/login/mfa-setup", zValidator("form", codeFormSchema, invalidForm), async (c) => {
+    noStore(c);
+    const form = c.req.valid("form");
+    const guarded = await csrfGuard(c, form.csrf);
+    if (guarded !== undefined) return guarded;
+    const result = await completeTotpSetup(deps, form.mid, form.code, requestEnvironment(c));
+    if (!result.ok) return respondMfaError(c, result.error, "/login/mfa-setup", form.mid);
+    return finish(c, result.value.login, result.value.rid);
+  });
 
   return app;
 }

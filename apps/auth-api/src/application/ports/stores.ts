@@ -69,6 +69,34 @@ export interface CsrfToken {
   readonly token: string;
 }
 
+/**
+ * パスワード認証のあと MFA を終えるまでの保留状態。キーは保留 ID の SHA-256。
+ * secret と Cognito の Token は暗号化して持つ
+ */
+export type MfaPending =
+  | {
+      readonly kind: "totp_challenge";
+      readonly username: string;
+      readonly cognitoSession: string;
+      readonly rid: string;
+      readonly attempts: number;
+      /** 作成時に決めた期限。失敗して書き戻しても延びない */
+      readonly expiresAt: number;
+    }
+  | {
+      readonly kind: "totp_setup";
+      readonly username: string;
+      readonly sub: string;
+      readonly email: string;
+      readonly name: string | null;
+      /** パスワード認証で得た Cognito の Token。暗号化済み */
+      readonly encryptedTokens: string;
+      readonly rid: string;
+      /** 登録中の secret。暗号化済み。まだ発行していなければ null */
+      readonly encryptedSecret: string | null;
+      readonly secretIssuedAt: number | null;
+    };
+
 export interface AuthStores {
   readonly ssoSessions: KeyValueStore<SsoSession>;
   /** sid → SSO Session ID の逆引き */
@@ -81,6 +109,7 @@ export interface AuthStores {
   /** familyId → その系列で発行した Refresh Token のキーの集合。一括失効に使う */
   readonly refreshTokenFamilies: SetStore;
   readonly csrfTokens: KeyValueStore<CsrfToken>;
+  readonly mfaPending: KeyValueStore<MfaPending>;
   /** sid → Refresh Token 系列 ID の集合。Global Logout で一括失効する */
   readonly sidRefreshFamilies: SetStore;
   readonly rateLimits: CounterStore;

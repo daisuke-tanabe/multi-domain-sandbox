@@ -61,7 +61,7 @@
 
 | レイヤー | 担当 | 持つ状態 |
 | --- | --- | --- |
-| 認証 | Cognito User Pool | ユーザー、パスワード、MFA |
+| 認証 | Cognito User Pool | ユーザー、パスワード、認証アプリの TOTP の検証と登録。MFA は OPTIONAL にし、全員への必須化は Auth Server が行う |
 | SSO と認可 | Auth Server。`auth.<domain>` | SSO Session、Authorization Code、Refresh Token、Client 登録、テナント、契約、サービスごとの割り当て。Identity DB は Auth Server だけが接続する |
 | アプリ | 各サービス。`<tenant>.<service>.<domain>` など | 自サービスのセッション、Access Token のサーバー側保持 |
 | API | 各サービスの Resource Server。`api.<service>.<domain>` | Token 検証、自サービスの役割と権限による認可、管理アカウントの招待と権限編集、テナント分離されたデータ。自サービスの DB だけを持つ |
@@ -83,7 +83,7 @@ flowchart TB
     end
 
     subgraph AuthLayer ["auth.example.com  OpenID Provider"]
-        Auth["Auth Server<br/>/authorize /login /token /jwks /userinfo /revoke /logout /<br/>/admin/service-members"]
+        Auth["Auth Server<br/>/authorize /login /login/challenge /login/mfa-setup /token /jwks /userinfo /revoke /logout /<br/>/admin/service-members"]
         SsoStore[("Redis<br/>SSO Session / Code / Refresh Token")]
         IdDB[("Identity DB<br/>users / tenants / tenant_members<br/>oidc_clients / oidc_client_secrets<br/>tenant_services / tenant_service_members")]
         Auth --- SsoStore
@@ -190,17 +190,23 @@ Auth Server と既存サービスのコード変更は発生しない。
 | GET | `/jwks` | Client、API | Token 検証用の公開鍵 |
 | GET | `/authorize` | ブラウザ | 認可エンドポイント |
 | GET | `/api/login` | ログイン画面の SPA | `rid` と `error` を受け取り、CSRF Cookie を発行して `rid` `csrfToken` と、`error` があればその文言を返す JSON。rid が期限切れなら 400 `expired_request` |
-| POST | `/login` | ブラウザ | 認証。フォーム POST で Cognito InitiateAuth を呼ぶ |
+| POST | `/login` | ブラウザ | パスワード認証。フォーム POST で Cognito InitiateAuth を呼ぶ。SSO Session はまだ作らず、結果を `mid` の保留状態に 5 分置いて `/login/challenge?mid=` か `/login/mfa-setup?mid=` へ 303 |
+| GET | `/api/login/challenge` | 認証コード画面の SPA | `mid` と `error` を受け取り、CSRF Cookie を発行して `csrfToken` `method: "totp"` と、`error` があればその文言を返す JSON |
+| POST | `/login/challenge` | ブラウザ | 認証アプリのコードの検証。フォーム POST で `mid` `csrf` と 6 桁の `code`。通れば SSO Session を作り `/authorize` の続きへ 303 |
+| GET | `/api/login/mfa-setup` | 認証アプリ登録画面の SPA | `mid` と `renew` を受け取り、AssociateSoftwareToken で発行した `secret` `otpauthUri` `expiresAt` と `account` `csrfToken` `method` を返す JSON。期限内は同じ secret、`renew=1` か期限切れなら新しい secret。保留状態が無ければ 400 `expired_request` |
+| POST | `/login/mfa-setup` | ブラウザ | 登録中の secret のコードの検証。フォーム POST で `mid` `csrf` `code`。VerifySoftwareToken と SetUserMFAPreference で TOTP を必須にし、SSO Session を作って `/authorize` の続きへ 303 |
 | GET | `/api/portal` | ポータルの SPA | ログイン中ユーザーのメールと、テナントごとに割り当てのあるサービスの一覧。役割は出さない。SSO Session がなければ 401 |
 | POST | `/token` | Client のサーバー | code 交換、refresh_token grant |
 | GET | `/userinfo` | Client のサーバー | claims 取得 |
 | POST | `/revoke` | Client のサーバー | Refresh Token 失効。RFC 7009 |
 | GET | `/api/logout` | Global Logout の SPA | SSO Session があれば CSRF を発行して `authenticated: true` と `csrfToken`、なければ Cookie を消して `authenticated: false`。どちらも戻り先 `returnTo` |
 | POST | `/logout` | ブラウザ | Global Logout の実行。フォーム POST |
-| GET | `/*` | ブラウザ | 画面の SPA。`/` ポータル、`/login` ログイン、`/logout` Global Logout の確認と完了 |
+| GET | `/api/sessions` | セキュリティ画面の SPA | 登録済みの MFA 方式 `mfa_methods` と、本人のログイン中のセッションの一覧と失効フォームの CSRF。各セッションの IP、User-Agent、作成と最終アクセスの時刻、現在のセッションか、入ったサービスとテナント。SSO Session がなければ 401 |
+| POST | `/sessions/revoke` | ブラウザ | 自分の他の端末のセッションを失効させる。フォーム POST で `csrf` と `session_id`。Global Logout と同じ手順をその sid だけに行い `/security` へ 303 |
+| GET | `/*` | ブラウザ | 画面の SPA。`/` ポータル、`/login` ログイン、`/login/challenge` 認証コードの入力、`/login/mfa-setup` 認証アプリの登録、`/logout` Global Logout の確認と完了、`/security` MFA の登録状況とセッションの一覧と失効 |
 | GET | `/admin/service-members` | サービスの API | `tenant_id` で、そのテナントで呼び出し元のサービスに入れる人の一覧。`client_secret_basic` |
 | POST | `/admin/service-members` | サービスの API | 招待。`{tenant_id, email, name?}`。users にいなければメールで事前作成し、割り当てを upsert |
-| DELETE | `/admin/service-members` | サービスの API | 割り当ての解除。`{tenant_id, user_id}` |
+| DELETE | `/admin/service-members` | サービスの API | 割り当ての解除。`{tenant_id, user_id}`。その人の SSO Session のうちこのサービスとテナントに入っているものの Refresh Token 系列を即時に失効させ、このサービスへ Back-Channel Logout を送る。SSO Session と他のサービスは残す |
 | GET | `/healthz` | 監視 | 死活監視 |
 
 #### Tenant Web Application。`https://<tenant>.<service>.<domain>`
@@ -308,12 +314,39 @@ Set-Cookie: __Host-sso_session=<id>; Path=/; Secure; HttpOnly; SameSite=Lax   (�
 
 | 結果 | 応答 |
 | --- | --- |
-| 成功、契約と割り当てあり | `303 <redirect_uri>?code&state&iss` + `Set-Cookie: sso_session`。Cookie が指す旧 SSO Session があれば破棄してから新しい ID を書く。`rid` なしは `303 /` |
-| 成功、契約か割り当てなし | `303 <redirect_uri>?error=access_denied&error_description=<reason>&state` + `Set-Cookie: sso_session`。認証自体は成功しているため SSO Session は作る |
-| 認証失敗 | `303 /login?error=<kind>&rid=<rid>`。kind は `invalid_credentials` `user_disabled` `user_not_confirmed` `password_reset_required` `challenge_required` `unavailable`。ユーザー名は URL に載せない。SPA が `/api/login` から文言を受け取って表示し、パスワード誤り、ユーザー不在、ロック中は同一文言 |
+| パスワード成功、認証アプリ登録済み | `303 /login/challenge?mid=<mid>`。Cognito の SOFTWARE_TOKEN_MFA チャレンジと Session を `mid` の保留状態に 5 分置く。SSO Session はまだ作らない |
+| パスワード成功、認証アプリ未登録 | `303 /login/mfa-setup?mid=<mid>`。Cognito の Token を暗号化して保留状態に置く。SSO Session はまだ作らない |
+| 認証失敗 | `303 /login?error=<kind>&rid=<rid>`。kind は `invalid_credentials` `user_disabled` `user_not_confirmed` `password_reset_required` `challenge_required` `unavailable`。ユーザー名は URL に載せない。SPA が `/api/login` から文言を受け取って表示し、パスワード誤り、ユーザー不在、ロック中は同一文言。`challenge_required` は SOFTWARE_TOKEN_MFA 以外のチャレンジが返ったとき |
 | CSRF 不一致 | 403 のサーバー HTML |
 | `rid` 期限切れ | 400 のサーバー HTML |
-| レート制限超過 | 429 と `Retry-After`。`/login` と `GET /api/login` は IP あたり 60 回/分、`POST /login` は IP × ユーザー名あたり 10 回/分 |
+| レート制限超過 | 429 と `Retry-After`。`/login` `/login/*` と `GET /api/login` `GET /api/login/*` は IP あたり 60 回/分、`POST /login` は IP × ユーザー名あたり 10 回/分 |
+
+#### GET `/api/login/challenge?mid=&error=` と POST `/login/challenge`
+
+登録済みの人の認証コード。MFA は全員必須で、Cognito の User Pool は OPTIONAL にし、必須化は Auth Server が行う。`mid` は `POST /login` が発行する保留状態の ID で 256bit 乱数、5 分で失効。
+
+`GET /api/login/challenge` は CSRF Cookie を発行して `{ csrfToken, method: "totp", errorMessage? }` を返す。`POST /login/challenge` は `application/x-www-form-urlencoded` で `mid` `csrf` と 6 桁の `code` を受け取り、RespondToAuthChallenge で検証する。
+
+| 結果 | 応答 |
+| --- | --- |
+| 成功、契約と割り当てあり | `303 <redirect_uri>?code&state&iss` + `Set-Cookie: sso_session`。Cookie が指す旧 SSO Session があれば破棄してから新しい ID を書く。`rid` なしは `303 /`。`user_mfa_methods` に方式を記録し、`login_succeeded` の detail に `{mfa: "totp"}` |
+| 成功、契約か割り当てなし | `303 <redirect_uri>?error=access_denied&error_description=<reason>&state` + `Set-Cookie: sso_session`。認証自体は成功しているため SSO Session は作る |
+| コード不一致 | `303 /login/challenge?mid=<mid>&error=code_mismatch`。文言は「コードが正しくありません。認証アプリの最新のコードを入力してください」。`mfa_challenge_failed` を監査し、保留状態は残る |
+| 保留状態なし / 5 分の期限切れ / Cognito の Session 切れ | `303 /login?error=challenge_expired`。文言は「時間切れです。もう一度ログインしてください」 |
+| MFA 通過後に users が disabled、または同じメールが別の Cognito ユーザーに紐付いている | `303 /login?error=user_disabled` |
+
+#### GET `/api/login/mfa-setup?mid=&renew=` と POST `/login/mfa-setup`
+
+未登録の人の登録。`GET /api/login/mfa-setup` はパスワード認証で得た Cognito の Access Token で AssociateSoftwareToken を呼び、secret を暗号化して保留状態に置いてから `{ csrfToken, method: "totp", account, secret, otpauthUri, expiresAt, errorMessage? }` を返す。`otpauthUri` は `otpauth://totp/<issuer>:<email>?secret=<base32>&issuer=<issuer>&algorithm=SHA1&digits=6&period=30` で、SPA が QR コードにする。`expiresAt` は発行から 3 分の epoch 秒で、期限内に呼び直せば同じ secret、`renew=1` か期限切れなら新しい secret を返す。保留状態が無ければ 400 `{ error: "expired_request", message }`。
+
+`POST /login/mfa-setup` は `mid` `csrf` `code` を受け取り、VerifySoftwareToken で検証してから SetUserMFAPreference で TOTP を有効かつ優先にし、`/login/challenge` と同じ手順でログインを終えて `mfa_enrolled` を監査する。
+
+| 結果 | 応答 |
+| --- | --- |
+| 成功 | `/login/challenge` の成功と同じ。次のログインからは Cognito がチャレンジを返す |
+| コード不一致 | `303 /login/mfa-setup?mid=<mid>&error=code_mismatch`。同じ QR で再入力できる |
+| secret の 3 分の期限切れ | `303 /login/mfa-setup?mid=<mid>&error=setup_expired`。文言は「QR コードの有効期限が切れました。新しい QR コードを読み取ってください」。Cognito には送らない。SPA は残り時間が 0 になると `renew=1` で新しい QR を取り直す |
+| 保留状態なし / 5 分の期限切れ | `303 /login?error=challenge_expired` |
 
 Auth Server は全ルートで body を 16 KB に制限する。`/authorize` は IP あたり 120 回/分、`/token` と `/admin/*` は IP あたり 300 回/分、`/logout` と `GET /api/logout` は IP あたり 60 回/分に制限する。
 
@@ -446,7 +479,7 @@ Access Token の claims。
 
 `aud` の先頭は `oidc_clients.audience` で、サービスの API origin。crm 向けの Access Token を `api.cms.<domain>` に送ると aud 不一致で 401 になる。
 
-role も permission も Token に載せない。role は API Server が毎リクエスト自サービス DB の `members` から Token の `tenant_id` `sub` で取り、permission は役割の既定に `permission_overrides` の allow / deny を重ねて確定する。deny が優先する。Token 発行後に役割や権限が変わっても次のリクエストから反映される。サービスの割り当てを外されたユーザーは Refresh で `invalid_grant` になり、Access Token 寿命の 15 分以内に API を呼べなくなる。Auth Server はサービスごとの role や permission の名前を知らず、`client_id` と割り当てだけを扱う。
+role も permission も Token に載せない。role は API Server が毎リクエスト自サービス DB の `members` から Token の `tenant_id` `sub` で取り、permission は役割の既定に `permission_overrides` の allow / deny を重ねて確定する。deny が優先する。Token 発行後に役割や権限が変わっても次のリクエストから反映される。サービスの割り当てを外されたユーザーは、そのサービスとテナントの Refresh Token 系列が即時に失効し、そのサービスへの Back-Channel Logout でセッションが消える。発行済みの Access Token は寿命の 15 分まで残るが、セッションが消えているため BFF は使わない。Auth Server はサービスごとの role や permission の名前を知らず、`client_id` と割り当てだけを扱う。
 
 ### 5.4 Cookie
 
@@ -463,12 +496,14 @@ Cookie の値はすべてサーバー側ストアを指す乱数で、JWT やユ
 
 | ストア | キー | 内容 | TTL |
 | --- | --- | --- | --- |
-| SSO Session | `sso:sess:<id>` | sid、user_id、暗号化した Cognito Token、auth_time、lastSeenAt | 12 時間 |
-| code を発行した Client | `sso:clients:<id>` | その SSO Session に code を発行した client_id の集合。Global Logout の通知先 | 12 時間 |
-| 認可リクエスト | `sso:authreq:<rid>` | client_id、redirect_uri、scope、state、nonce、code_challenge | 30 分 |
-| Authorization Code | `sso:code:<code>` | client_id、redirect_uri、nonce、code_challenge、user_id、tenant_id、sid、used | 60 秒。使用済みは再利用検知のため 10 分保持 |
-| Refresh Token | `sso:rt:<token>` | family_id、client_id、user_id、tenant_id、sid、status | 12 時間 |
-| Refresh Token 系列 | `sso:rtfamily:<family_id>` | 系列に属する Refresh Token の集合。一括失効に使う | 12 時間 |
+| SSO Session | `sso:sess:<sha256(cookie の値)>` | sid、user_id、暗号化した Cognito Token、auth_time、lastSeenAt。Cookie の値は持たない | 12 時間 |
+| sid 逆引き | `sso:sid:<sid>` | sid → SSO Session のキー。Back-Channel Logout とセッションの失効に使う | 12 時間 |
+| code を発行した Client | `sso:clients:<SSO Session のキー>` | その SSO Session に code を発行した client_id の集合。Global Logout の通知先 | 12 時間 |
+| 認可リクエスト | `sso:authreq:<sha256(rid)>` | client_id、redirect_uri、scope、state、nonce、code_challenge | 30 分 |
+| Authorization Code | `sso:code:<sha256(code)>` | client_id、redirect_uri、nonce、code_challenge、user_id、tenant_id、sid、used。code の値は持たない | 60 秒。使用済みは再利用検知のため 10 分保持 |
+| Refresh Token | `sso:rt:<sha256(token)>` | family_id、client_id、user_id、tenant_id、sid、status。Token の値は持たない | 12 時間 |
+| Refresh Token 系列 | `sso:rtfamily:<family_id>` | 系列に属する Refresh Token のキーの集合。一括失効に使う | 12 時間 |
+| MFA の保留状態 | `sso:mfa:<sha256(mid)>` | パスワード認証のあと MFA を終えるまでの状態。登録済みなら Cognito の Session と試行回数、未登録なら暗号化した Cognito の Token と暗号化した登録中の secret と発行時刻。rid も持つ | 5 分。secret は 3 分で失効し再発行 |
 | Tenant Session | `<client_id>:sess:<tenant_slug>:<id>` | tenant_slug、user_id、tenant_id、sid、access_token、refresh_token、csrf_token | 12 時間 |
 | pre-auth | `<client_id>:pre:<tenant_slug>:<id>` | state、nonce、code_verifier、return_to | 30 分 |
 | sid 逆引き | `<client_id>:sid:sid:<sid>` | そのサービスの Tenant Session キーの集合。テナントをまたぐ | 12 時間 |
@@ -476,6 +511,7 @@ Cookie の値はすべてサーバー側ストアを指す乱数で、JWT やユ
 
 Tenant Session はサービスごとのストア `<client_id>:sess` に `<tenant_slug>:<id>` のキーで置くため、1 プロセスで複数テナントのホストを受けてもセッションが混ざらない。サービスの区別はストアのプレフィックスで行い、値には client_id を持たせない。sid 逆引きはサービス単位で、Back-Channel Logout がテナントをまたいで全セッションを消せるようにしている。
 一覧は Redis の Set に置き、SADD / SREM で更新する。値を読んで配列を書き戻す形にすると、並行する追加で片方が消える。一回限りの消費は Authorization Code も Refresh Token も `GETDEL` で行い、二重交換と二重 Refresh を排除する。ロックは SET NX で取る。
+Auth Server のストアのキーに秘密値をそのまま使わない。Cookie の値、Refresh Token、code、rid、CSRF の参照 ID は SHA-256 をキーにし、値にも生の秘密値を持たせない。Redis のダンプや `KEYS` の出力が漏れても、提示できる Cookie や Token を復元できない。乱数の値なので salt や KDF は要らない。
 
 ### 5.6 Identity DB
 
@@ -487,9 +523,15 @@ oidc_client_secrets    (id, oidc_client_id, secret_hash, status, created_at, rev
 tenant_services        (tenant_id, oidc_client_id, status)                    -- 契約。会社単位
 tenant_service_members (tenant_id, oidc_client_id, user_id, status)           -- サービスごとの割り当て。役割は持たない
 tenant_members         (tenant_id, user_id, role, status)                     -- 会社横断の役割。ログイン可否には使わない
+auth_sessions          (id, user_id, status, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason)  -- SSO Session の記録。id は sid
+auth_session_clients   (session_id, oidc_client_id, tenant_id, first_seen_at, last_seen_at)  -- その SSO Session で code を発行したサービスとテナント
+audit_events           (id, occurred_at, kind, user_id, session_id, tenant_id, client_id, ip, user_agent, detail JSONB)  -- 監査イベント
+user_mfa_methods       (user_id, method, enrolled_at)                          -- 登録済み MFA 方式。secret は持たない
 ```
 
 主キーはすべて ULID のサロゲート ID。`client_id` と `slug` は外部に見せる識別子で UNIQUE 制約で守り、外部キーは `oidc_clients.id` と `tenants.id` だけを参照する。`tenant_service_members` は `(tenant_id, oidc_client_id)` で `tenant_services` を参照する複合外部キーを持ち、契約のないサービスに人を割り当てられない。`users.cognito_sub` が正規のユーザー識別子で、招待で事前作成した行は初回ログインまで NULL。`users.email` は UNIQUE で、招待と初回ログインの突合キーになる。`users.id` は境界の外へ出す代理キーで、Client にはこちらを `sub` として渡す。
+
+`auth_sessions` はブラウザから作られた SSO Session の記録で、揮発ストアの寿命とは独立に残す。作成時と `/authorize` の到達時にブラウザの IP と User-Agent を記録し、前回と違えば `environment_changed` の監査イベントと警告ログを出す。それだけでは失効させない。`auth_session_clients` はそのセッションで code を発行したサービスとテナントで、ポータルの一覧と招待解除時の絞り込みに使う。`audit_events` はログインの成否、`/authorize` の到達、失効、Refresh Token と code の再利用検知、招待と解除、MFA を残す。Token 値、Cookie 値、パスワード、TOTP の secret は入れず、ログイン失敗はユーザー名を残さない。運用ログの保持期間に依存せず Identity DB に残る。
 
 サービス側の DB には、役割と権限の上書きを置く。Identity DB とは別のデータベースで、識別子は `user_id` と `tenant_id` の値だけを共有し外部キーは張らない。
 
@@ -533,7 +575,7 @@ cms DB members:              alice = tanaka owner
 cms DB permission_overrides: alice × tanaka → posts:create deny      (owner でも投稿を作れない)
 ```
 
-suzuki.cms は redirect_uri が cms のテンプレートに一致し suzuki も既知のテナントだが契約がない例で、`error=access_denied&error_description=not_contracted` になる。dave はモック Cognito にだけ存在し、サービスからの招待と初回ログインでの紐付けの確認に使う。
+suzuki.cms は redirect_uri が cms のテンプレートに一致し suzuki も既知のテナントだが契約がない例で、`error=access_denied&error_description=not_contracted` になる。dave はモック Cognito にだけ存在し、サービスからの招待と初回ログインでの紐付けの確認に使う。モックの Cognito は `MOCK_COGNITO_USERS` の `totpSecret` を持つ alice / bob / carol を認証アプリ登録済みとして扱い、dave は未登録で初回ログインに登録が入る。TOTP は本物の RFC 6238 で検証し、登録状態はプロセスのメモリに持つ。
 
 ### 5.7 API Server の認可順序
 
@@ -549,7 +591,7 @@ Host が自 API の公開 URL のホストと一致するか (違えば 404)
  → Repository は tenant_id を必須引数に取り、PostgreSQL では RLS で二重に絞る
 ```
 
-「入れるか」は Auth Server が Token 発行時と Refresh 時に判定済みで、API は Identity DB を見ない。割り当てを外された人は Refresh で `invalid_grant` になり、Access Token 寿命の 15 分以内に API を呼べなくなる。即時に止めたければサービス側で `members.status` を disabled にする。
+「入れるか」は Auth Server が Token 発行時と Refresh 時に判定済みで、API は Identity DB を見ない。割り当てを外された人は、そのサービスの Refresh Token 系列が即時に失効し、Back-Channel Logout でそのサービスのセッションが消える。発行済みの Access Token は寿命の 15 分まで残るため、API 側でも即時に止めたければサービス側で `members.status` を disabled にする。
 他テナントのリソース ID を指定された場合は 403 ではなく 404 を返し、存在の有無を漏らさない。
 
 サンドボックスの `packages/api-core` はこの順序を `ServiceDefinition` の宣言だけで提供する。サービスは役割の順序、既定の役割、権限、役割ごとの既定を宣言し、`members:read` `members:invite` `members:manage` は自動で足される。導入先で独自に実装する場合も同じ順序にする。
@@ -618,9 +660,21 @@ sequenceDiagram
     Auth->>Cognito: InitiateAuth AuthFlow=USER_SRP_AUTH<br/>{USERNAME, SRP_A, SECRET_HASH}
     Cognito-->>Auth: ChallengeName=PASSWORD_VERIFIER {SRP_B, SALT, SECRET_BLOCK}
     Auth->>Cognito: RespondToAuthChallenge<br/>{PASSWORD_CLAIM_SIGNATURE, PASSWORD_CLAIM_SECRET_BLOCK, TIMESTAMP}
+    Cognito-->>Auth: ChallengeName=SOFTWARE_TOKEN_MFA, Session=CS1<br/>alice は認証アプリを登録済み
+    Auth->>Store: MFA の保留状態 sso:mfa:<sha256(M1)> {kind:totp_challenge, username, cognitoSession:CS1, rid:R1, attempts:0} TTL 5分
+    Auth-->>Browser: 303 /login/challenge?mid=M1
+    Browser->>Auth: GET /login/challenge?mid=M1 → 200 SPA の index.html
+    Browser->>Auth: GET /api/login/challenge?mid=M1
+    Auth-->>Browser: 200 {csrfToken:T2, method:"totp"}<br/>Set-Cookie: __Host-auth_csrf=X2
+    Note over Browser: SPA が「認証コードを入力」を描く (hidden: mid=M1, csrf=T2)
+    Browser->>Auth: POST /login/challenge  mid=M1&csrf=T2&code=123456<br/>HTML フォームの POST
+    Auth->>Store: X2 の token と T2 を比較。M1 の保留状態を取得
+    Auth->>Cognito: RespondToAuthChallenge {ChallengeName:SOFTWARE_TOKEN_MFA, Session:CS1, SOFTWARE_TOKEN_MFA_CODE}
     Cognito-->>Auth: AuthenticationResult {AccessToken, IdToken, RefreshToken}
+    Auth->>Store: M1 を削除
     Auth->>Auth: Cognito IdToken を Cognito JWKS で検証<br/>iss / aud / exp / token_use=id
     Auth->>IdDB: users を cognito_sub で検索<br/>なければ同じメールで cognito_sub が NULL の行に紐付け<br/>それもなければ JIT 作成
+    Auth->>IdDB: user_mfa_methods に (user_id, totp) を記録
     Auth->>Store: SSO Session 作成 {id:SS1, sid:SID1, user_id, 暗号化 Cognito Token, auth_time} TTL 12時間
     Auth->>Store: Cookie が指す旧 SSO Session があれば削除
     Auth->>IdDB: users.status → tenants.status (tanaka) → tenant_services (tanaka, crm) → tenant_service_members (tanaka, crm, user_id)
@@ -1096,7 +1150,7 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | # | 確認事項 | 影響 |
 | --- | --- | --- |
 | 1 | Cognito User Pool の構成 | Pool 分割の要否、App Client の secret と認証フロー設定 |
-| 2 | Cognito の認証方式 | USER_SRP_AUTH が有効か。MFA の有無でログインシーケンスが変わる |
+| 2 | Cognito の認証方式と MFA 設定 | USER_SRP_AUTH が有効か。User Pool の MFA が ON だと未登録の人に MFA_SETUP チャレンジが返り、本設計の OPTIONAL + Auth Server による必須化と経路が変わる。既存の登録済みユーザーは SOFTWARE_TOKEN_MFA のチャレンジでそのまま `/login/challenge` に乗る |
 | 3 | 現在のログイン処理 | Auth Server のログインへ移す範囲 |
 | 4 | Cognito Token の利用箇所 | ブラウザや別サービスに Cognito JWT を渡している箇所は全廃対象 |
 | 5 | Cookie 設計 | `domain` 属性付き Cookie の廃止、Cookie 名の衝突 |
@@ -1176,10 +1230,18 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `docs/requirements.md` | 仕様書全文 |
 | `docs/design/00` 〜 `11` | 判断事項、構成、シーケンス、Cookie、Token、DB、Client、API 認可、セキュリティ、エラー一覧、Logout、テスト計画 |
 | `docs/deploy.md` | AWS 構成と手順 |
-| `db/identity/init/002_identity.sql` `003_seed.sql` | Identity DB。サービス、client_secret、テナント、契約、サービスごとの割り当て、会社横断の役割のスキーマとシード。redirect_uri はサービスの `redirect_uri_template` 列。割り当てに役割はない |
+| `db/identity/init/002_identity.sql` `003_seed.sql` | Identity DB。サービス、client_secret、テナント、契約、サービスごとの割り当て、会社横断の役割のスキーマとシード。redirect_uri はサービスの `redirect_uri_template` 列。割り当てに役割はない。SSO Session の記録 `auth_sessions` `auth_session_clients`、監査イベント `audit_events`、MFA 方式 `user_mfa_methods` も同じ SQL |
+| `apps/auth-api/src/domain/audit.ts` `apps/auth-api/src/domain/session.ts` `apps/auth-api/src/application/usecases/audit.ts` `apps/auth-api/src/application/usecases/sso-session.ts` | 監査イベントの種類、セッションの記録と環境の比較、`recordAudit`、SSO Session の作成と `/authorize` 到達時の記録。`infrastructure/pg-session-repository.ts` が pg 実装 |
+| `apps/auth-api/src/application/usecases/global-logout.ts` | `revokeSsoSession` に失効の手順をまとめる。Global Logout、ポータルからの sid 指定の失効 `revokeSessionBySid`、招待解除でそのサービスとテナントだけを切る `revokeClientAccess` |
+| `apps/auth-api/src/interface/http/routes/sessions.ts` `apps/auth-web/app/features/security/security.route.tsx` | `GET /api/sessions` と `POST /sessions/revoke` と、MFA の登録状況とセッションの一覧と失効を描く `/security` の画面 |
+| `apps/auth-api/src/application/usecases/store-keys.ts` `packages/shared/src/secret-hash.ts` | 揮発ストアのキーにする SHA-256。`keyOf` と `keyDigest` |
 | `db/crm/init/002_schema.sql` `003_seed.sql` `db/cms/init/002_schema.sql` `003_seed.sql` | サービスごとの DB。`members` と `permission_overrides` と業務テーブル、FORCE ROW LEVEL SECURITY、所有者と分けた NOBYPASSRLS のアプリロール。`001_roles.sql` はローカル専用で、AWS では `tools/provision` がロールを作って同じ SQL を適用する |
 | `apps/auth-api/src/interface/http/routes/admin.ts` `apps/auth-api/src/application/usecases/service-members.ts` | サービス向けの管理 API。client_secret_basic で認証し、自サービスへの割り当てだけを操作させる。メールでの事前作成 |
-| `apps/auth-api/src/application/usecases/login.ts` | ログイン時の users の解決。cognito_sub → メールでの紐付け → JIT 作成 |
+| `apps/auth-api/src/application/usecases/login.ts` | パスワード認証と MFA の保留状態の作成、MFA を終えたあとの users の解決。cognito_sub → メールでの紐付け → JIT 作成 |
+| `apps/auth-api/src/application/usecases/mfa.ts` `apps/auth-api/src/domain/policy.ts` | 認証アプリのチャレンジ `completeTotpChallenge`、登録の開始 `beginTotpSetup` と完了 `completeTotpSetup`。保留状態 5 分、QR と secret 3 分、発行者名の定義 |
+| `apps/auth-api/src/application/ports/cognito.ts` `apps/auth-api/src/infrastructure/cognito-sdk.ts` `apps/auth-api/src/infrastructure/mock-cognito.ts` | Cognito の port と実装。`authenticate` が `authenticated` か `totp_required` を返し、`respondToTotp` `associateSoftwareToken` `verifySoftwareToken` `enableTotp` を持つ。モックは本物の TOTP で検証し登録状態をメモリに持つ |
+| `packages/shared/src/totp.ts` | RFC 6238 の TOTP。HMAC-SHA1、6 桁、30 秒、前後 1 ステップの許容、base32、otpauth URI。モックの Cognito、テスト、chrome-check が共有する |
+| `apps/auth-api/src/interface/http/routes/login.ts` `apps/auth-web/app/features/login/challenge.route.tsx` `apps/auth-web/app/features/login/mfa-setup.route.tsx` | `/login` `/login/challenge` `/login/mfa-setup` と `/api/login/*` と、「認証コードを入力」「認証アプリを登録」の画面。登録画面は QR コードと残り時間のプログレスバーを描き、期限が来たら `renew=1` で取り直す |
 | `packages/shared/src/redirect-template.ts` `packages/shared/src/secret-hash.ts` | redirect_uri テンプレートの照合と展開、client_secret の SHA-256 ハッシュと複数 secret の照合 |
 | `packages/shared/src/kv-store.ts` `packages/shared/src/rate-limit.ts` | `KeyValueStore` の `getAndDelete` / `setIfAbsent`、`SetStore`、`CounterStore` と、固定窓のレート制限ミドルウェア。Redis 実装は `redis-store.ts` |
 | `packages/shared/src/jwks.ts` | JWKS の取得と JWT 検証。10 分キャッシュ、未知の kid での 1 回再取得、60 秒の再取得制限、同時要求の集約、失敗時のキャッシュ利用。Auth Server の Cognito 検証、OIDC Client、API Server が共有する |
@@ -1194,7 +1256,7 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `packages/api-core/src/application/members.ts` `packages/api-core/src/interface/http/routes/members.ts` `packages/api-core/src/infrastructure/auth-admin-client.ts` | 管理アカウントの一覧、招待、役割変更、権限の上書き、削除。招待と削除は Auth Server の管理 API を client_secret_basic で呼ぶ |
 | `apps/crm-api/src/definition.ts` `apps/cms-api/src/definition.ts` | サービスごとの役割と権限の宣言。CRM は owner / admin / member / viewer と `end_users:*`、CMS は owner / editor / viewer と `posts:*` |
 | `scripts/smoke.ts` | 実 HTTP での受け入れ確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービス SSO と未契約サービスの拒否まで通す |
-| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する 16 項目。フォームの検証エラー、作成、削除、セキュリティ画面も含む。CSP のような fetch では見えない問題を検出する |
+| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する 17 項目。認証アプリのチャレンジ、フォームの検証エラー、作成、削除、セキュリティ画面も含む。CSP のような fetch では見えない問題を検出する |
 
 ## 11. 用語
 

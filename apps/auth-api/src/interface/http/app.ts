@@ -61,7 +61,9 @@ export function createAuthApp(options: AuthAppOptions): Hono {
   // レート制限。IP 単位を基本にし、ログイン試行はユーザー名でも絞る
   const loginLimit = rateLimit("login", { store: deps.stores.rateLimits, ...RATE_LIMITS.login });
   app.use("/login", loginLimit);
+  app.use("/login/*", loginLimit);
   app.use("/api/login", loginLimit);
+  app.use("/api/login/*", loginLimit);
   app.post(
     "/login",
     rateLimit("login-user", {

@@ -77,3 +77,12 @@ export interface PortalEntry {
   readonly tenant: Tenant;
   readonly services: ReadonlyArray<PortalService>;
 }
+
+/** MFA の方式。初期は TOTP だけで、Passkey などはここに足す */
+export type MfaMethod = "totp";
+
+export interface UserMfaMethod {
+  readonly method: MfaMethod;
+  /** epoch 秒 */
+  readonly enrolledAt: number;
+}

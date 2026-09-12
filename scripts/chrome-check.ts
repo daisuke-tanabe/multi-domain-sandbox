@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { generateTotp } from "../packages/shared/src/index.ts";
 import {
   AUTH_ORIGIN,
+  MOCK_TOTP_SECRETS,
   SEED_USER_PASSWORD,
   SUZUKI_CMS_ORIGIN,
   SUZUKI_CRM_ORIGIN,
@@ -193,6 +195,17 @@ try {
   await cdp.evaluate(`document.querySelector('input[name=username]').value = 'alice'`);
   await cdp.evaluate(
     `document.querySelector('input[name=password]').value = ${JSON.stringify(SEED_USER_PASSWORD)}`,
+  );
+  await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
+  // MFA は全員必須。alice は登録済みなので認証アプリのコードを求められる
+  const challengeBody = await cdp.waitForText("認証コードを入力");
+  check(
+    "password login is followed by the authenticator code challenge",
+    challengeBody.includes("認証コードを入力"),
+    String(await cdp.evaluate("location.href")),
+  );
+  await cdp.evaluate(
+    `document.querySelector('input[name=code]').value = ${JSON.stringify(generateTotp(MOCK_TOTP_SECRETS.alice ?? "", Math.floor(Date.now() / 1000)))}`,
   );
   await cdp.navigateWith(() => cdp.evaluate("document.querySelector('form').submit()"));
   const afterLoginBody = await cdp.waitForText("としてログインしています");

@@ -7,6 +7,11 @@ const mockUserSchema = z.object({
   sub: z.string().min(1),
   email: z.string().email(),
   name: z.string().optional(),
+  /** 登録済みの認証アプリの secret。base32。無ければ初回ログインで登録する */
+  totpSecret: z
+    .string()
+    .regex(/^[A-Z2-7]+$/)
+    .optional(),
 });
 
 const baseSchema = z.object({

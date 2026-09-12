@@ -92,3 +92,13 @@ export {
 } from "./redis-store.ts";
 export { spaOptionsFromEnv, spaCsp, inlineScriptHashes, mountSpa } from "./spa.ts";
 export type { SpaOptions, SpaCsp } from "./spa.ts";
+export {
+  TOTP_DIGITS,
+  TOTP_STEP_SECONDS,
+  base32Decode,
+  base32Encode,
+  generateTotp,
+  generateTotpSecret,
+  otpauthUri,
+  verifyTotp,
+} from "./totp.ts";

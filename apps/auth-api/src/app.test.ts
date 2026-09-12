@@ -1,6 +1,7 @@
-import { keyDigest, toJwks, verifyJwt, MemoryKeyValueStore } from "@sandbox/shared";
+import { generateTotp, keyDigest, toJwks, verifyJwt, MemoryKeyValueStore } from "@sandbox/shared";
 import { beforeEach, describe, expect, test } from "vitest";
 import {
+  MOCK_TOTP_SECRETS,
   ALICE_ID,
   CRM_AUDIENCE,
   CMS_AUDIENCE,
@@ -13,6 +14,7 @@ import {
   createHarness,
   exchangeCode,
   ISSUER,
+  completeMfa,
   readLoginContext,
   readJson,
   readTokenBody,
@@ -104,7 +106,7 @@ describe("first login via tenant-a", () => {
       new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
     const { csrf, cookie: csrfCookie } = await readLoginContext(harness, rid);
 
-    const res = await harness.app.request(`${ISSUER}/login`, {
+    const passwordRes = await harness.app.request(`${ISSUER}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookie },
       body: new URLSearchParams({
@@ -114,7 +116,13 @@ describe("first login via tenant-a", () => {
         password: "alice-password",
       }).toString(),
     });
+    // パスワードだけでは SSO Cookie は出ない。認証アプリのコードを通してから出る
+    const { response: res } = await completeMfa(harness, passwordRes, csrfCookie, "alice");
 
+    expect(passwordRes.headers.get("Location")).toMatch(/^\/login\/challenge\?mid=/);
+    expect(passwordRes.headers.getSetCookie().some((c) => c.startsWith("sso_session="))).toBe(
+      false,
+    );
     const ssoCookie = res.headers.getSetCookie().find((c) => c.startsWith("sso_session=")) ?? "";
     expect(ssoCookie).toMatch(/HttpOnly/i);
     expect(ssoCookie).toMatch(/SameSite=Lax/i);
@@ -650,7 +658,7 @@ describe("portal", () => {
     const { csrf, cookie: csrfCookie } = await readLoginContext(harness, "");
 
     // Act
-    const login = await harness.app.request(`${ISSUER}/login`, {
+    const passwordRes = await harness.app.request(`${ISSUER}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: csrfCookie },
       body: new URLSearchParams({
@@ -660,7 +668,12 @@ describe("portal", () => {
         password: "alice-password",
       }).toString(),
     });
-    const cookie = cookieHeaderFrom(login, csrfCookie);
+    const { response: login, cookie } = await completeMfa(
+      harness,
+      passwordRes,
+      csrfCookie,
+      "alice",
+    );
     const portal = await harness.app.request(`${ISSUER}/api/portal`, {
       headers: { Cookie: cookie },
     });
@@ -1096,5 +1109,162 @@ describe("sessions and audit", () => {
 
     expect(bobStillIn.headers.get("Location")).toContain("code=");
     expect(harness.sessions.all().find((s) => s.id === bobSid)?.status).toBe("active");
+  });
+});
+
+describe("multi-factor authentication", () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  const passwordLogin = async (username: string, password: string) => {
+    const { url } = authorizeUrl();
+    const authorizeRes = await harness.app.request(url);
+    const rid =
+      new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
+    const { csrf, cookie } = await readLoginContext(harness, rid);
+    const res = await harness.app.request(`${ISSUER}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      body: new URLSearchParams({ rid, csrf, username, password }).toString(),
+    });
+    const location = new URL(res.headers.get("Location") ?? "", ISSUER);
+    return {
+      res,
+      cookie: cookieHeaderFrom(res, cookie),
+      mid: location.searchParams.get("mid") ?? "",
+      path: location.pathname,
+    };
+  };
+
+  const postCode = async (path: string, cookie: string, mid: string, code: string) => {
+    const api = path === "/login/challenge" ? "/api/login/challenge" : "/api/login/mfa-setup";
+    const context = await harness.app.request(`${ISSUER}${api}?mid=${mid}`, {
+      headers: { Cookie: cookie },
+    });
+    const body = await readJson(context);
+    const res = await harness.app.request(`${ISSUER}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: cookieHeaderFrom(context, cookie),
+      },
+      body: new URLSearchParams({ mid, csrf: String(body.csrfToken), code }).toString(),
+    });
+    return { res, body, cookie: cookieHeaderFrom(res, cookieHeaderFrom(context, cookie)) };
+  };
+
+  test("an enrolled user must enter the authenticator code and a wrong code is refused and audited", async () => {
+    const first = await passwordLogin("alice", "alice-password");
+    const wrong = await postCode(first.path, first.cookie, first.mid, "000000");
+    const right = await postCode(
+      first.path,
+      first.cookie,
+      first.mid,
+      generateTotp(MOCK_TOTP_SECRETS.alice ?? "", harness.clock.nowSeconds()),
+    );
+
+    expect(first.path).toBe("/login/challenge");
+    expect(wrong.res.headers.get("Location")).toBe(
+      `/login/challenge?mid=${encodeURIComponent(first.mid)}&error=code_mismatch`,
+    );
+    expect(harness.audit.ofKind("mfa_challenge_failed")).toHaveLength(1);
+    expect(right.res.headers.get("Location")).toContain("code=");
+    expect(right.res.headers.getSetCookie().some((c) => c.startsWith("sso_session="))).toBe(true);
+    expect(harness.audit.ofKind("login_succeeded")[0]?.detail).toEqual({ mfa: "totp" });
+  });
+
+  test("a user without an authenticator enrolls with a QR secret before the first session and is challenged next time", async () => {
+    // dave は招待済みだが認証アプリを登録していない
+    await harness.app.request(`${ISSUER}/admin/service-members`, {
+      method: "POST",
+      headers: { Authorization: basicAuth("crm"), "Content-Type": "application/json" },
+      body: JSON.stringify({ tenant_id: TANAKA_ID, email: "dave@example.com", name: "Dave" }),
+    });
+    const first = await passwordLogin("dave", "dave-password");
+    const setup = await harness.app.request(`${ISSUER}/api/login/mfa-setup?mid=${first.mid}`, {
+      headers: { Cookie: first.cookie },
+    });
+    const setupBody = await readJson(setup);
+    const secret = String(setupBody.secret);
+    const enrolled = await postCode(
+      first.path,
+      cookieHeaderFrom(setup, first.cookie),
+      first.mid,
+      generateTotp(secret, harness.clock.nowSeconds()),
+    );
+    const security = await readJson(
+      await harness.app.request(`${ISSUER}/api/sessions`, { headers: { Cookie: enrolled.cookie } }),
+    );
+    const second = await passwordLogin("dave", "dave-password");
+
+    expect(first.path).toBe("/login/mfa-setup");
+    expect(setupBody.otpauthUri).toContain("otpauth://totp/Sandbox%3Adave%40example.com?secret=");
+    expect(Number(setupBody.expiresAt)).toBe(harness.clock.nowSeconds() + 3 * 60);
+    expect(enrolled.res.headers.get("Location")).toContain("code=");
+    expect(harness.audit.ofKind("mfa_enrolled")).toHaveLength(1);
+    expect(security.mfa_methods).toEqual([
+      { method: "totp", enrolled_at: harness.clock.nowSeconds() },
+    ]);
+    expect(second.path).toBe("/login/challenge");
+  });
+
+  test("an expired QR code is replaced by a new secret and the old code stops working", async () => {
+    // 未登録の dave で試す。招待していないので JIT 作成になる
+    const dave = await passwordLogin("dave", "dave-password");
+    const setupRes = await harness.app.request(`${ISSUER}/api/login/mfa-setup?mid=${dave.mid}`, {
+      headers: { Cookie: dave.cookie },
+    });
+    const setup = await readJson(setupRes);
+    const cookie = cookieHeaderFrom(setupRes, dave.cookie);
+    harness.clock.advance(3 * 60 + 1);
+
+    // 画面を取り直さずに古い QR のコードを送ると期限切れになる
+    const expired = await harness.app.request(`${ISSUER}/login/mfa-setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      body: new URLSearchParams({
+        mid: dave.mid,
+        csrf: String(setup.csrfToken),
+        code: generateTotp(String(setup.secret), harness.clock.nowSeconds()),
+      }).toString(),
+    });
+    // 取り直すと新しい secret になり、その secret のコードで登録できる
+    const renewed = await readJson(
+      await harness.app.request(`${ISSUER}/api/login/mfa-setup?mid=${dave.mid}&renew=1`, {
+        headers: { Cookie: cookie },
+      }),
+    );
+    const done = await postCode(
+      dave.path,
+      cookie,
+      dave.mid,
+      generateTotp(String(renewed.secret), harness.clock.nowSeconds()),
+    );
+
+    expect(dave.path).toBe("/login/mfa-setup");
+    expect(expired.headers.get("Location")).toBe(
+      `/login/mfa-setup?mid=${encodeURIComponent(dave.mid)}&error=setup_expired`,
+    );
+    expect(renewed.secret).not.toBe(setup.secret);
+    expect(Number(renewed.expiresAt)).toBe(harness.clock.nowSeconds() + 3 * 60);
+    // dave は招待していないので code は出ないが、登録とログイン自体は完了して callback に戻る
+    expect(done.res.headers.get("Location")).toContain(TANAKA_CRM_REDIRECT);
+    expect(done.res.headers.getSetCookie().some((c) => c.startsWith("sso_session="))).toBe(true);
+    expect(harness.audit.ofKind("mfa_setup_expired")).toHaveLength(1);
+  });
+
+  test("a pending challenge expires and sends the user back to the login screen", async () => {
+    const first = await passwordLogin("alice", "alice-password");
+    harness.clock.advance(5 * 60 + 1);
+    const late = await postCode(
+      first.path,
+      first.cookie,
+      first.mid,
+      generateTotp(MOCK_TOTP_SECRETS.alice ?? "", harness.clock.nowSeconds()),
+    );
+    expect(late.res.headers.get("Location")).toBe("/login?error=challenge_expired");
   });
 });

@@ -34,8 +34,9 @@ export function sessionRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
     noStore(c);
     const session = await loadSsoSession(deps, readSsoCookie(c, policy));
     if (session === undefined) return c.json({ error: "unauthenticated" }, 401);
-    const [sessions, csrf] = await Promise.all([
+    const [sessions, mfaMethods, csrf] = await Promise.all([
       listUserSessions(deps, session.userId),
+      deps.identity.listMfaMethods(session.userId),
       issueCsrfToken(deps),
     ]);
     writeCsrfCookie(c, policy, csrf.cookieValue);
@@ -54,6 +55,7 @@ export function sessionRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
           tenant_name: service.tenantName,
         })),
       })),
+      mfa_methods: mfaMethods.map((m) => ({ method: m.method, enrolled_at: m.enrolledAt })),
       csrfToken: csrf.formToken,
     } satisfies SessionsResponse);
   });

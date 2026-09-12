@@ -80,10 +80,29 @@ export default function Security({ loaderData }: Route.ComponentProps) {
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold">セキュリティ</h1>
         <p className="text-sm text-muted-foreground">
-          ログイン中のセッション。見覚えのない端末があれば失効する。
+          多要素認証の登録状況とログイン中のセッション。見覚えのない端末があれば失効する。
         </p>
       </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>多要素認証</CardTitle>
+          <CardDescription>ログインのたびに認証アプリのコードを求める。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ul className="space-y-1 text-sm">
+            {loaderData.mfa_methods.map((method) => (
+              <li key={method.method} className="flex items-center gap-2">
+                <Badge variant="secondary">認証アプリ</Badge>
+                <span className="text-muted-foreground">
+                  {formatTime(method.enrolled_at)} に登録
+                </span>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
       <div className="space-y-4">
+        <h2 className="text-lg font-medium">ログイン中のセッション</h2>
         {loaderData.sessions.map((session) => (
           <SessionCard key={session.id} session={session} csrfToken={loaderData.csrfToken} />
         ))}

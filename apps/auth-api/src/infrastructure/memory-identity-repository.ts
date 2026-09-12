@@ -1,5 +1,7 @@
 import { expandRedirectUriTemplate } from "@sandbox/shared";
 import type {
+  MfaMethod,
+  UserMfaMethod,
   Contract,
   NewUser,
   OidcClient,
@@ -41,6 +43,22 @@ export class MemoryIdentityRepository implements IdentityRepository {
 
   public async listClients(): Promise<ReadonlyArray<OidcClient>> {
     return this.data.clients;
+  }
+
+  private readonly mfaMethods = new Map<string, UserMfaMethod[]>();
+
+  public async listMfaMethods(userId: string): Promise<ReadonlyArray<UserMfaMethod>> {
+    return this.mfaMethods.get(userId) ?? [];
+  }
+
+  public async recordMfaMethod(
+    userId: string,
+    method: MfaMethod,
+    enrolledAt: number,
+  ): Promise<void> {
+    const existing = this.mfaMethods.get(userId) ?? [];
+    if (existing.some((m) => m.method === method)) return;
+    this.mfaMethods.set(userId, [...existing, { method, enrolledAt }]);
   }
 
   public async findUserByCognitoSub(cognitoSub: string): Promise<User | undefined> {

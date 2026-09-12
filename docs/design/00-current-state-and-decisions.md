@@ -13,6 +13,8 @@ DB はサービスごとに分け、identity は「入れるか」だけを持�
 Tenant Web Application の画面は React Router v8 の SPA とし、薄い BFF が `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担う。SPA は Token を見ない。判断事項D18。
 auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api が同一オリジンで配る。資格情報の送信は HTML フォーム POST を維持し、エラー画面はサーバー HTML のまま。判断事項D19。
 フロントは shadcn/ui + Tailwind v4 + react-hook-form で、画面は feature 単位のコロケーション。型共有は packages/api-contract の zod スキーマ。バックエンドはクリーンアーキテクチャの 4 層。判断事項D20。
+SSO Session は Identity DB に記録して監査イベントを残し、本人がポータルで他の端末を失効できる。招待の解除はそのサービスの Refresh Token 系列を即時に失効させる。揮発ストアのキーは秘密値の SHA-256 にする。異常な環境は記録と警告に留め、自動失効しない。判断事項D21。
+MFA は全員必須。初期方式は認証アプリの TOTP で、Cognito は OPTIONAL にし必須化は auth-api が行う。QR は 3 分で失効し再発行する。方式は MfaMethod で拡張し、テナント別の方針は将来。判断事項D22。
 アーキテクチャを左右する判断が4件ある。以下の「人間の判断が必要な事項」を確認してから実装に進む。
 
 ## 1. 現状分析
@@ -81,7 +83,7 @@ auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api �
 | 追加 | ID Token の sub は内部の users.id |
 | 追加 | 検証実装の Cognito はモックアダプタのみ。本番アダプタは雛形のみ |
 | 追加 | 検証実装の DB は PostgreSQL on Docker。RLS を検証する |
-| 追加 | MFA はフェーズ2。Global Logout は当初フェーズ2としたが、Tenant Logout 後に再ログインされる挙動が分かりにくいため 2026-09-09 に前倒しで実装 |
+| 追加 | MFA は当初フェーズ2としたが、2026-09-12 に D22 で全員必須として実装。Global Logout は当初フェーズ2としたが、Tenant Logout 後に再ログインされる挙動が分かりにくいため 2026-09-09 に前倒しで実装 |
 | D13 | OIDC Client はサービス単位。テナントは顧客としてサービス横断で共有し、契約 tenant_services で利用可否を判定。2026-09-11 決定 |
 | D14 | apps はサービスごとに web と api を 1 組ずつ持ち、実装は packages/web-core と packages/api-core に共有する。auth は auth-api に改名。2026-09-11 決定 |
 | D15 | Identity DB の主キーはサロゲート ID。redirect_uri はサービスごとの `redirect_uri_template`。client_secret は oidc_client_secrets に複数行持ちローテーション可能。ハッシュは SHA-256。2026-09-11 決定 |
@@ -90,6 +92,8 @@ auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api �
 | D18 | `*-web` の画面は React Router v8 の SPA モード。`packages/web-core` の BFF は `/auth/*`、`/session`、`/api/*` の中継、SPA の配信だけを担い、Token をブラウザへ出さない。共通の React コードは `packages/web-ui`。2026-09-11 決定。auth の画面は D19 で SPA にした |
 | D19 | auth の画面も React Router v8 の SPA。apps/auth-web を auth-api が同一オリジンで配る。資格情報の送信は HTML フォーム POST を維持。エラー画面はサーバー HTML のまま。2026-09-12 決定 |
 | D20 | フロントは shadcn/ui + Tailwind v4 + react-hook-form、feature 単位のコロケーション。型共有は packages/api-contract の zod スキーマ。バックエンドはクリーンアーキテクチャの 4 層。2026-09-12 決定 |
+| D21 | セッションの記録と監査、招待解除の即時失効、ストアのキーのハッシュ化。異常な環境は記録と警告に留め自動失効しない。2026-09-12 決定 |
+| D22 | MFA は全員必須。初期方式は認証アプリの TOTP。Cognito は OPTIONAL にし必須化は auth-api が行う。QR は 3 分で失効し再発行。方式は MfaMethod で拡張。テナント別の方針は将来。2026-09-12 決定 |
 
 ### D1. Tenant Web Applicationの実行形態
 
@@ -139,7 +143,7 @@ auth の画面も React Router v8 の SPA とし、apps/auth-web を auth-api �
 
 ### D5. Cognito App Clientの認証設定
 
-推奨。USER_SRP_AUTH を有効化し、App Clientはsecret付きで作成する。Auth Serverはサーバーサイドで SECRET_HASH を計算して呼び出す。USER_PASSWORD_AUTH はパスワードを平文でCognitoへ送るため無効化する。MFAはフェーズ2で対応し、初期はチャレンジが返ったらエラー扱いにする。
+推奨。USER_SRP_AUTH を有効化し、App Clientはsecret付きで作成する。Auth Serverはサーバーサイドで SECRET_HASH を計算して呼び出す。USER_PASSWORD_AUTH はパスワードを平文でCognitoへ送るため無効化する。MFA は当初フェーズ2とし、チャレンジが返ったらエラー扱いにしていたが、D22 で認証アプリの TOTP を全員必須として実装した。User Pool の MFA は OPTIONAL にし、software token MFA を有効にする。SOFTWARE_TOKEN_MFA 以外のチャレンジは引き続き `challenge_required` のエラー扱い。
 
 ### D6. セッション寿命
 
@@ -411,6 +415,86 @@ D18 の時点では auth-api のログイン、ポータル、Global Logout の�
 - 画面の文言のうちテストと `scripts/chrome-check.ts` が参照するものは `CONTENT.md` の「変えてはいけない文言」に列挙し、変えるときはスクリプトも同じコミットで直す。見た目の規約は `DESIGN.md`
 - `scripts/chrome-check.ts` は空のエンドユーザーフォームを送って項目ごとに `[data-slot=field-error]` が出ること、入力して一覧に加わることを確認する項目を加え 14 項目になった。vitest は 136 件のまま
 
+### D21. セッションの記録と監査、招待解除の即時失効、ストアのキーのハッシュ化
+
+問題点。D20 までの SSO Session は揮発ストアにしかなく、誰がいつどの端末からログインしてどのサービスに入ったかを後から答えられなかった。本人が自分のセッションを見る手段も、見覚えのない端末を切る手段もなかった。招待の解除は identity の割り当てを消すだけで、その人の Refresh Token 系列は Refresh で拒否されるまで残り、最大 15 分は API を呼べた。Refresh Token、SSO Session の Cookie の値、code、rid、CSRF の参照 ID は平文のまま Redis のキーになっており、ストアの読み取りが漏れるとそのまま提示できる値になっていた。08 の未対応にこの 2 件を挙げていた。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| セッションの記録 | A. Identity DB に `auth_sessions` と `auth_session_clients` を持ち、作成と `/authorize` の到達で IP、User-Agent、入ったサービスとテナントを記録する。揮発ストアの SsoSession は変えない | 揮発ストアの寿命とは独立に記録が残る。ポータルの一覧と招待解除の絞り込みに使える。`/token` の経路は触らない | ログインと `/authorize` で Identity DB への書き込みが増える |
+| セッションの記録 | B. 揮発ストアの SsoSession に IP と User-Agent を足す | 表が増えない | 期限が来ると消え、監査に使えない。一覧を作るには全キーの走査が要る |
+| 監査 | A. Identity DB に `audit_events` を持ち、kind の判別共用体で構造化して残す。侵害の兆候になる kind は警告ログにも出す | 運用ログの保持期間に依存しない。将来のリスクベース認証が読める形で残る。記録の失敗でユーザーの操作を止めない | 表と書き込みが増える |
+| 監査 | B. 構造化ログだけに出す | 実装が要らない | CloudWatch の保持期間で消える。ログ基盤の検索に依存する |
+| 異常な環境 | A. IP か User-Agent が前回と違えば `environment_changed` を記録して警告するだけで、失効はしない。Refresh Token の再利用や別 Client からの提示のような強い侵害シグナルだけを即時失効にする | モバイル回線の切り替えやブラウザの更新で正規の利用者が落ちない。判定の材料は残るため、後からリスクベースの再認証を足せる | 乗っ取られたセッションを自動では切らない。本人の失効か Global Logout に頼る |
+| 異常な環境 | B. 変化を検知したら失効させる | 乗っ取りを自動で切れる | 誤検知で正規の利用者が落ちる。IP は NAT と回線で頻繁に変わり、User-Agent はブラウザの更新で変わる |
+| 本人の失効 | A. ポータルの `/security` で `auth_sessions` の一覧を出し、`POST /sessions/revoke` で自分の他の端末を Global Logout と同じ手順で失効させる | 見覚えのない端末を本人が切れる。失効の手順が Global Logout と同じで新しい経路を作らない | 画面と 2 つのエンドポイントが増える |
+| 本人の失効 | B. Global Logout だけにする | 追加がない | 自分の端末も一緒に落ちる。どの端末があるか見えない |
+| 招待の解除 | A. 割り当てを消すと同時に、その人の SSO Session のうちそのサービスとテナントに入っているものの Refresh Token 系列を失効させ、そのサービスへ Back-Channel Logout を送る。SSO Session と他のサービスは残す | 解除が即時に効く。他のサービスに影響しない | 系列ごとの client と tenant の判定と、サービス単位の Back-Channel が同サービスの他テナントの Tenant Session も消す。割り当てが残っていれば無画面復帰する |
+| 招待の解除 | B. SSO Session ごと失効させる | 実装が簡単 | 他のサービスからも落ちる。CRM から外しただけで CMS の作業が中断する |
+| 招待の解除 | C. 従来どおり Refresh で拒否する | 追加がない | 最大 15 分は API を呼べる。08 の未対応に残る |
+| ストアのキー | A. Cookie の値、Refresh Token、code、rid、CSRF の参照 ID は `keyDigest` の SHA-256 をキーにし、値にも生の秘密値を持たせない | ストアの読み取りが漏れても提示できる値を復元できない。乱数の値なので salt や KDF は要らない | `sid` からの逆引きに `sso:sid` が要る。既存のストアのデータと互換がない |
+| ストアのキー | B. 平文のキーのまま | 変更がない | Redis のダンプや `KEYS` の出力がそのまま Cookie と Token になる |
+
+決定はすべて A。理由は次のとおり。
+
+- 監査と一覧は揮発ストアの寿命とは独立に残す必要があり、Identity DB が置き場所になる。Token の経路は触らず、ログインと `/authorize` に記録を足すだけで済む
+- 異常な環境で自動失効させると、正規の利用者が回線とブラウザの更新で落ちる。強いシグナルと弱いシグナルを分け、弱いシグナルは記録と警告に留めて本人の失効に委ねる
+- 招待の解除はサービス単位の操作なので、失効もサービス単位に留める。SSO Session を落とすと他のサービスの作業が中断する
+- 秘密値をキーにしないことで、揮発ストアの読み取り漏洩をそのまま提示できる値にしない。08 の未対応から 2 件を消す
+
+具体化。
+
+- `identity.auth_sessions(id, user_id, status, ip, user_agent, created_at, last_seen_at, revoked_at, revoke_reason)`。id は sid。`identity.auth_session_clients(session_id, oidc_client_id, tenant_id, first_seen_at, last_seen_at)`。`identity.audit_events(id, occurred_at, kind, user_id, session_id, tenant_id, client_id, ip, user_agent, detail)`。`identity.user_mfa_methods(user_id, method, enrolled_at)` は MFA の実装に先立って用意し、D22 で使う
+- 監査イベントの kind は `login_succeeded` `login_failed` `session_touched` `environment_changed` `global_logout` `session_revoked` `refresh_token_reused` `refresh_token_client_mismatch` `authorization_code_reused` `service_member_invited` `service_member_revoked` `mfa_enrolled` `mfa_challenge_failed` `mfa_setup_expired`。Token 値、Cookie 値、パスワード、TOTP の secret は残さない。`login_failed` はユーザー名を残さない
+- IP は `X-Forwarded-For` の先頭、なければ接続元。User-Agent は 512 文字まで。Refresh はサーバー間通信で端末の環境を運ばないため比較しない
+- `revokeSsoSession(deps, session, reason)` に失効の手順をまとめる。Refresh Token 系列の失効 → Cognito RevokeToken → SSO Session 削除 → code を発行した Client への Back-Channel Logout → `auth_sessions` を revoked → 監査。理由は `global_logout` `user_revoked` `service_member_revoked` `refresh_token_reused` `expired`
+- `GET /api/sessions` と `POST /sessions/revoke` を auth-api に足し、auth-web に `/security` を足す。対象は自分の sid だけで、他人の sid と現在のセッションは無視する。`/logout` と同じレート制限
+- `revokeClientAccess(userId, client, tenantId)` が招待解除の失効を担う。`DELETE /admin/service-members` が割り当てを消したあとに呼ぶ
+- `packages/shared` の `keyDigest` と `application/usecases/store-keys.ts` の `keyOf`。`SsoSession.id` は Cookie の値の SHA-256、`RefreshToken` と `AuthorizationCode` は Token と code の値を持たない。`sso:rtfamily` の要素もキーの SHA-256
+- `AuthDeps` に `sessions` と `audit` を足し、pg とインメモリの実装を持つ。vitest は 141 件、chrome-check は 16 項目
+
+### D22. MFA の必須化。認証アプリの TOTP と Cognito の設定
+
+問題点。D21 までのログインはパスワードだけで SSO Session を作り、Cognito がチャレンジを返すと `challenge_required` のエラーにしていた。BtoB の前提では全員に MFA を求める必要があり、Cognito 側だけで必須化すると、登録していない人の登録画面、QR コードの期限と再発行、将来のテナント別の方針を auth-api が制御できない。方式を TOTP に固定した実装にすると Passkey などを足すときに port と DB の両方を作り直すことになる。
+
+| 項目 | 選択肢 | メリット | デメリット |
+| --- | --- | --- | --- |
+| 必須の範囲 | A. 全員必須。登録していない人はパスワード認証のあとに登録画面へ送り、登録が終わるまで SSO Session を作らない | BtoB の前提に合う。ログインの経路が 1 つで、例外の管理が要らない | 初回ログインに登録の手間が入る。認証アプリを失った人の再登録は運用で扱う |
+| 必須の範囲 | B. 任意。登録した人だけチャレンジを求める | 導入の摩擦が小さい | 未登録の人が残り、BtoB の前提を満たさない |
+| 必須の範囲 | C. テナント単位の方針で切り替える | 顧客ごとの要件に合わせられる | 方針の表と画面が要る。今は全員必須で足りる。将来の拡張として残す |
+| 初期の方式 | A. 認証アプリの TOTP。RFC 6238、HMAC-SHA1、6 桁、30 秒 | Cognito の SOFTWARE_TOKEN_MFA にそのまま載る。認証アプリは既に普及している。モックで本物の検証ができる | SMS より入力の手間がある。端末を失うと再登録が要る |
+| 初期の方式 | B. SMS | 端末の準備が要らない | 電話番号の管理と SMS の費用が要る。SIM スワップに弱い |
+| 初期の方式 | C. Passkey | フィッシングに強い | Hosted UI を使わない本設計で Cognito の Passkey を扱う経路の確認が要る。方式の拡張として後から足す |
+| 必須化の場所 | A. Cognito の User Pool は OPTIONAL にし、auth-api が必須化する。登録済みの人には Cognito がチャレンジを返し、未登録の人には Token が返るが auth-api が登録画面へ送る | 登録画面、QR の期限、再発行、将来のテナント別の方針を auth-api で扱える。Cognito の MFA_SETUP チャレンジに依存しない | Cognito だけを見ると MFA なしでログインできる設定に見える。必須化の根拠が auth-api のコードになる |
+| 必須化の場所 | B. User Pool を ON にする | Cognito 側で強制される | 未登録の人には MFA_SETUP チャレンジが返り、その Session で AssociateSoftwareToken を呼ぶ流れになる。QR の期限を auth-api で決められず、テナント別の方針も置けない |
+| QR と secret の期限 | A. auth-api が 3 分で失効させ、期限が来たら AssociateSoftwareToken をやり直して新しい secret と QR を出す。SPA は残り時間を出し、0 になったら取り直す | 放置された QR が生き続けない。secret の寿命を auth-api が決める | 3 分以内に読み取って入力する必要がある。画面に残り時間と再発行の仕組みが要る |
+| QR と secret の期限 | B. Cognito の Access Token の寿命に任せる | 実装が少ない | 60 分の間 同じ QR が有効なまま残る |
+| secret の置き場所 | A. 暗号化して揮発ストアの保留状態に置き、DB には方式と日時だけを残す | secret と Cognito の Token が平文で残らない。保留状態の TTL で自然に消える | 保留状態の値が大きくなる |
+| secret の置き場所 | B. Identity DB に置く | 揮発ストアが消えても残る | secret が DB に残る。Cognito が持つ値の複製になる |
+| 方式の表現 | A. `MfaMethod` の判別共用体にし、port に方式ごとの操作を足す。`user_mfa_methods.method` の CHECK 制約で方式を足す | Passkey などを足すときに既存の経路を壊さない | 今は `totp` だけの共用体になる |
+| 方式の表現 | B. TOTP 固定 | 型が単純 | 方式を足すときに port と DB を作り直す |
+
+決定はすべて A。理由は次のとおり。
+
+- BtoB の前提で全員に MFA を求め、ログインの経路を 1 つに保つ。未登録の人を登録画面へ送ることで例外を作らない
+- 必須化を auth-api に置くことで、登録画面、QR の期限と再発行、将来のテナント別の方針を Cognito の設定に縛られずに扱える
+- secret と QR の寿命を auth-api が決めることで、放置された QR が Cognito の Token 寿命の間 生き続けることを避ける
+- 方式を判別共用体にすることで、Passkey などを足すときに port と DB に方式を足すだけで済む
+
+具体化。
+
+- Cognito の User Pool は `mfa_configuration = "OPTIONAL"` と `software_token_mfa_configuration { enabled = true }`。`terraform/cognito.tf`
+- `CognitoAuthenticator.authenticate` は `authenticated` か `totp_required` を返す。`respondToTotp` `associateSoftwareToken` `verifySoftwareToken` `enableTotp` を port に足す。SDK は RespondToAuthChallenge、AssociateSoftwareToken、VerifySoftwareToken、SetUserMFAPreference を呼び、CodeMismatchException と EnableSoftwareTokenMFAException を `code_mismatch`、NotAuthorizedException と ExpiredCodeException を `session_expired` に写す
+- `POST /login` は SSO Session を作らず、保留状態 `MfaPending` を `sso:mfa` に置いて `/login/challenge?mid=` か `/login/mfa-setup?mid=` へ 303 する。キーは `mid` の SHA-256、TTL は `MFA_PENDING_TTL_SECONDS` の 5 分。`totp_challenge` は Cognito の Session と試行回数、`totp_setup` は暗号化した Cognito の Token と暗号化した secret と発行時刻を持つ
+- `GET /api/login/challenge?mid=&error=` は `{csrfToken, method, errorMessage?}`、`POST /login/challenge` は `mid` `csrf` と 6 桁の `code`。`GET /api/login/mfa-setup?mid=&renew=` は `{csrfToken, method, account, secret, otpauthUri, expiresAt, errorMessage?}`、`POST /login/mfa-setup` は同じフォーム。通れば `finishLogin` が users を解決し `user_mfa_methods` に方式を記録して SSO Session を作り、保留していた rid の `/authorize` を再開する
+- secret と QR の期限は `TOTP_SETUP_TTL_SECONDS` の 3 分。期限内は同じ secret を返し、`renew=1` か期限切れなら AssociateSoftwareToken をやり直す。発行者名は `MFA_ISSUER_NAME` の `Sandbox`
+- 失敗は `code_mismatch` `setup_expired` を同じ画面へ、保留状態の期限切れは `/login?error=challenge_expired` へ 303 する。文言は `/api/login/challenge` と `/api/login/mfa-setup` が返す。`/login/*` と `/api/login/*` は `/login` と同じレート制限
+- 監査は `login_succeeded` の detail に `{mfa: "totp"}`、登録完了に `mfa_enrolled`、コード不一致に `mfa_challenge_failed`、期限切れの secret の置き換えに `mfa_setup_expired`。secret は残さない
+- auth-web は `features/login/challenge.route.tsx` の「認証コードを入力」と `features/login/mfa-setup.route.tsx` の「認証アプリを登録」を持つ。登録画面は `qrcode` で otpauth URI を QR にし、secret を文字でも出し、残り時間をプログレスバーで示して 0 になったら `renew=1` で取り直す。`/security` は `mfa_methods` を「多要素認証」として出す
+- `packages/shared/src/totp.ts` に RFC 6238 の生成と検証、base32、otpauth URI。モックの Cognito はこれで本物の検証を行い、登録状態はプロセスのメモリに持つ。`MOCK_COGNITO_USERS` の `totpSecret` で alice / bob / carol を登録済みにし、dave は初回ログインで登録する
+- `identity.user_mfa_methods` は MFA を終えたログインのたびに `recordMfaMethod` で記録し、既に行があれば変えない。Cognito 側で登録済みなのに記録が無い人はここで揃う。方式は `MfaMethod` の判別共用体で当面 `totp` のみ。テナント単位の方針は将来の拡張
+- テストは `completeMfa` と `completeMfaThrough` でパスワードのあとに TOTP を送る。vitest は 149 件、chrome-check は 17 項目
+
 ## 5. 移行計画
 
 グリーンフィールドのため、構築順序として記述する。
@@ -428,5 +512,7 @@ D18 の時点では auth-api のログイン、ポータル、Global Logout の�
 | 8 | React Router v8 の SPA と薄い BFF。エンドユーザー、投稿、招待、権限編集の画面。判断事項D18 | 画面から 7 の操作ができる |
 | 9 | auth の画面を `apps/auth-web` の SPA にし、auth-api が配る。判断事項D19 | ログイン、ポータル、Global Logout が SPA で通り、E8 と E11 が通る |
 | 10 | shadcn/ui と Tailwind CSS v4、react-hook-form への置き換えと feature 単位のコロケーション。判断事項D20 | `pnpm chrome-check` の 14 項目が通り、空のフォームで項目ごとの検証エラーが出る |
+| 11 | セッションの記録と監査イベント、ポータルからのセッション失効、招待解除の即時失効、ストアのキーのハッシュ化。判断事項D21 | 141 件のテストと `pnpm chrome-check` の 16 項目が通り、招待解除後の Refresh が即時に拒否される |
+| 12 | MFA の全員必須化。認証アプリの TOTP のチャレンジと登録、QR の期限と再発行、Cognito の OPTIONAL 設定。判断事項D22 | 149 件のテストと `pnpm chrome-check` の 17 項目が通り、パスワードだけでは SSO Session が作られない |
 
 既存システムがある適用先では、フェーズ2完了後に既存ログインを `/auth/login` へ差し替え、Cognito Tokenを直接使う箇所をAPI Server経由へ置き換える工程をフェーズ3と4の間に挟む。

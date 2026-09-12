@@ -9,6 +9,8 @@ import {
   userStatusSchema,
 } from "@sandbox/shared";
 import type {
+  MfaMethod,
+  UserMfaMethod,
   Contract,
   NewUser,
   OidcClient,
@@ -26,6 +28,11 @@ const userRow = z.object({
   email: z.string(),
   name: z.string().nullable(),
   status: userStatusSchema,
+});
+
+const mfaMethodRow = z.object({
+  method: z.enum(["totp"]),
+  enrolled_at: z.coerce.date(),
 });
 
 const tenantRow = z.object({
@@ -133,6 +140,29 @@ export class PgIdentityRepository implements IdentityRepository {
         backchannelLogoutUri: row.backchannel_logout_uri,
       };
     });
+  }
+
+  public async listMfaMethods(userId: string): Promise<ReadonlyArray<UserMfaMethod>> {
+    const result = await this.pool.query(
+      `SELECT method, enrolled_at FROM identity.user_mfa_methods WHERE user_id = $1 ORDER BY enrolled_at`,
+      [userId],
+    );
+    return result.rows.map((raw) => {
+      const row = mfaMethodRow.parse(raw);
+      return { method: row.method, enrolledAt: Math.floor(row.enrolled_at.getTime() / 1000) };
+    });
+  }
+
+  public async recordMfaMethod(
+    userId: string,
+    method: MfaMethod,
+    enrolledAt: number,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO identity.user_mfa_methods (user_id, method, enrolled_at) VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, method) DO NOTHING`,
+      [userId, method, new Date(enrolledAt * 1000)],
+    );
   }
 
   private async findUser(where: string, params: ReadonlyArray<unknown>): Promise<User | undefined> {

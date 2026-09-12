@@ -2,6 +2,8 @@
  * Identity DB へのアクセスの port。実装は infrastructure の pg / memory
  */
 import type {
+  MfaMethod,
+  UserMfaMethod,
   Contract,
   NewUser,
   OidcClient,
@@ -36,4 +38,7 @@ export interface IdentityRepository {
   listServiceMembers(tenantId: string, oidcClientId: string): Promise<ReadonlyArray<ServiceMember>>;
   /** ユーザーが active で割り当てられている、active な契約のサービスをテナントごとにまとめる */
   listPortalEntries(userId: string): Promise<ReadonlyArray<PortalEntry>>;
+  listMfaMethods(userId: string): Promise<ReadonlyArray<UserMfaMethod>>;
+  /** 登録済みの方式を記録する。既にあれば何もしない */
+  recordMfaMethod(userId: string, method: MfaMethod, enrolledAt: number): Promise<void>;
 }

@@ -3,6 +3,7 @@ import type { ApiHarness } from "@sandbox/api-core/test-support";
 import { createCmsHarness } from "@sandbox/cms-api/test-support";
 import { createCrmHarness } from "@sandbox/crm-api/test-support";
 import {
+  MOCK_TOTP_SECRETS,
   createHarness as createAuthHarness,
   type TestHarness as AuthHarness,
 } from "@sandbox/auth-api/test-support";
@@ -13,6 +14,7 @@ import {
   type ServiceConfig,
 } from "@sandbox/oidc-client";
 import { createMemoryStoreFactory, silentLogger } from "@sandbox/shared";
+import { generateTotp } from "@sandbox/shared";
 import { createWebCoreApp } from "./app.ts";
 import { createClientResolvers } from "./config.ts";
 
@@ -161,7 +163,17 @@ const MAX_REDIRECTS = 10;
 export class Browser {
   private readonly jar = new Map<string, Map<string, StoredCookie>>();
 
-  constructor(private readonly dispatch: (url: URL, init?: RequestInit) => Promise<Response>) {}
+  /** clock はモック Cognito と同じ時計。TOTP のコードを合わせるために使う */
+  constructor(
+    private readonly dispatch: (url: URL, init?: RequestInit) => Promise<Response>,
+    private readonly clock: { nowSeconds(): number } = {
+      nowSeconds: () => Math.floor(Date.now() / 1000),
+    },
+  ) {}
+
+  public nowSeconds(): number {
+    return this.clock.nowSeconds();
+  }
 
   public cookies(host: string): ReadonlyMap<string, string> {
     const cookies = this.jar.get(host) ?? new Map<string, StoredCookie>();
@@ -265,12 +277,43 @@ export async function loginThrough(
     browser,
     `${AUTH_ORIGIN}/api/login?rid=${encodeURIComponent(rid)}`,
   );
-  return browser.submitForm(`${AUTH_ORIGIN}/login`, {
+  const afterPassword = await browser.submitForm(`${AUTH_ORIGIN}/login`, {
     rid,
     csrf: String(context.csrfToken),
     username: credentials.username,
     password: credentials.password,
   });
+  return completeMfaThrough(browser, afterPassword, credentials.username);
+}
+
+/**
+ * MFA のチャレンジか登録の画面に来ていれば、モックの secret でコードを作って完了させる。
+ * 登録済みの人は /login/challenge、未登録の人は /login/mfa-setup に着く
+ */
+export async function completeMfaThrough(
+  browser: Browser,
+  result: NavigationResult,
+  username: string,
+): Promise<NavigationResult> {
+  const { pathname, searchParams } = result.finalUrl;
+  const mid = searchParams.get("mid") ?? "";
+  if (pathname === "/login/challenge") {
+    const challenge = await readJson(browser, `${AUTH_ORIGIN}/api/login/challenge?mid=${mid}`);
+    return browser.submitForm(`${AUTH_ORIGIN}/login/challenge`, {
+      mid,
+      csrf: String(challenge.csrfToken),
+      code: generateTotp(MOCK_TOTP_SECRETS[username] ?? "", browser.nowSeconds()),
+    });
+  }
+  if (pathname === "/login/mfa-setup") {
+    const setup = await readJson(browser, `${AUTH_ORIGIN}/api/login/mfa-setup?mid=${mid}`);
+    return browser.submitForm(`${AUTH_ORIGIN}/login/mfa-setup`, {
+      mid,
+      csrf: String(setup.csrfToken),
+      code: generateTotp(String(setup.secret), browser.nowSeconds()),
+    });
+  }
+  return result;
 }
 
 export function visitedPaths(result: NavigationResult): ReadonlyArray<string> {
@@ -288,3 +331,5 @@ export async function readJson(browser: Browser, url: string): Promise<Record<st
 export function readSession(browser: Browser, origin: string): Promise<Record<string, unknown>> {
   return readJson(browser, `${origin}/session`);
 }
+
+export { MOCK_TOTP_SECRETS };

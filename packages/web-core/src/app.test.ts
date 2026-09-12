@@ -31,7 +31,7 @@ describe("E1 first login through tanaka.crm", () => {
 
   beforeEach(async () => {
     sandbox = await createSandbox();
-    browser = new Browser(sandbox.dispatch);
+    browser = new Browser(sandbox.dispatch, sandbox.auth.clock);
   });
 
   test("serves the SPA shell to an anonymous user and reports no session", async () => {
@@ -136,7 +136,7 @@ describe("E2 SSO into suzuki.crm after logging in through tanaka.crm", () => {
 
   beforeEach(async () => {
     sandbox = await createSandbox();
-    browser = new Browser(sandbox.dispatch);
+    browser = new Browser(sandbox.dispatch, sandbox.auth.clock);
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
   });
 
@@ -224,7 +224,7 @@ describe("E3 tenant logout keeps other tenants and the SSO session", () => {
 
   beforeEach(async () => {
     sandbox = await createSandbox();
-    browser = new Browser(sandbox.dispatch);
+    browser = new Browser(sandbox.dispatch, sandbox.auth.clock);
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
     await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
   });
@@ -273,7 +273,7 @@ describe("E12 services share the SSO session but contracts gate access", () => {
 
   beforeEach(async () => {
     sandbox = await createSandbox();
-    browser = new Browser(sandbox.dispatch);
+    browser = new Browser(sandbox.dispatch, sandbox.auth.clock);
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
   });
 
@@ -343,7 +343,7 @@ describe("session lifetimes", () => {
 
   beforeEach(async () => {
     sandbox = await createSandbox();
-    browser = new Browser(sandbox.dispatch);
+    browser = new Browser(sandbox.dispatch, sandbox.auth.clock);
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
   });
 
@@ -407,7 +407,7 @@ describe("E11 global logout via auth.localhost", () => {
 
   beforeEach(async () => {
     sandbox = await createSandbox();
-    browser = new Browser(sandbox.dispatch);
+    browser = new Browser(sandbox.dispatch, sandbox.auth.clock);
     await loginThrough(browser, `${TANAKA_CRM_ORIGIN}${APP_PATH}`, ALICE);
     await browser.navigate(`${SUZUKI_CRM_ORIGIN}/auth/login`);
   });

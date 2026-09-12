@@ -21,9 +21,9 @@ apply すると auth-api / crm-web / crm-api / cms-web / cms-api / provision の
 | 証明書 | ACM。`*.<domain>` に `<domain>` とサービスごとの `*.<svc>.<domain>` を SAN で足し、DNS 検証する。ワイルドカードは 1 階層しか覆わないため |
 | DB | RDS PostgreSQL 16、db.t4g.micro、単一 AZ を identity / crm / cms の 3 台。識別子は `multi-domain-sandbox-<name>`、データベース名は `<name>`、マスターは `postgres`。サブネットグループと SG は共有。`rds.force_ssl=1` のため接続 URL に `sslmode=no-verify` を付ける。ロール、スキーマ、シードは provision タスクが 3 台すべてに入れる |
 | Session Store | ElastiCache Redis 7、cache.t4g.micro、単一ノード、VPC 内のみ。転送暗号化なしのため `redis://` |
-| 認証 | Cognito User Pool。Hosted UI なし。App Client `multi-domain-sandbox-auth-api` は secret 付きで USER_SRP_AUTH のみ許可 |
+| 認証 | Cognito User Pool。Hosted UI なし。`mfa_configuration` は OPTIONAL で `software_token_mfa_configuration` を有効にし、MFA の必須化は auth-api が行う。App Client `multi-domain-sandbox-auth-api` は secret 付きで USER_SRP_AUTH のみ許可 |
 | 秘密値 | Secrets Manager。`multi-domain-sandbox/db` に `<name>_master_url` `<name>_app_url` `<name>_app_password`、`multi-domain-sandbox/auth-api` に `token_encryption_key` `signing_key_pem` `cognito_client_secret`、`multi-domain-sandbox/services` に provision 用の `json` とサービスごとの `<svc>_client_secret`、`multi-domain-sandbox/seed` に `user_password`。client_secret は記号なし 48 文字の乱数 |
-| ログ | CloudWatch Logs。`/ecs/multi-domain-sandbox/<app>` |
+| ログ | CloudWatch Logs。`/ecs/multi-domain-sandbox/<app>`。保持 14 日。ロググループは Terraform 管理で destroy すると消える。ここに出るのは運用ログだけで、監査イベント `audit_events` と SSO Session の記録 `auth_sessions` は identity の RDS に残る |
 
 ローカルとの差分は環境変数だけで吸収する。Cookie の Secure と `__Host-` プレフィックスは auth-api が `ISSUER` の scheme、`*-web` が `PUBLIC_SCHEME` から導き、切り替え用の変数はない。https にすると本番の値が揃っていることを起動時に検証する。auth-api は `SIGNING_KEY_PEM`、`REDIS_URL`、`COGNITO_ADAPTER=sdk`、`SPA_DIR` が必須で、`*-web` は `REDIS_URL` と https の `ISSUER` / `API_BASE_URL` と `SPA_DIR` が必須。欠けると起動に失敗する。
 タスク定義が渡す環境変数は次のとおり。名前はローカルの `.env.example` と同じで、定義は `terraform/ecs.tf` にある。`SPA_DIR` はタスク定義では渡さない。`Dockerfile` が crm-web / cms-web は自分の SPA、auth-api は auth-web を `react-router build` して `/app/spa` に同梱し、`ENV SPA_DIR=/app/spa` を設定する。`*-api` と provision のイメージにも同じ値が入るが読まない。
@@ -72,12 +72,12 @@ scripts/run-provision.sh
 
 provision は冪等で、`scripts/run-provision.sh` は ECS で一回限りのタスクとして実行し、終了までログを待つ。処理内容は次のとおり。
 
-- identity DB。`sandbox_auth` ロールを `AUTH_DB_PASSWORD` で作るか合わせ、`identity.users` がなければ `db/identity/init/002_identity.sql` を適用する。Cognito にテストユーザーを作り、実際の sub で users を投入し、tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / tenant_service_members を `tools/provision/src/seed-data.ts` から入れる。oidc_clients の redirect_uri_template は `https://{tenant}.<baseHost>/auth/callback`。サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする
+- identity DB。`sandbox_auth` ロールを `AUTH_DB_PASSWORD` で作るか合わせ、`identity.users` がなければ `db/identity/init/002_identity.sql` を適用する。この SQL にはセッションの記録 `auth_sessions` `auth_session_clients`、監査イベント `audit_events`、MFA 方式 `user_mfa_methods` が含まれ、新規の identity DB にだけ入る。`identity.users` が既にある DB には自動で足さないため、以前の apply で作った identity DB に載せるときはこの 4 表を手で作るか、RDS を作り直す。Cognito にテストユーザーを作り、実際の sub で users を投入し、tenants / tenant_members / oidc_clients / oidc_client_secrets / tenant_services / tenant_service_members を `tools/provision/src/seed-data.ts` から入れる。oidc_clients の redirect_uri_template は `https://{tenant}.<baseHost>/auth/callback`。サービスごとに active な secret を 1 行 upsert し、それ以外の active な secret を revoked にする
 - サービスの DB。`SERVICES` の要素ごとに `databaseUrl` へ接続し、`<clientId>_app` ロールを `dbPassword` の NOBYPASSRLS ログインロールとして作るか合わせる。`<clientId>.members` がなければ `db/<clientId>/init/002_schema.sql` を適用し、members が空のときだけ `003_seed.sql` を入れる。`001_roles.sql` はローカル専用の固定パスワードで、RDS では使わない
 
 ## テストユーザー
 
-ローカルと同じ alice / bob / carol を Cognito に作る。パスワードは Terraform が生成し Secrets Manager に置く。alice は tanaka の CRM と CMS、suzuki の CRM に入れる。bob は suzuki の CRM に入れる。carol は割り当てなし。サービスごとの役割と権限の上書きは `db/crm/init/003_seed.sql` と `db/cms/init/003_seed.sql` の値がそのまま入る。
+ローカルと同じ alice / bob / carol を Cognito に作る。パスワードは Terraform が生成し Secrets Manager に置く。alice は tanaka の CRM と CMS、suzuki の CRM に入れる。bob は suzuki の CRM に入れる。carol は割り当てなし。認証アプリは登録されていないため、AWS では各ユーザーの初回ログインがパスワードのあとに「認証アプリを登録」になり、QR コードを読み取ってコードを送ると登録が終わる。以降のログインは「認証コードを入力」になる。サービスごとの役割と権限の上書きは `db/crm/init/003_seed.sql` と `db/cms/init/003_seed.sql` の値がそのまま入る。
 
 ```bash
 aws secretsmanager get-secret-value --secret-id multi-domain-sandbox/seed \
@@ -99,8 +99,8 @@ cd terraform && terraform output urls
 ```
 
 `urls` は `portal` に `https://auth.<domain>`、`web` にサービスごとテナントごとの URL、`api` にサービスごとの API の URL、`alb_dns` を返す。web の URL は `https://tanaka.crm.<domain>` のように `var.tenants` の slug で組み立てる。
-ブラウザで `https://tanaka.crm.sandbox.daisuke-tanabe.dev/` を開き、alice でログインする。`https://tanaka.cms.sandbox.daisuke-tanabe.dev/` へは SSO で入れる。suzuki は CMS を契約していないため `https://suzuki.cms.sandbox.daisuke-tanabe.dev/` は拒否される。
-`SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。両スクリプトは `<tenant>.<service>.<SANDBOX_DOMAIN>` のホストを前提にする。
+ブラウザで `https://tanaka.crm.sandbox.daisuke-tanabe.dev/` を開き、alice でログインする。初回はパスワードのあとに認証アプリの登録が入る。`https://tanaka.cms.sandbox.daisuke-tanabe.dev/` へは SSO で入れる。suzuki は CMS を契約していないため `https://suzuki.cms.sandbox.daisuke-tanabe.dev/` は拒否される。
+`SANDBOX_DOMAIN` と `SEED_USER_PASSWORD` を指定すれば smoke と chrome-check を AWS の URL に向けられる。両スクリプトは `<tenant>.<service>.<SANDBOX_DOMAIN>` のホストを前提にする。smoke は `loginThrough` が認証アプリの登録とチャレンジの両方を辿るため、未登録の alice でもそのまま通る。chrome-check は「認証コードを入力」を待ってモックの secret からコードを計算するため、AWS で通すには alice の認証アプリを `MOCK_COGNITO_USERS` と同じ secret で登録しておく必要がある。
 
 ```bash
 export SANDBOX_DOMAIN=sandbox.daisuke-tanabe.dev
@@ -152,3 +152,5 @@ ap-northeast-1 で常時起動した場合の概算。
 - RDS の CA 証明書を同梱して `sslmode=verify-full` にする
 - NAT Gateway か VPC Endpoint を置き、タスクを private subnet に移す
 - ECS のオートスケールと ALB のアクセスログを設定する
+- identity DB の `audit_events` と `auth_sessions` の保持期間と削除の運用を決める。CloudWatch の 14 日とは独立に残り続ける
+- identity DB のスキーマ変更をマイグレーションツールで管理する。provision は新規 DB にしか `002_identity.sql` を適用しない

@@ -101,7 +101,7 @@ role や permission は載せない。role は API Server が自サービス DB 
 - Auth Server がサービスごとの役割と権限の語彙を知らなくてよい。Auth Server が扱うのは client_id と割り当てだけで、role と permission の名前は各サービスが自分の DB で決める
 - Token がサービス数と権限数に比例して肥大化しない
 
-Token 発行後のサービスへの割り当て削除は Refresh 時に Auth Server が拒否し、Access Token 寿命の 15 分以内に反映される。`client_id` は API Server がこのサービスの Token であることを確かめる claim で、`tenant_id` と `sub` が自サービス DB の members を引くキーになる。
+Token 発行後のサービスへの割り当て削除は、Auth Server がそのサービスとテナントの Refresh Token 系列を即時に失効させ、そのサービスへ Back-Channel Logout を送る。発行済みの Access Token は寿命の 15 分まで有効だが、Tenant Session が消えるため BFF は使わない。契約解除やテナント停止は Refresh 時に拒否し、15 分以内に反映される。`client_id` は API Server がこのサービスの Token であることを確かめる claim で、`tenant_id` と `sub` が自サービス DB の members を引くキーになる。
 
 aud はサービスごとに異なる。CRM 向けに発行した Token を api.cms.sandbox.com に出しても aud 不一致で拒否される。
 
@@ -121,11 +121,13 @@ aud はサービスごとに異なる。CRM 向けに発行した Token を api.
 | --- | --- |
 | 形式 | 256bitランダム。不透明文字列 |
 | 寿命 | 12時間。SSO Session の絶対期限と同じ |
-| ローテーション | 使用ごとに新しい値を発行。旧値は失効。消費は GETDEL で先に行い、直後に rotated として書き戻してから検証に進む |
-| 再利用検知 | rotated / revoked の値が使われたら同系列全体を失効。別 Client からの提示も同様 |
+| 保存 | ストアのキーは Token の SHA-256。値に Token そのものは持たず、系列の集合 `sso:rtfamily` もキーの SHA-256 を持つ。ストアの読み取りが漏れても提示できる Token を復元できない |
+| ローテーション | 使用ごとに新しい値を発行。旧値は失効。消費は提示された値の SHA-256 で GETDEL を先に行い、直後に rotated として書き戻してから検証に進む |
+| 再利用検知 | rotated / revoked の値が使われたら同系列全体を失効。別 Client からの提示も同様。どちらも `refresh_token_reused` / `refresh_token_client_mismatch` の監査イベントを Identity DB に残し、警告ログにも出す |
 | 同時提示 | 同じ値を同時に 2 回提示しても成功は 1 つ。もう一方は invalid_grant で、系列は失効しない |
 | 紐付け | user_id / tenant_id / sid / client_id / family_id |
-| 失効条件 | SSO Session 失効、ユーザー無効化、テナント停止、契約解除、サービスへの割り当て削除、Tenant Logout、Global Logout |
+| 失効条件 | SSO Session 失効、ユーザー無効化、テナント停止、契約解除、サービスへの割り当て削除、Tenant Logout、Global Logout、ポータルからのセッション失効 |
+| 割り当て削除の即時反映 | 招待の解除は Refresh を待たず、そのサービスとテナントの系列だけを即時に失効させる。他のサービスの系列と SSO Session は残る |
 
 refresh_token grant では `/authorize` と同じ順序でアクセス判定を再実行する。user → tenant → 契約 → サービスへの割り当て。
 
@@ -138,10 +140,11 @@ Cognito Refresh Token とは無関係。Cognito Refresh Token は Auth Server �
 | 形式 | 256bitランダム。不透明文字列 |
 | 寿命 | 60秒 |
 | 使用回数 | 1回。使用済み化をアトミックに行う |
-| 再利用検知 | invalid_grant。同 code から発行した Refresh Token を失効 |
+| 保存 | ストアのキーは code の SHA-256。値に code そのものは持たない |
+| 再利用検知 | invalid_grant。同 code から発行した Refresh Token を失効し、`authorization_code_reused` の監査イベントを残す |
 | 紐付け | client_id / redirect_uri / scope / nonce / code_challenge / user_id / tenant_id / sid / auth_time |
 
-code は JWT にしない。認証情報はサーバー側ストアに置き、code は参照キーに徹する。
+code は JWT にしない。認証情報はサーバー側ストアに置き、code は参照キーに徹する。ストアに置くのは code の SHA-256 で、code の値は Front Channel を通ってブラウザと Client にだけ渡る。
 
 ## PKCE
 

@@ -50,6 +50,7 @@ export {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select.tsx";
+export { Progress } from "./components/ui/progress.tsx";
 export { Separator } from "./components/ui/separator.tsx";
 export {
   Table,

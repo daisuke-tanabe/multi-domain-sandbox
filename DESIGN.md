@@ -33,3 +33,9 @@
 - 色は shadcn の既定トークンだけを使う。`text-muted-foreground` を補足に、`destructive` をエラーと削除に使う
 - 本文はシステムフォント。見出しは `text-2xl font-semibold`、節は `text-lg font-medium`
 - ダークモードは対応しない。`dark` variant のスタイルを書かない
+
+## 認証アプリの登録
+
+- QR コードは `qrcode` で data URL にして `img` で出す。横に secret の文字列も出し、読み取れない環境でも手入力できるようにする
+- QR コードの残り時間は `Progress` で示し、下に残り秒数を書く。期限が来たら自動で新しい QR コードに差し替え、その間は送信ボタンを無効にする
+- コード入力は `inputMode="numeric"` と `autoComplete="one-time-code"` を付け、6 桁に限定する

@@ -30,7 +30,7 @@ flowchart TD
 
 0 から 3 までは `packages/api-core/src/application/resolve-tenant-context.ts` の `resolveTenantContext` が担う。Host 確認 → Bearer 抽出 → Access Token 検証 → `MemberRepository.find(tenantId, userId)` で member 行を取得、なければ `ServiceDefinition.defaultRole` で `upsert` → status の確認 → `listOverrides` で上書きを読む → `resolvePermissions(definition, role, overrides)` で権限を確定 → `TenantContext` を返す。ミドルウェア `auth/middleware.ts` はその Result を HTTP ステータスと `WWW-Authenticate` に写像するだけで、判定ロジックを持たない。
 
-「入れるか」の判定はここにない。Auth Server が `/authorize` と refresh_token grant で user → tenant → 契約 → 割り当ての順に判定済みで、API は Token が有効であればこのテナントのこのサービスに入れる人だと扱う。割り当てを外された人は Refresh で `invalid_grant` になり、Access Token 寿命の 15 分以内に API を呼べなくなる。
+「入れるか」の判定はここにない。Auth Server が `/authorize` と refresh_token grant で user → tenant → 契約 → 割り当ての順に判定済みで、API は Token が有効であればこのテナントのこのサービスに入れる人だと扱う。割り当てを外された人は Auth Server がそのサービスの Refresh Token 系列を即時に失効させ、Back-Channel Logout で Tenant Session を消す。発行済みの Access Token は寿命の 15 分まで有効だが、BFF がもう使わない。API 側で即時に止めるなら members.status を disabled にする。
 
 処理順序の前に全ルート共通のミドルウェアを通す。body は Hono の `bodyLimit` で 64 KB に制限し、投稿の本文を含む業務 API の JSON はこの範囲で足りる。応答には `Cache-Control: no-store` を付ける。`/healthz` は Host 確認と Token 検証の前に返す。
 

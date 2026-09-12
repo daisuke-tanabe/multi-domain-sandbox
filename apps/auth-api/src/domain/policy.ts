@@ -25,6 +25,15 @@ export const RATE_LIMITS = {
 /** Back-Channel Logout の送信タイムアウト */
 export const BACKCHANNEL_TIMEOUT_MS = 5_000;
 
+/** パスワード認証のあと MFA を終えるまでの保留状態の寿命 */
+export const MFA_PENDING_TTL_SECONDS = 5 * 60;
+/** チャレンジのコード入力の失敗回数の上限。達したらログインからやり直す */
+export const MFA_MAX_ATTEMPTS = 5;
+/** QR コードと secret の有効期限。過ぎたら AssociateSoftwareToken をやり直す */
+export const TOTP_SETUP_TTL_SECONDS = 3 * 60;
+/** 認証アプリに表示する発行者名 */
+export const MFA_ISSUER_NAME = "Sandbox";
+
 export const COOKIE_SSO_SESSION = "sso_session";
 export const COOKIE_CSRF = "auth_csrf";
 export const LOGOUT_TOKEN_TTL_SECONDS = 2 * 60;

@@ -5,7 +5,12 @@ resource "aws_cognito_user_pool" "main" {
   name = var.project
 
   auto_verified_attributes = ["email"]
-  mfa_configuration        = "OFF"
+  # MFA の必須化は auth-api が行う。Cognito 側は OPTIONAL にし、QR の再発行と将来のテナント別の方針を auth-api で扱えるようにする
+  mfa_configuration = "OPTIONAL"
+
+  software_token_mfa_configuration {
+    enabled = true
+  }
 
   admin_create_user_config {
     allow_admin_create_user_only = true

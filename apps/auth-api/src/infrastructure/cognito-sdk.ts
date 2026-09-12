@@ -1,8 +1,11 @@
 import {
+  AssociateSoftwareTokenCommand,
   CognitoIdentityProviderClient,
   InitiateAuthCommand,
   RespondToAuthChallengeCommand,
   RevokeTokenCommand,
+  SetUserMFAPreferenceCommand,
+  VerifySoftwareTokenCommand,
   type AuthenticationResultType,
 } from "@aws-sdk/client-cognito-identity-provider";
 import {
@@ -26,7 +29,9 @@ import type {
   CognitoAuthenticated,
   CognitoAuthenticator,
   CognitoAuthError,
+  CognitoAuthOutcome,
   CognitoCredentials,
+  CognitoMfaError,
 } from "../application/ports/cognito.ts";
 
 export interface SdkCognitoConfig {
@@ -59,7 +64,7 @@ export class SdkCognitoAuthenticator implements CognitoAuthenticator {
 
   public async authenticate(
     credentials: CognitoCredentials,
-  ): Promise<Result<CognitoAuthenticated, CognitoAuthError>> {
+  ): Promise<Result<CognitoAuthOutcome, CognitoAuthError>> {
     const secretHash = createSecretHash(
       credentials.username,
       this.config.clientId,
@@ -109,15 +114,105 @@ export class SdkCognitoAuthenticator implements CognitoAuthenticator {
           } as const),
         ),
       );
+      if (responded.ChallengeName === "SOFTWARE_TOKEN_MFA") {
+        if (responded.Session === undefined) {
+          return err({ kind: "unavailable", reason: "mfa session missing" });
+        }
+        return ok({
+          kind: "totp_required",
+          session: responded.Session,
+          username: credentials.username,
+        });
+      }
       if (responded.ChallengeName !== undefined) {
         return err({ kind: "challenge_required", challengeName: responded.ChallengeName });
       }
       if (responded.AuthenticationResult === undefined) {
         return err({ kind: "unavailable", reason: "no authentication result" });
       }
-      return this.toAuthenticated(responded.AuthenticationResult);
+      const authenticated = await this.toAuthenticated(responded.AuthenticationResult);
+      if (!authenticated.ok) return authenticated;
+      return ok({ kind: "authenticated", authenticated: authenticated.value });
     } catch (error: unknown) {
       return err(mapCognitoError(error, this.logger));
+    }
+  }
+
+  public async respondToTotp(input: {
+    readonly username: string;
+    readonly session: string;
+    readonly code: string;
+  }): Promise<Result<CognitoAuthenticated, CognitoMfaError>> {
+    try {
+      const responded = await this.client.send(
+        new RespondToAuthChallengeCommand({
+          ClientId: this.config.clientId,
+          ChallengeName: "SOFTWARE_TOKEN_MFA",
+          Session: input.session,
+          ChallengeResponses: {
+            USERNAME: input.username,
+            SOFTWARE_TOKEN_MFA_CODE: input.code,
+            SECRET_HASH: createSecretHash(
+              input.username,
+              this.config.clientId,
+              this.config.clientSecret,
+            ),
+          },
+        }),
+      );
+      if (responded.AuthenticationResult === undefined) {
+        return err({ kind: "unavailable", reason: "no authentication result" });
+      }
+      const authenticated = await this.toAuthenticated(responded.AuthenticationResult);
+      if (!authenticated.ok) return err({ kind: "unavailable", reason: authenticated.error.kind });
+      return authenticated;
+    } catch (error: unknown) {
+      return err(mapMfaError(error, this.logger));
+    }
+  }
+
+  public async associateSoftwareToken(
+    accessToken: string,
+  ): Promise<Result<{ secret: string }, CognitoMfaError>> {
+    try {
+      const result = await this.client.send(
+        new AssociateSoftwareTokenCommand({ AccessToken: accessToken }),
+      );
+      if (result.SecretCode === undefined) {
+        return err({ kind: "unavailable", reason: "secret code missing" });
+      }
+      return ok({ secret: result.SecretCode });
+    } catch (error: unknown) {
+      return err(mapMfaError(error, this.logger));
+    }
+  }
+
+  public async verifySoftwareToken(
+    accessToken: string,
+    code: string,
+  ): Promise<Result<void, CognitoMfaError>> {
+    try {
+      const result = await this.client.send(
+        new VerifySoftwareTokenCommand({ AccessToken: accessToken, UserCode: code }),
+      );
+      if (result.Status !== "SUCCESS") return err({ kind: "code_mismatch" });
+      return ok(undefined);
+    } catch (error: unknown) {
+      return err(mapMfaError(error, this.logger));
+    }
+  }
+
+  public async enableTotp(accessToken: string): Promise<Result<void, CognitoMfaError>> {
+    try {
+      await this.client.send(
+        new SetUserMFAPreferenceCommand({
+          AccessToken: accessToken,
+          SoftwareTokenMfaSettings: { Enabled: true, PreferredMfa: true },
+        }),
+      );
+      return ok(undefined);
+    } catch (error: unknown) {
+      return err(mapMfaError(error, this.logger));
     }
   }
 
@@ -178,6 +273,21 @@ export class SdkCognitoAuthenticator implements CognitoAuthenticator {
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "unknown";
+}
+
+/** MFA 系の例外。コード不一致と Session 切れを区別し、それ以外は unavailable */
+function mapMfaError(error: unknown, logger: Logger): CognitoMfaError {
+  switch (errorName(error)) {
+    case "CodeMismatchException":
+    case "EnableSoftwareTokenMFAException":
+      return { kind: "code_mismatch" };
+    case "NotAuthorizedException":
+    case "ExpiredCodeException":
+      return { kind: "session_expired" };
+    default:
+      logger.error("cognito mfa call failed", { name: errorName(error) });
+      return { kind: "unavailable", reason: errorName(error) };
+  }
 }
 
 /**

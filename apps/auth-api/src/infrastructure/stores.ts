@@ -14,6 +14,7 @@ export function createAuthStores(store: StoreFactory): AuthStores {
     refreshTokens: store.kv("sso:rt"),
     refreshTokenFamilies: store.set("sso:rtfamily"),
     csrfTokens: store.kv("sso:csrf"),
+    mfaPending: store.kv("sso:mfa"),
     sidRefreshFamilies: store.set("sso:sidrt"),
     rateLimits: store.counter("sso:ratelimit"),
   };

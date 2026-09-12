@@ -16,6 +16,7 @@ import { MemoryIdentityRepository } from "./infrastructure/memory-identity-repos
 import { MemorySessionRepository } from "./infrastructure/memory-session-repository.ts";
 import { createAuthStores } from "./infrastructure/stores.ts";
 import { MockCognitoAuthenticator } from "./infrastructure/mock-cognito.ts";
+import { generateTotp } from "@sandbox/shared";
 import { createAuthApp } from "./interface/http/app.ts";
 import type { AuthDeps } from "./application/deps.ts";
 
@@ -42,6 +43,13 @@ export const SUZUKI_CMS_REDIRECT = "http://suzuki.cms.localhost:3003/auth/callba
 export const CLIENT_SECRET = "service-secret";
 export const ALICE_ID = "user-alice";
 
+/** モック Cognito に登録済みの認証アプリの secret。.env.example の MOCK_COGNITO_USERS と同じ値 */
+export const MOCK_TOTP_SECRETS: Readonly<Record<string, string>> = {
+  alice: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+  bob: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+  carol: "MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43V",
+};
+
 const TANAKA = { id: TANAKA_ID, slug: "tanaka", name: "Tanaka Inc.", status: "active" } as const;
 const SUZUKI = { id: SUZUKI_ID, slug: "suzuki", name: "Suzuki Ltd.", status: "active" } as const;
 
@@ -52,6 +60,7 @@ const mockUsers = [
     sub: "cognito-alice",
     email: "alice@example.com",
     name: "Alice",
+    totpSecret: MOCK_TOTP_SECRETS.alice,
   },
   {
     username: "bob",
@@ -59,6 +68,7 @@ const mockUsers = [
     sub: "cognito-bob",
     email: "bob@example.com",
     name: "Bob",
+    totpSecret: MOCK_TOTP_SECRETS.bob,
   },
   {
     username: "carol",
@@ -66,6 +76,7 @@ const mockUsers = [
     sub: "cognito-carol",
     email: "carol@example.com",
     name: "Carol",
+    totpSecret: MOCK_TOTP_SECRETS.carol,
   },
   {
     username: "dave",
@@ -296,14 +307,68 @@ export async function runLoginFlow(
     headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: loginCookie },
     body: form.toString(),
   });
-  const finalLocation = loginRes.headers.get("Location");
-  if (finalLocation === null)
-    throw new Error(`login did not redirect: ${loginRes.status} ${await loginRes.text()}`);
-  return {
-    redirect: new URL(finalLocation),
-    codeVerifier,
-    cookie: cookieHeaderFrom(loginRes, loginCookie),
-  };
+  const completed = await completeMfa(harness, loginRes, loginCookie, credentials.username);
+  const finalLocation = completed.response.headers.get("Location");
+  if (finalLocation === null) {
+    throw new Error(
+      `login did not redirect: ${completed.response.status} ${await completed.response.text()}`,
+    );
+  }
+  return { redirect: new URL(finalLocation), codeVerifier, cookie: completed.cookie };
+}
+
+/**
+ * POST /login の応答が MFA のチャレンジか登録なら、モックの secret でコードを作って完了させる。
+ * 登録済みの人は /login/challenge、未登録の人は /login/mfa-setup へ 303 される
+ */
+export async function completeMfa(
+  harness: TestHarness,
+  loginRes: Response,
+  cookie: string,
+  username: string,
+): Promise<{ response: Response; cookie: string }> {
+  const location = loginRes.headers.get("Location") ?? "";
+  const url = new URL(location, ISSUER);
+  const mid = url.searchParams.get("mid") ?? "";
+  const withCookie = cookieHeaderFrom(loginRes, cookie);
+  if (url.pathname === "/login/challenge") {
+    const context = await harness.app.request(`${ISSUER}/api/login/challenge?mid=${mid}`, {
+      headers: { Cookie: withCookie },
+    });
+    const body = await readJson(context);
+    const secret = MOCK_TOTP_SECRETS[username] ?? "";
+    return post(harness, "/login/challenge", cookieHeaderFrom(context, withCookie), {
+      mid,
+      csrf: String(body.csrfToken),
+      code: generateTotp(secret, harness.clock.nowSeconds()),
+    });
+  }
+  if (url.pathname === "/login/mfa-setup") {
+    const setup = await harness.app.request(`${ISSUER}/api/login/mfa-setup?mid=${mid}`, {
+      headers: { Cookie: withCookie },
+    });
+    const body = await readJson(setup);
+    return post(harness, "/login/mfa-setup", cookieHeaderFrom(setup, withCookie), {
+      mid,
+      csrf: String(body.csrfToken),
+      code: generateTotp(String(body.secret), harness.clock.nowSeconds()),
+    });
+  }
+  return { response: loginRes, cookie: withCookie };
+}
+
+async function post(
+  harness: TestHarness,
+  path: string,
+  cookie: string,
+  fields: Record<string, string>,
+): Promise<{ response: Response; cookie: string }> {
+  const response = await harness.app.request(`${ISSUER}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+    body: new URLSearchParams(fields).toString(),
+  });
+  return { response, cookie: cookieHeaderFrom(response, cookie) };
 }
 
 export async function exchangeCode(

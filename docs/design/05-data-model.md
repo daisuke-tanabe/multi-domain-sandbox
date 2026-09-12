@@ -8,6 +8,7 @@ Identity DB は Auth Server が所有し、Auth Server だけが接続する。A
 サービスとテナントも別概念とし、tenant_services が契約を表す。OIDC Client はサービスと1対1で、テナントには紐付かない。判断事項D13。
 役割と権限は Identity DB にも Token にも置かず、各サービスの DB の members が役割を、permission_overrides が役割の既定に対する allow / deny を持つ。役割の語彙はサービスごとに違う。判断事項D17。
 主キーはすべてサロゲート ID とし、client_id や slug は UNIQUE 制約で守る公開識別子にする。redirect_uri はサービスごとの `redirect_uri_template` で登録し、client_secret は oidc_client_secrets に複数行持てる。判断事項D15。
+ブラウザから作られた SSO Session の記録と監査イベントは Identity DB の auth_sessions、auth_session_clients、audit_events に残す。揮発ストアのキーは Cookie の値、Refresh Token、認可コード、rid、CSRF の参照 ID、MFA の保留 ID の SHA-256 で、値の中にも生の秘密値を持たない。判断事項D21。MFA の保留状態は `sso:mfa` に 5 分だけ置き、登録済みの方式は `user_mfa_methods` に残す。判断事項D22。
 
 ## 全体像
 
@@ -21,6 +22,10 @@ flowchart LR
         oidc_client_secrets
         tenant_services["tenant_services<br/>契約"]
         tenant_service_members["tenant_service_members<br/>サービスごとの割り当て。役割なし"]
+        auth_sessions["auth_sessions<br/>SSO Session の記録。IP / UA"]
+        auth_session_clients["auth_session_clients<br/>code を発行したサービスとテナント"]
+        audit_events["audit_events<br/>監査イベント"]
+        user_mfa_methods["user_mfa_methods<br/>登録済み MFA 方式"]
     end
     subgraph CrmDB ["CRM DB  接続: crm-api のみ"]
         crm_members["crm.members<br/>役割 owner / admin / member / viewer"]
@@ -56,6 +61,11 @@ flowchart LR
     tenant_service_members --> tenant_services
     tenant_service_members --> users
     oidc_client_secrets --> oidc_clients
+    auth_sessions --> users
+    auth_session_clients --> auth_sessions
+    auth_session_clients --> oidc_clients
+    auth_session_clients --> tenants
+    user_mfa_methods --> users
     crm_overrides --> crm_members
     cms_overrides --> cms_members
     crm_members -. "tenant_id / user_id の値だけ共有。FKなし" .-> tenant_service_members
@@ -219,6 +229,86 @@ CREATE INDEX tenant_service_members_user_id_idx ON tenant_service_members (user_
 - 書き込むのは Auth Server だけ。サービスは `/admin/service-members` を client_secret_basic で呼び、自分のサービスの行だけを upsert と削除できる
 - API Server はこの表を参照しない。役割はサービスの DB の members から取る
 - ポータルはこの表と tenant_services、oidc_clients が active なサービスを並べる。役割は出さない
+
+### auth_sessions
+
+```sql
+CREATE TABLE auth_sessions (
+  id             TEXT PRIMARY KEY,            -- sid。ID Token に載せる公開識別子。Cookie の値ではない
+  user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  ip             TEXT NOT NULL,               -- X-Forwarded-For の先頭、なければ接続元
+  user_agent     TEXT NOT NULL,               -- 512 文字まで
+  created_at     TIMESTAMPTZ NOT NULL,
+  last_seen_at   TIMESTAMPTZ NOT NULL,
+  revoked_at     TIMESTAMPTZ,
+  revoke_reason  TEXT                         -- global_logout / user_revoked / service_member_revoked / refresh_token_reused / expired
+);
+CREATE INDEX auth_sessions_user_id_idx ON auth_sessions (user_id, status, last_seen_at DESC);
+```
+
+- ブラウザから作られた SSO Session の記録。揮発ストアの SsoSession とは別に残し、監査とポータルのセッション一覧に使う。判断事項D21
+- `createSsoSession` が作り、`/authorize` の到達で `touchSsoSession` が last_seen_at と ip と user_agent を更新する。前回と違えば `environment_changed` の監査イベントを残すが、それだけでは失効させない
+- 失効は Global Logout、ポータルからの失効、招待の解除、Refresh Token の再利用で status を revoked にし、理由を revoke_reason に残す。揮発ストアに既に無いセッションでも記録だけを revoked にできる
+- ポータルの一覧は status が active の行から作る。揮発ストアの寿命とは独立に残る
+
+### auth_session_clients
+
+```sql
+CREATE TABLE auth_session_clients (
+  session_id      TEXT NOT NULL REFERENCES auth_sessions (id) ON DELETE CASCADE,
+  oidc_client_id  TEXT NOT NULL REFERENCES oidc_clients (id) ON DELETE CASCADE,
+  tenant_id       TEXT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+  first_seen_at   TIMESTAMPTZ NOT NULL,
+  last_seen_at    TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (session_id, oidc_client_id, tenant_id)
+);
+```
+
+- その SSO Session で code を発行したサービスとテナントの組。`/authorize` の到達で upsert する
+- ポータルのセッション一覧で「入ったサービス」を出すことと、招待の解除でそのサービスとテナントに入っているセッションを絞り込むことに使う
+- 揮発ストアの `sso:clients` はサービス単位の集合で Global Logout の通知先。この表はテナントまで持つ
+
+### audit_events
+
+```sql
+CREATE TABLE audit_events (
+  id           TEXT PRIMARY KEY,              -- ULID
+  occurred_at  TIMESTAMPTZ NOT NULL,
+  kind         TEXT NOT NULL,
+  user_id      TEXT,
+  session_id   TEXT,                          -- sid
+  tenant_id    TEXT,
+  client_id    TEXT,                          -- oidc_clients.client_id
+  ip           TEXT,
+  user_agent   TEXT,
+  detail       JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX audit_events_user_id_idx ON audit_events (user_id, occurred_at DESC);
+CREATE INDEX audit_events_kind_idx ON audit_events (kind, occurred_at DESC);
+```
+
+- 監査イベント。kind は `login_succeeded` `login_failed` `session_touched` `environment_changed` `global_logout` `session_revoked` `refresh_token_reused` `refresh_token_client_mismatch` `authorization_code_reused` `service_member_invited` `service_member_revoked` `mfa_enrolled` `mfa_challenge_failed` `mfa_setup_expired`。定義は `apps/auth-api/src/domain/audit.ts`
+- Token 値、Cookie 値、パスワード、TOTP の secret は入れない。`login_failed` は理由コードだけを残し、ユーザー名を残さない
+- 外部キーは張らない。users の行を消しても監査の記録は残す
+- 記録の失敗はエラーログに出すだけで、ユーザーの操作を止めない
+- CloudWatch などの運用ログとは別。運用ログは保持期間で消えるが、この表は Identity DB に残る
+
+### user_mfa_methods
+
+```sql
+CREATE TABLE user_mfa_methods (
+  user_id      TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  method       TEXT NOT NULL CHECK (method IN ('totp')),
+  enrolled_at  TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (user_id, method)
+);
+```
+
+- 登録済みの MFA 方式。secret は Cognito が持ち、ここには方式と日時だけを残す
+- MFA を終えたログインのたびに `recordMfaMethod` が `ON CONFLICT DO NOTHING` で書く。認証アプリの登録を終えた直後に行ができ、Cognito 側で登録済みなのに記録が無い人もログイン時に揃う。既にある行は変えない
+- `GET /api/sessions` の `mfa_methods` としてポータルの `/security` に「多要素認証」の登録状況を出す
+- 方式は `MfaMethod` の判別共用体で当面 `totp` のみ。Passkey などは port と CHECK 制約に足す。判断事項D22
 
 ### 初期データ
 
@@ -409,34 +499,36 @@ suzuki は cms を契約していないため cms の DB に suzuki の行はな
 Redis 想定。すべて TTL 付き。ローカル検証はインメモリ Map。
 ストアは用途ごとにプレフィックスを分けて作る。`packages/shared/src/store-factory.ts` の `createStoreFactory` が `REDIS_URL` の有無で Redis とインメモリを切り替え、`kv` `set` `counter` の 3 種類を返す。auth-api は `infrastructure/stores.ts` の `createAuthStores`、`*-web` は `startWebCore` がプレフィックスを決める。Redis 上の実キーは `<プレフィックス>:<キー>` になる。テストは `createMemoryStoreFactory` を使う。
 一覧は `SetStore`、一回限りの消費は `getAndDelete`、ロックは `setIfAbsent`、レート制限は `CounterStore` を使う。値を読んで書き戻す形の一覧更新は持たない。
+auth-api の揮発ストアのキーに秘密値をそのまま使わない。Cookie の値、Refresh Token、認可コード、rid、CSRF の参照 ID、MFA の保留 ID `mid` は `packages/shared` の `keyDigest` の SHA-256 をキーにし、値の中にも生の秘密値を持たせない。`application/usecases/store-keys.ts` の `keyOf` がその入口。ストアの読み取りが漏れても、提示できる Cookie や Token を復元できない。判断事項D21。
 
-| プレフィックス | 種類 | 内容 |
-| --- | --- | --- |
-| `sso:sess` | kv | SSO Session |
-| `sso:sid` | kv | sid → SSO Session ID |
-| `sso:clients` | set | SSO Session ID → code を発行した client_id の集合。Global Logout の通知先 |
-| `sso:authreq` | kv | 認可リクエスト |
-| `sso:code` | kv | Authorization Code |
-| `sso:rt` | kv | Refresh Token |
-| `sso:rtfamily` | set | familyId → 系列の Refresh Token の集合 |
-| `sso:sidrt` | set | sid → Refresh Token 系列 ID の集合 |
-| `sso:csrf` | kv | ログインと Global Logout の CSRF トークン |
-| `sso:ratelimit` | counter | レート制限の固定窓カウンタ |
-| `<clientId>:sess` | kv | Tenant Session |
-| `<clientId>:sid` | set | sid → Tenant Session キーの集合 |
-| `<clientId>:pre` | kv | pre-auth |
-| `<clientId>:lock` | kv | Refresh ロック。`setIfAbsent` で取得 |
-| `<clientId>:ratelimit` | counter | `/auth/*` のレート制限カウンタ |
+| プレフィックス | 種類 | キー | 内容 |
+| --- | --- | --- | --- |
+| `sso:sess` | kv | Cookie の値の SHA-256 | SSO Session |
+| `sso:sid` | kv | sid | sid → SSO Session のキー |
+| `sso:clients` | set | SSO Session のキー | code を発行した client_id の集合。Global Logout の通知先 |
+| `sso:authreq` | kv | rid の SHA-256 | 認可リクエスト |
+| `sso:code` | kv | code の SHA-256 | Authorization Code |
+| `sso:rt` | kv | Token の SHA-256 | Refresh Token |
+| `sso:rtfamily` | set | familyId | 系列の Refresh Token のキーの集合。要素も SHA-256 |
+| `sso:sidrt` | set | sid | Refresh Token 系列 ID の集合 |
+| `sso:csrf` | kv | Cookie の参照 ID の SHA-256 | ログイン、認証アプリのコード、Global Logout、セッション失効の CSRF トークン |
+| `sso:mfa` | kv | 保留 ID `mid` の SHA-256 | パスワード認証のあと MFA を終えるまでの保留状態。TTL 5 分 |
+| `sso:ratelimit` | counter | `<名前>:<IP など>:<窓番号>` | レート制限の固定窓カウンタ |
+| `<clientId>:sess` | kv | `<tenantSlug>:<session_id>` | Tenant Session |
+| `<clientId>:sid` | set | `sid:<sid>` | Tenant Session キーの集合 |
+| `<clientId>:pre` | kv | `<tenantSlug>:<id>` | pre-auth |
+| `<clientId>:lock` | kv | `<tenantSlug>:<session_id>` | Refresh ロック。`setIfAbsent` で取得 |
+| `<clientId>:ratelimit` | counter | `<名前>:<IP など>:<窓番号>` | `/auth/*` のレート制限カウンタ |
 寿命はストアの TTL で管理し、値には `createdAt` のような期限計算用の項目を持たせない。アイドル期限と絶対期限を持つ SSO Session と Tenant Session は例外で、`packages/shared/src/session-expiry.ts` の共通判定を使う。
 
 ### SSO Session
 
-プレフィックス `sso:sess`、キー `<sso_session_id>`。TTL は絶対期限。
+プレフィックス `sso:sess`、キーは Cookie の値の SHA-256。TTL は絶対期限。
 
 ```typescript
 type SsoSession = {
-  id: string;                 // 256bit random。Cookie値
-  sid: string;                // ID Token に載せる公開識別子
+  id: string;                 // ストアのキー。256bit random の Cookie の値の SHA-256。Cookie の値そのものは持たない
+  sid: string;                // ID Token に載せる公開識別子。id とは別値。auth_sessions.id
   userId: string;             // users.id
   encryptedCognitoTokens: string; // Cognito の Access / ID / Refresh Token を暗号化した文字列
   authTime: number;
@@ -446,13 +538,14 @@ type SsoSession = {
 ```
 
 cognito_sub は保持しない。users.id で引けるため必要になった時点で Identity DB から取る。
-逆引き `sso:sid` の `<sid> → sso_session_id` を持ち、Back-Channel Logout と Refresh Token 失効に使う。
+逆引き `sso:sid` の `<sid> → SSO Session のキー` を持ち、Back-Channel Logout、Refresh Token 失効、ポータルと招待解除からの sid 指定の失効に使う。code と Refresh Token が持つ `ssoSessionId` もこのキーで、Cookie の値ではない。
+IP と User-Agent は揮発ストアには持たず、Identity DB の auth_sessions に記録する。
 code を発行したサービスは値には持たず、`sso:clients` の `<sso_session_id> → client_id の集合` に置く。例 `{crm, cms}`。Global Logout の通知先になる。集合にするのは、crm と cms への `/authorize` が同時に走ってもどちらの追加も落ちないようにするため。
 `POST /login` が成功したとき、Cookie が指す旧 SSO Session があれば `sso:sess` `sso:sid` `sso:clients` から破棄してから新しい ID を書く。
 
 ### 認可リクエスト
 
-プレフィックス `sso:authreq`、キー `<rid>`。TTL 30分。ログイン画面を挟む間の保持用。
+プレフィックス `sso:authreq`、キーは rid の SHA-256。TTL 30分。ログイン画面を挟む間の保持用。
 
 ```typescript
 type AuthorizationRequest = {
@@ -468,15 +561,42 @@ type AuthorizationRequest = {
 
 `/authorize` で検証済みの値だけを保存する。ログイン成功後は `application/usecases/pending-authorization.ts` が Client がまだ active でテナントが存在することだけを確かめ、パラメータは再検証せずにアクセス判定と code 発行へ進む。
 
+### MFA の保留状態
+
+プレフィックス `sso:mfa`、キーは `mid` の SHA-256。TTL は `MFA_PENDING_TTL_SECONDS` の 5 分。`POST /login` がパスワード認証の結果を置き、`/login/challenge` か `/login/mfa-setup` が MFA を終えたときに消す。判断事項D22。
+
+```typescript
+type MfaPending =
+  | {
+      kind: "totp_challenge";       // 認証アプリが登録済み
+      username: string;
+      cognitoSession: string;       // RespondToAuthChallenge に渡す Cognito の Session。短命
+      rid: string;                  // 保留していた認可リクエスト。ポータル用ログインは空文字
+      attempts: number;             // コード不一致の回数。監査に載せる
+    }
+  | {
+      kind: "totp_setup";           // 未登録。登録が終わるまで SSO Session を作らない
+      username: string;
+      sub: string;
+      email: string;
+      name: string | null;
+      encryptedTokens: string;      // パスワード認証で得た Cognito の Token。暗号化済み
+      rid: string;
+      encryptedSecret: string | null; // 登録中の secret。暗号化済み。未発行なら null
+      secretIssuedAt: number | null;  // secret の発行時刻。TOTP_SETUP_TTL_SECONDS の 3 分で失効
+    };
+```
+
+secret と Cognito の Token は SSO Session と同じ鍵で暗号化して置き、生の値は持たない。secret の期限は保留状態の TTL とは別に `secretIssuedAt` で判定し、期限が来たら AssociateSoftwareToken をやり直して置き換える。保留状態そのものは 5 分で消え、過ぎればパスワードからやり直す。
+
 ### Authorization Code
 
-プレフィックス `sso:code`、キー `<code>`。TTL 60秒。
+プレフィックス `sso:code`、キーは code の SHA-256。TTL 60秒。値に code そのものは持たない。
 
 ```typescript
 type AuthorizationCode =
   | {
       used: false;
-      code: string;
       clientId: string;
       redirectUri: string;
       scope: string;
@@ -490,20 +610,18 @@ type AuthorizationCode =
     }
   | {
       used: true;             // 再利用検知用。交換時に発行した Refresh Token の系列を持つ
-      code: string;
       familyId: string;
     };
 ```
 
-`used` の更新は `GETDEL` または Lua スクリプトで取得と削除を同時に行い、二重交換を排除する。
+`used` の更新は `GETDEL` または Lua スクリプトで取得と削除を同時に行い、二重交換を排除する。再利用を検知したら系列を失効させ、`authorization_code_reused` の監査イベントを残す。
 
 ### Refresh Token
 
-プレフィックス `sso:rt`、キー `<token>`。TTL 12時間。
+プレフィックス `sso:rt`、キーは Token の SHA-256。TTL 12時間。値に Token そのものは持たない。
 
 ```typescript
 type RefreshToken = {
-  token: string;
   familyId: string;           // ローテーション系列。再利用検知時に系列全体を失効
   clientId: string;
   userId: string;
@@ -516,9 +634,10 @@ type RefreshToken = {
 };
 ```
 
-逆引き `sso:rtfamily` の `<familyId> → token の集合` と `sso:sidrt` の `<sid> → familyId の集合` を `SetStore` で持つ。系列の値は token の一覧だけで、失効フラグは持たない。系列の失効は集合の全 token を並列に revoked へ更新する。refresh_token grant の検証は `validateRefreshContext` にまとめ、どの段階で失敗しても系列を 1 回だけ失効させる。
+逆引き `sso:rtfamily` の `<familyId> → Token のキーの集合` と `sso:sidrt` の `<sid> → familyId の集合` を `SetStore` で持つ。系列の集合が持つのは Token の SHA-256 だけで、Token の値も失効フラグも持たない。系列の失効は集合の全キーを並列に revoked へ更新する。refresh_token grant の検証は `validateRefreshContext` にまとめ、どの段階で失敗しても系列を 1 回だけ失効させる。
 
-消費は consume-first。`consumeRefreshToken` が `getAndDelete` で取り出し、直後に `status: "rotated"` で書き戻してから検証に進む。取り出した値が `active` でなければそのまま書き戻して再利用として扱う。同じ値を同時に提示されても取り出せるのは 1 回だけで、もう一方は存在しないため `invalid_grant` になり、系列は失効しない。別 Client からの提示は `client_mismatch` として系列全体を失効させる。
+消費は consume-first。`consumeRefreshToken` が提示された値の SHA-256 で `getAndDelete` し、直後に `status: "rotated"` で書き戻してから検証に進む。取り出した値が `active` でなければそのまま書き戻して再利用として扱う。同じ値を同時に提示されても取り出せるのは 1 回だけで、もう一方は存在しないため `invalid_grant` になり、系列は失効しない。別 Client からの提示は `client_mismatch` として系列全体を失効させる。再利用と別 Client からの提示は `refresh_token_reused` と `refresh_token_client_mismatch` の監査イベントを残し、警告ログにも出す。
+招待の解除では、`describeRefreshTokenFamily` で系列の clientId と tenantId を読み、解除されたサービスとテナントの系列だけを失効させる。
 
 ### Tenant Session
 
