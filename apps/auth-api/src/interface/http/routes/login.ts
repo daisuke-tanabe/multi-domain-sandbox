@@ -6,7 +6,11 @@ import type { CookiePolicy } from "@sandbox/shared";
 import { issueCsrfToken, verifyCsrfToken } from "../../../application/usecases/csrf.ts";
 import type { AuthDeps } from "../../../application/deps.ts";
 import { login, type LoginError } from "../../../application/usecases/login.ts";
-import { resumePendingAuthorization } from "../../../application/usecases/pending-authorization.ts";
+import {
+  deletePendingAuthorization,
+  loadPendingAuthorization,
+  resumePendingAuthorization,
+} from "../../../application/usecases/pending-authorization.ts";
 import { destroySsoSession, loadSsoSession } from "../../../application/usecases/sso-session.ts";
 import { errorPage } from "../views/pages.ts";
 import {
@@ -14,6 +18,7 @@ import {
   redirectForOutcome,
   readCsrfCookie,
   readSsoCookie,
+  requestEnvironment,
   writeCsrfCookie,
   writeSsoCookie,
 } from "./helpers.ts";
@@ -86,7 +91,7 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
     noStore(c);
     const rid = c.req.query("rid") ?? "";
     if (rid !== "") {
-      const request = await deps.stores.authorizationRequests.get(rid);
+      const request = await loadPendingAuthorization(deps, rid);
       if (request === undefined) {
         return c.json({ error: "expired_request", message: EXPIRED_REQUEST_MESSAGE }, 400);
       }
@@ -125,22 +130,31 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
         );
       }
 
-      const request =
-        form.rid === "" ? undefined : await deps.stores.authorizationRequests.get(form.rid);
+      const request = form.rid === "" ? undefined : await loadPendingAuthorization(deps, form.rid);
       if (form.rid !== "" && request === undefined) {
         return c.html(errorPage("ログインをやり直してください", EXPIRED_REQUEST_MESSAGE), 400);
       }
 
-      const result = await login(deps, { username: form.username, password: form.password });
+      const environment = requestEnvironment(c);
+      const result = await login(
+        deps,
+        { username: form.username, password: form.password },
+        environment,
+      );
       if (!result.ok) return c.redirect(loginRetryPath(form.rid, result.error.kind), 303);
 
       // 古い SSO Session を残さない。Cookie を上書きするだけでは前のセッションが期限まで生き続ける
       const previous = await loadSsoSession(deps, readSsoCookie(c, policy));
       if (previous !== undefined) await destroySsoSession(deps, previous);
-      writeSsoCookie(c, policy, result.value.session.id);
+      writeSsoCookie(c, policy, result.value.cookieValue);
       if (request === undefined) return c.redirect("/", 303);
-      await deps.stores.authorizationRequests.delete(form.rid);
-      const outcome = await resumePendingAuthorization(deps, request, result.value.session);
+      await deletePendingAuthorization(deps, form.rid);
+      const outcome = await resumePendingAuthorization(
+        deps,
+        request,
+        result.value.session,
+        environment,
+      );
       return c.redirect(redirectForOutcome(deps.issuer, request, outcome), 303);
     },
   );

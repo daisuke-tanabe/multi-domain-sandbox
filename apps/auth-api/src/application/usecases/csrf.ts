@@ -1,6 +1,7 @@
 import { randomToken, timingSafeEqualString } from "@sandbox/shared";
 import { CSRF_TOKEN_TTL_SECONDS } from "../../domain/policy.ts";
 import type { AuthDeps } from "../deps.ts";
+import { keyOf } from "./store-keys.ts";
 
 export interface IssuedCsrf {
   /** Cookie に入れる参照 ID */
@@ -15,7 +16,11 @@ export interface IssuedCsrf {
 export async function issueCsrfToken(deps: AuthDeps): Promise<IssuedCsrf> {
   const cookieValue = randomToken();
   const formToken = randomToken();
-  await deps.stores.csrfTokens.set(cookieValue, { token: formToken }, CSRF_TOKEN_TTL_SECONDS);
+  await deps.stores.csrfTokens.set(
+    keyOf(cookieValue),
+    { token: formToken },
+    CSRF_TOKEN_TTL_SECONDS,
+  );
   return { cookieValue, formToken };
 }
 
@@ -25,7 +30,7 @@ export async function verifyCsrfToken(
   formToken: string | undefined,
 ): Promise<boolean> {
   if (cookieValue === undefined || formToken === undefined) return false;
-  const stored = await deps.stores.csrfTokens.get(cookieValue);
+  const stored = await deps.stores.csrfTokens.get(keyOf(cookieValue));
   if (stored === undefined) return false;
   return timingSafeEqualString(stored.token, formToken);
 }

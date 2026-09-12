@@ -109,6 +109,32 @@ export class PgIdentityRepository implements IdentityRepository {
     };
   }
 
+  public async listClients(): Promise<ReadonlyArray<OidcClient>> {
+    const result = await this.pool.query(
+      `SELECT c.id, c.client_id, c.name, c.audience, c.redirect_uri_template, c.allowed_scopes,
+              c.status, c.backchannel_logout_uri,
+              COALESCE(
+                (SELECT array_agg(s.secret_hash) FROM identity.oidc_client_secrets s
+                  WHERE s.oidc_client_id = c.id AND s.status = 'active'),
+                '{}') AS secret_hashes
+         FROM identity.oidc_clients c ORDER BY c.client_id`,
+    );
+    return result.rows.map((raw) => {
+      const row = clientRow.parse(raw);
+      return {
+        id: row.id,
+        clientId: row.client_id,
+        name: row.name,
+        audience: row.audience,
+        redirectUriTemplate: row.redirect_uri_template,
+        secretHashes: row.secret_hashes,
+        allowedScopes: row.allowed_scopes,
+        status: row.status,
+        backchannelLogoutUri: row.backchannel_logout_uri,
+      };
+    });
+  }
+
   private async findUser(where: string, params: ReadonlyArray<unknown>): Promise<User | undefined> {
     const row = await queryOne(
       this.pool,

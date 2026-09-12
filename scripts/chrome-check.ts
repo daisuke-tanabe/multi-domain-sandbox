@@ -309,6 +309,16 @@ try {
       portalBody.includes("CMS"),
     String(await cdp.evaluate("location.href")),
   );
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/security` }));
+  const securityBody = await cdp.waitForText("この端末");
+  check(
+    "security page lists the current session with the services it entered",
+    securityBody.includes("セキュリティ") && securityBody.includes("CRM / Tanaka Inc."),
+    String(await cdp.evaluate("location.href")),
+  );
+
+  await cdp.navigateWith(() => cdp.send("Page.navigate", { url: `${AUTH_ORIGIN}/` }));
+  await cdp.waitForText("Sandbox ポータル");
   await cdp.navigateWith(() =>
     cdp.evaluate(`document.querySelector('a[href="${SUZUKI_CRM_ORIGIN}/auth/login"]').click()`),
   );

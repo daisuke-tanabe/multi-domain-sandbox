@@ -58,7 +58,10 @@ export default function Portal({ loaderData }: Route.ComponentProps) {
           ))
         )}
       </CardContent>
-      <CardFooter>
+      <CardFooter className="gap-2">
+        <Button asChild variant="outline">
+          <a href="/security">セキュリティ</a>
+        </Button>
         <Button asChild variant="outline">
           <a href="/logout">Sandbox 全体からログアウト</a>
         </Button>

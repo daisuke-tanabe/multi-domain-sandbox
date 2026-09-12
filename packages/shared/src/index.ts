@@ -15,7 +15,7 @@ export {
 } from "./random.ts";
 export { encrypt, decrypt, parseEncryptionKey } from "./encryption.ts";
 export type { EncryptionKey, DecryptError } from "./encryption.ts";
-export { hashSecret, verifySecret, verifySecretAgainstAny } from "./secret-hash.ts";
+export { hashSecret, keyDigest, verifySecret, verifySecretAgainstAny } from "./secret-hash.ts";
 export {
   TENANT_SLUG_PATTERN,
   expandRedirectUriTemplate,

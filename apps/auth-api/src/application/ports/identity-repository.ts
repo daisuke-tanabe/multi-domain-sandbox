@@ -14,6 +14,7 @@ import type {
 
 export interface IdentityRepository {
   findClient(clientId: string): Promise<OidcClient | undefined>;
+  listClients(): Promise<ReadonlyArray<OidcClient>>;
   findUserByCognitoSub(cognitoSub: string): Promise<User | undefined>;
   findUserByEmail(email: string): Promise<User | undefined>;
   findUserById(id: string): Promise<User | undefined>;

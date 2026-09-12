@@ -2,8 +2,15 @@ import { randomToken } from "@sandbox/shared";
 import { REFRESH_TOKEN_TTL_SECONDS } from "../../domain/policy.ts";
 import type { RefreshToken } from "../ports/stores.ts";
 import type { AuthDeps } from "../deps.ts";
+import { keyOf } from "./store-keys.ts";
 
-type NewRefreshTokenInput = Omit<RefreshToken, "token" | "familyId" | "status">;
+type NewRefreshTokenInput = Omit<RefreshToken, "familyId" | "status">;
+
+export interface IssuedRefreshToken {
+  /** Client に返す値。ストアにはこの値の SHA-256 だけを置く */
+  readonly value: string;
+  readonly record: RefreshToken;
+}
 
 /**
  * 新しい系列で Refresh Token を発行する。code 交換時に使う。
@@ -11,14 +18,14 @@ type NewRefreshTokenInput = Omit<RefreshToken, "token" | "familyId" | "status">;
 export async function createRefreshTokenFamily(
   deps: AuthDeps,
   input: NewRefreshTokenInput,
-): Promise<RefreshToken> {
+): Promise<IssuedRefreshToken> {
   const familyId = randomToken(16);
-  const token = await storeRefreshToken(deps, { ...input, familyId });
+  const issued = await storeRefreshToken(deps, { ...input, familyId });
   await Promise.all([
-    deps.stores.refreshTokenFamilies.add(familyId, token.token, REFRESH_TOKEN_TTL_SECONDS),
+    deps.stores.refreshTokenFamilies.add(familyId, keyOf(issued.value), REFRESH_TOKEN_TTL_SECONDS),
     deps.stores.sidRefreshFamilies.add(input.sid, familyId, REFRESH_TOKEN_TTL_SECONDS),
   ]);
-  return token;
+  return issued;
 }
 
 export type ConsumeResult =
@@ -31,15 +38,16 @@ export type ConsumeResult =
  * 同じ値を同時に提示した 2 つ目は unknown か reused になり、両方が成功することはない。
  */
 export async function consumeRefreshToken(deps: AuthDeps, value: string): Promise<ConsumeResult> {
-  const stored = await deps.stores.refreshTokens.getAndDelete(value);
+  const key = keyOf(value);
+  const stored = await deps.stores.refreshTokens.getAndDelete(key);
   if (stored === undefined) return { kind: "unknown" };
   if (stored.status !== "active") {
     // 再利用検知の記録は残す
-    await deps.stores.refreshTokens.set(value, stored, REFRESH_TOKEN_TTL_SECONDS);
+    await deps.stores.refreshTokens.set(key, stored, REFRESH_TOKEN_TTL_SECONDS);
     return { kind: "reused", token: stored };
   }
   await deps.stores.refreshTokens.set(
-    value,
+    key,
     { ...stored, status: "rotated" },
     REFRESH_TOKEN_TTL_SECONDS,
   );
@@ -52,11 +60,11 @@ export async function consumeRefreshToken(deps: AuthDeps, value: string): Promis
 export async function rotateRefreshToken(
   deps: AuthDeps,
   current: RefreshToken,
-): Promise<RefreshToken> {
+): Promise<IssuedRefreshToken> {
   const next = await storeRefreshToken(deps, current);
   await deps.stores.refreshTokenFamilies.add(
     current.familyId,
-    next.token,
+    keyOf(next.value),
     REFRESH_TOKEN_TTL_SECONDS,
   );
   return next;
@@ -66,13 +74,13 @@ export async function rotateRefreshToken(
  * 系列全体を失効させる。再利用検知、Logout、Membership 削除時に使う。
  */
 export async function revokeRefreshTokenFamily(deps: AuthDeps, familyId: string): Promise<void> {
-  const tokens = await deps.stores.refreshTokenFamilies.members(familyId);
+  const keys = await deps.stores.refreshTokenFamilies.members(familyId);
   await Promise.all(
-    tokens.map(async (token) => {
-      const stored = await deps.stores.refreshTokens.get(token);
+    keys.map(async (key) => {
+      const stored = await deps.stores.refreshTokens.get(key);
       if (stored === undefined) return;
       await deps.stores.refreshTokens.set(
-        token,
+        key,
         { ...stored, status: "revoked" },
         REFRESH_TOKEN_TTL_SECONDS,
       );
@@ -81,12 +89,25 @@ export async function revokeRefreshTokenFamily(deps: AuthDeps, familyId: string)
   deps.logger.warn("refresh token family revoked", { familyId });
 }
 
+/** 系列の先頭の記録。どの Client とテナントの系列かを知るために使う */
+export async function describeRefreshTokenFamily(
+  deps: AuthDeps,
+  familyId: string,
+): Promise<RefreshToken | undefined> {
+  const keys = await deps.stores.refreshTokenFamilies.members(familyId);
+  for (const key of keys) {
+    const stored = await deps.stores.refreshTokens.get(key);
+    if (stored !== undefined) return stored;
+  }
+  return undefined;
+}
+
 async function storeRefreshToken(
   deps: AuthDeps,
   input: NewRefreshTokenInput & { familyId: string },
-): Promise<RefreshToken> {
-  const token: RefreshToken = {
-    token: randomToken(),
+): Promise<IssuedRefreshToken> {
+  const value = randomToken();
+  const record: RefreshToken = {
     familyId: input.familyId,
     clientId: input.clientId,
     userId: input.userId,
@@ -97,6 +118,6 @@ async function storeRefreshToken(
     authTime: input.authTime,
     status: "active",
   };
-  await deps.stores.refreshTokens.set(token.token, token, REFRESH_TOKEN_TTL_SECONDS);
-  return token;
+  await deps.stores.refreshTokens.set(keyOf(value), record, REFRESH_TOKEN_TTL_SECONDS);
+  return { value, record };
 }

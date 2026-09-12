@@ -1,6 +1,8 @@
 import type { Clock, EncryptionKey, FetchLike, Logger, SigningKey } from "@sandbox/shared";
+import type { AuditRepository } from "./ports/audit-repository.ts";
 import type { CognitoAuthenticator } from "./ports/cognito.ts";
 import type { IdentityRepository } from "./ports/identity-repository.ts";
+import type { SessionRepository } from "./ports/session-repository.ts";
 import type { AuthStores } from "./ports/stores.ts";
 
 /**
@@ -11,6 +13,9 @@ export interface AuthDeps {
   readonly clock: Clock;
   readonly stores: AuthStores;
   readonly identity: IdentityRepository;
+  /** identity DB の auth_sessions。揮発ストアとは別に残す記録 */
+  readonly sessions: SessionRepository;
+  readonly audit: AuditRepository;
   readonly cognito: CognitoAuthenticator;
   readonly signingKey: SigningKey;
   /** 先頭が現行鍵。残りは復号のみに使う旧鍵 */

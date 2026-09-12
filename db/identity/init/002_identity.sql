@@ -114,4 +114,53 @@ CREATE INDEX tenant_service_members_user_id_idx ON identity.tenant_service_membe
 CREATE TRIGGER tenant_service_members_touch_updated_at BEFORE UPDATE ON identity.tenant_service_members
   FOR EACH ROW EXECUTE FUNCTION identity.touch_updated_at();
 
+-- ブラウザから作られた SSO Session の記録。id は ID Token に載せる sid で、Cookie の値ではない
+-- 揮発ストアの寿命とは独立に残し、監査とポータルの一覧に使う
+CREATE TABLE identity.auth_sessions (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
+  status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  ip             TEXT NOT NULL,
+  user_agent     TEXT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL,
+  last_seen_at   TIMESTAMPTZ NOT NULL,
+  revoked_at     TIMESTAMPTZ,
+  revoke_reason  TEXT
+);
+CREATE INDEX auth_sessions_user_id_idx ON identity.auth_sessions (user_id, status, last_seen_at DESC);
+
+-- その SSO Session で code を発行したサービスとテナント。ポータルの一覧と、招待解除時の対象の絞り込みに使う
+CREATE TABLE identity.auth_session_clients (
+  session_id      TEXT NOT NULL REFERENCES identity.auth_sessions (id) ON DELETE CASCADE,
+  oidc_client_id  TEXT NOT NULL REFERENCES identity.oidc_clients (id) ON DELETE CASCADE,
+  tenant_id       TEXT NOT NULL REFERENCES identity.tenants (id) ON DELETE CASCADE,
+  first_seen_at   TIMESTAMPTZ NOT NULL,
+  last_seen_at    TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (session_id, oidc_client_id, tenant_id)
+);
+
+-- 監査イベント。Token 値、Cookie 値、パスワード、TOTP の secret は入れない
+CREATE TABLE identity.audit_events (
+  id           TEXT PRIMARY KEY,
+  occurred_at  TIMESTAMPTZ NOT NULL,
+  kind         TEXT NOT NULL,
+  user_id      TEXT,
+  session_id   TEXT,
+  tenant_id    TEXT,
+  client_id    TEXT,
+  ip           TEXT,
+  user_agent   TEXT,
+  detail       JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX audit_events_user_id_idx ON identity.audit_events (user_id, occurred_at DESC);
+CREATE INDEX audit_events_kind_idx ON identity.audit_events (kind, occurred_at DESC);
+
+-- 登録済みの MFA 方式。secret は Cognito が持ち、ここには方式と日時だけを残す
+CREATE TABLE identity.user_mfa_methods (
+  user_id      TEXT NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
+  method       TEXT NOT NULL CHECK (method IN ('totp')),
+  enrolled_at  TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (user_id, method)
+);
+
 RESET ROLE;

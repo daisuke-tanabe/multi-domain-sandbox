@@ -1,11 +1,13 @@
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
+  clientIp,
   cookieName,
   sessionCookieAttributes,
   shortLivedCookieAttributes,
   type CookiePolicy,
 } from "@sandbox/shared";
+import type { RequestEnvironment } from "../../../domain/session.ts";
 import type { Result } from "@sandbox/shared";
 import { COOKIE_CSRF, COOKIE_SSO_SESSION, CSRF_TOKEN_TTL_SECONDS } from "../../../domain/policy.ts";
 import type { AccessCheckError, IssuedCode } from "../../../application/usecases/authorize.ts";
@@ -78,6 +80,11 @@ export function redirectForOutcome(
     ...(outcome.error.kind === "access_denied" && { error_description: outcome.error.reason }),
     state: request.state,
   });
+}
+
+/** ブラウザから届いた環境。監査とセッション記録に使う。Token 値は含めない */
+export function requestEnvironment(c: Context): RequestEnvironment {
+  return { ip: clientIp(c), userAgent: (c.req.header("user-agent") ?? "").slice(0, 512) };
 }
 
 export function noStore(c: Context): void {

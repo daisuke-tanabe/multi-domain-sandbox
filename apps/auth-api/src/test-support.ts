@@ -11,7 +11,9 @@ import {
   silentLogger,
   type FetchLike,
 } from "@sandbox/shared";
+import { MemoryAuditRepository } from "./infrastructure/memory-audit-repository.ts";
 import { MemoryIdentityRepository } from "./infrastructure/memory-identity-repository.ts";
+import { MemorySessionRepository } from "./infrastructure/memory-session-repository.ts";
 import { createAuthStores } from "./infrastructure/stores.ts";
 import { MockCognitoAuthenticator } from "./infrastructure/mock-cognito.ts";
 import { createAuthApp } from "./interface/http/app.ts";
@@ -79,6 +81,8 @@ export interface TestHarness {
   readonly deps: AuthDeps;
   readonly clock: FakeClock;
   readonly identity: MemoryIdentityRepository;
+  readonly sessions: MemorySessionRepository;
+  readonly audit: MemoryAuditRepository;
 }
 
 export interface HarnessOptions {
@@ -166,18 +170,29 @@ export async function createHarness(options: HarnessOptions = {}): Promise<TestH
   const encryptionKey = parseEncryptionKey("test", randomBytes(32).toString("base64"));
   if (!encryptionKey.ok) throw new Error("encryption key setup failed");
 
+  const sessions = new MemorySessionRepository();
+  const audit = new MemoryAuditRepository();
   const deps: AuthDeps = {
     issuer: ISSUER,
     clock,
     stores: createAuthStores(createMemoryStoreFactory(clock)),
     identity,
+    sessions,
+    audit,
     cognito: new MockCognitoAuthenticator(mockUsers, clock),
     signingKey: await generateSigningKey(),
     encryptionKeys: [encryptionKey.value],
     logger: silentLogger,
     fetch: options.fetch ?? (async () => new Response(null, { status: 502 })),
   };
-  return { app: createAuthApp({ deps, cookiePolicy: { secure: false } }), deps, clock, identity };
+  return {
+    app: createAuthApp({ deps, cookiePolicy: { secure: false } }),
+    deps,
+    clock,
+    identity,
+    sessions,
+    audit,
+  };
 }
 
 /** Set-Cookie ヘッダから name=value の部分だけを集めた Cookie ヘッダ値を作る */

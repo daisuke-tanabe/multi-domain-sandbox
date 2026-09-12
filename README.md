@@ -40,7 +40,7 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | `tools/provision` | RDS の identity / crm / cms のロール、スキーマ、シードの投入と Cognito テストユーザー作成。ECS の一回限りタスクで冪等。SQL は `db/<name>/init` を共用する | |
 | `terraform` | AWS 構成。ECS Fargate + ALB、RDS、ElastiCache、Cognito、Route 53、ACM | |
 | `scripts/smoke.ts` | 起動中のサーバーに対する実 HTTP の疎通確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービスへの SSO、サービスごとの役割と権限、未契約サービスの拒否まで確認する | |
-| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。サービスと auth の SPA を実際に描画し、画面の文字列が出るまで待って確認する。フォームの検証エラー、作成、削除まで 15 項目 | |
+| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。サービスと auth の SPA を実際に描画し、画面の文字列が出るまで待って確認する。フォームの検証エラー、作成、削除、セキュリティ画面まで 16 項目 | |
 | `scripts/deploy.sh` 他 | AWS へのビルドと apply。手順は [docs/deploy.md](./docs/deploy.md) | |
 
 ## 前提

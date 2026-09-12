@@ -205,6 +205,13 @@ apps/auth-api/src/
 - auth-api の管理 API `/admin/service-members` は client_secret_basic で認証し、呼び出した Client 自身のサービスへの割り当てだけを操作させる。`/token` と同じレート制限を通す
 - 権限の確定は役割の既定 ∪ allow − deny。deny が優先し、未知の permission 名は無視する。`requirePermission` は確定した集合で判定し、Token の role や permissions claim は無視する
 - Repository は tenant_id を必須引数に取る
+- 揮発ストアのキーに秘密値をそのまま使わない。Cookie の値、Refresh Token、認可コード、rid、CSRF の参照 ID は `keyDigest` の SHA-256 をキーにし、値の中にも生の秘密値を持たせない。ストアの読み取りが漏れても提示できる値にならないようにする
+- SSO Session の作成、`/authorize` の到達、Refresh、失効、再利用検知、招待と解除、MFA の登録と失敗は identity DB の `audit_events` に監査イベントとして残す。Token 値、Cookie 値、パスワード、TOTP の secret は残さない
+- ブラウザから届いた IP と User-Agent は SSO Session の作成時と `/authorize` の到達時に `auth_sessions` に記録する。前回と違えば `environment_changed` の監査イベントと警告ログを出すが、それだけでは失効させない。Refresh はサーバー間通信で端末の環境を運ばないので比較しない。Refresh Token の再利用や別 Client からの提示のような強い侵害シグナルは系列を即時失効させる
+- セッションの一覧は `auth_sessions` と `auth_session_clients` から作り、本人はポータルで他の端末を失効できる。失効は Global Logout と同じ手順で、Refresh Token 系列の失効、Cognito の Refresh Token 失効、SSO Session 削除、Back-Channel Logout を行う
+- 招待の解除は identity の割り当てを消すだけで終わらせない。その人の SSO Session のうち解除されたサービスとテナントに入っているものについて Refresh Token 系列を失効させ、そのサービスへ Back-Channel Logout を送る。SSO Session 自体は残し、他のサービスには影響させない
+- MFA は BtoB の前提として全員必須にする。初期の方式は認証アプリの TOTP で、方式は `MfaMethod` の判別共用体にして Passkey などを後から足せるようにする。Cognito の User Pool は OPTIONAL にし、必須化は auth-api が行う。登録していない人はパスワード認証のあとに登録画面へ送り、登録が終わるまで SSO Session を作らない。登録済みの人はログインのたびにコードを求める。テナント単位の方針は将来の拡張
+- TOTP の登録は auth-api がパスワード認証で得た Cognito の Access Token で AssociateSoftwareToken を呼んで始める。secret と QR は auth-api が決めた期限で失効させ、期限が来たら AssociateSoftwareToken をやり直して新しい secret と QR を出す。secret は暗号化して揮発ストアに置き、DB には登録した方式と日時だけを残す
 
 ## DB 規約
 

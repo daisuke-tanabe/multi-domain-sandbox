@@ -1194,7 +1194,7 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `packages/api-core/src/application/members.ts` `packages/api-core/src/interface/http/routes/members.ts` `packages/api-core/src/infrastructure/auth-admin-client.ts` | 管理アカウントの一覧、招待、役割変更、権限の上書き、削除。招待と削除は Auth Server の管理 API を client_secret_basic で呼ぶ |
 | `apps/crm-api/src/definition.ts` `apps/cms-api/src/definition.ts` | サービスごとの役割と権限の宣言。CRM は owner / admin / member / viewer と `end_users:*`、CMS は owner / editor / viewer と `posts:*` |
 | `scripts/smoke.ts` | 実 HTTP での受け入れ確認。SPA が使う `/session` と `/api/v1/me` の JSON を直接叩き、別サービス SSO と未契約サービスの拒否まで通す |
-| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する 15 項目。フォームの検証エラー、作成、削除も含む。CSP のような fetch では見えない問題を検出する |
+| `scripts/chrome-check.ts` | 実 Chrome での受け入れ確認。SPA を描画し、画面の文字列が出るまで待って判定する 16 項目。フォームの検証エラー、作成、削除、セキュリティ画面も含む。CSP のような fetch では見えない問題を検出する |
 
 ## 11. 用語
 

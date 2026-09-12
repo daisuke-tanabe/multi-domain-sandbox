@@ -2,6 +2,8 @@ import { err, ok, type Result } from "@sandbox/shared";
 import { ulid } from "ulid";
 import type { OidcClient, ServiceMember, User } from "../../domain/identity.ts";
 import type { AuthDeps } from "../deps.ts";
+import { recordAudit } from "./audit.ts";
+import { revokeClientAccess } from "./global-logout.ts";
 
 /**
  * サービスが自分のテナントに人を招待する管理 API のロジック。
@@ -46,10 +48,12 @@ export async function inviteServiceMember(
       name: input.name,
     }));
   await deps.identity.upsertServiceMembership(tenantId.value, client.id, user.id);
-  deps.logger.info("service member invited", {
-    clientId: client.clientId,
-    tenantId: input.tenantId,
+  await recordAudit(deps, {
+    kind: "service_member_invited",
     userId: user.id,
+    tenantId: tenantId.value,
+    clientId: client.clientId,
+    detail: { linked: user.cognitoSub !== null },
   });
   return ok(user);
 }
@@ -64,10 +68,14 @@ export async function revokeServiceMember(
   const user = await deps.identity.findUserById(input.userId);
   if (user === undefined) return err({ kind: "user_not_found" });
   await deps.identity.removeServiceMembership(tenantId.value, client.id, user.id);
-  deps.logger.info("service member revoked", {
-    clientId: client.clientId,
-    tenantId: input.tenantId,
+  // 割り当てを消すだけでは Refresh まで使えてしまう。そのサービスへのアクセスだけを即時に切る
+  const revokedSessions = await revokeClientAccess(deps, user.id, client, tenantId.value);
+  await recordAudit(deps, {
+    kind: "service_member_revoked",
     userId: user.id,
+    tenantId: tenantId.value,
+    clientId: client.clientId,
+    detail: { revokedSessions },
   });
   return ok(undefined);
 }

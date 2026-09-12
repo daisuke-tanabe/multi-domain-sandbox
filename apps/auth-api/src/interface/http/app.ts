@@ -17,6 +17,7 @@ import { loginRoutes } from "./routes/login.ts";
 import { tokenRoutes } from "./routes/token.ts";
 import { logoutRoutes } from "./routes/logout.ts";
 import { portalRoutes } from "./routes/portal.ts";
+import { sessionRoutes } from "./routes/sessions.ts";
 import { userinfoRoutes } from "./routes/userinfo.ts";
 import type { AuthDeps } from "../../application/deps.ts";
 import { errorPage } from "./views/pages.ts";
@@ -81,6 +82,8 @@ export function createAuthApp(options: AuthAppOptions): Hono {
   const logoutLimit = rateLimit("logout", { store: deps.stores.rateLimits, ...RATE_LIMITS.login });
   app.use("/logout", logoutLimit);
   app.use("/api/logout", logoutLimit);
+  app.use("/api/sessions", logoutLimit);
+  app.use("/sessions/*", logoutLimit);
 
   app.route("/", discoveryRoutes(deps));
   app.route("/", authorizeRoutes(deps, cookiePolicy));
@@ -90,6 +93,7 @@ export function createAuthApp(options: AuthAppOptions): Hono {
   app.route("/", userinfoRoutes(deps));
   app.route("/", logoutRoutes(deps, cookiePolicy));
   app.route("/", portalRoutes(deps, cookiePolicy));
+  app.route("/", sessionRoutes(deps, cookiePolicy));
 
   // 上のどの経路にも当たらなかった GET は SPA へ。/ /login /logout を SPA が描く
   mountSpa(app, spa);

@@ -2,8 +2,10 @@ import { err, ok, type Result } from "@sandbox/shared";
 import { ulid } from "ulid";
 import type { CognitoAuthError, CognitoCredentials } from "../ports/cognito.ts";
 import type { User } from "../../domain/identity.ts";
+import type { RequestEnvironment } from "../../domain/session.ts";
 import type { SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "../deps.ts";
+import { recordAudit } from "./audit.ts";
 import { createSsoSession } from "./sso-session.ts";
 
 export type LoginError = CognitoAuthError | { kind: "user_disabled" };
@@ -11,6 +13,8 @@ export type LoginError = CognitoAuthError | { kind: "user_disabled" };
 export interface LoginSuccess {
   readonly user: User;
   readonly session: SsoSession;
+  /** Cookie に入れる値 */
+  readonly cookieValue: string;
 }
 
 /**
@@ -24,23 +28,42 @@ export interface LoginSuccess {
 export async function login(
   deps: AuthDeps,
   credentials: CognitoCredentials,
+  environment: RequestEnvironment,
 ): Promise<Result<LoginSuccess, LoginError>> {
   const authenticated = await deps.cognito.authenticate(credentials);
   if (!authenticated.ok) {
-    deps.logger.info("login failed", { reason: authenticated.error.kind });
+    // ユーザー名は残さない。列挙の材料になる
+    await recordAudit(deps, {
+      kind: "login_failed",
+      ip: environment.ip,
+      userAgent: environment.userAgent,
+      detail: { reason: authenticated.error.kind },
+    });
     return authenticated;
   }
   const { sub, email, name } = authenticated.value;
 
   const user = await resolveUser(deps, sub, email, name ?? null);
   if (user.status !== "active") {
-    deps.logger.warn("login rejected for disabled user", { userId: user.id });
+    await recordAudit(deps, {
+      kind: "login_failed",
+      userId: user.id,
+      ip: environment.ip,
+      userAgent: environment.userAgent,
+      detail: { reason: "user_disabled" },
+    });
     return err({ kind: "user_disabled" });
   }
 
-  const session = await createSsoSession(deps, user, authenticated.value);
-  deps.logger.info("sso session created", { userId: user.id });
-  return ok({ user, session });
+  const created = await createSsoSession(deps, user, authenticated.value, environment);
+  await recordAudit(deps, {
+    kind: "login_succeeded",
+    userId: user.id,
+    sessionId: created.session.sid,
+    ip: environment.ip,
+    userAgent: environment.userAgent,
+  });
+  return ok({ user, session: created.session, cookieValue: created.cookieValue });
 }
 
 async function resolveUser(

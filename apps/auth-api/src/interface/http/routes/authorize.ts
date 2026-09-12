@@ -15,6 +15,7 @@ import {
   noStore,
   readSsoCookie,
   redirectForOutcome,
+  requestEnvironment,
 } from "./helpers.ts";
 
 /**
@@ -37,7 +38,7 @@ export function authorizeRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       return c.redirect(`/login?rid=${encodeURIComponent(rid)}`);
     }
 
-    const outcome = await authorizeWithSession(deps, request, session);
+    const outcome = await authorizeWithSession(deps, request, session, requestEnvironment(c));
     return c.redirect(redirectForOutcome(deps.issuer, request, outcome));
   });
 

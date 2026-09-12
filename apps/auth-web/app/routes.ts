@@ -5,4 +5,5 @@ export default [
   index("features/portal/portal.route.tsx"),
   route("login", "features/login/login.route.tsx"),
   route("logout", "features/logout/logout.route.tsx"),
+  route("security", "features/security/security.route.tsx"),
 ] satisfies RouteConfig;

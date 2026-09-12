@@ -24,3 +24,11 @@ export function verifySecret(secret: string, stored: string): boolean {
 export function verifySecretAgainstAny(secret: string, stored: ReadonlyArray<string>): boolean {
   return stored.some((hash) => verifySecret(secret, hash));
 }
+
+/**
+ * 揮発ストアのキーに使うダイジェスト。Cookie の値や Refresh Token をそのままキーにしない。
+ * 値は十分に長い乱数である前提で SHA-256 をそのまま使う
+ */
+export function keyDigest(secret: string): string {
+  return createHash(ALGORITHM).update(secret).digest("base64url");
+}

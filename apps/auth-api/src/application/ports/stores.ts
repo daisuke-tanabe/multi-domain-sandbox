@@ -6,6 +6,7 @@ import type { CounterStore, KeyValueStore, SetStore } from "@sandbox/shared";
  * 一覧は SetStore に置き、並行更新で要素が落ちないようにする。
  */
 export interface SsoSession {
+  /** ストアのキー。Cookie の値の SHA-256 で、Cookie の値そのものは持たない */
   readonly id: string;
   /** ID Token に載せる公開識別子。id とは別値 */
   readonly sid: string;
@@ -28,10 +29,10 @@ export interface AuthorizationRequest {
   readonly codeChallenge: string;
 }
 
+/** キーは code の SHA-256。値に code そのものは持たない */
 export type AuthorizationCode =
   | {
       readonly used: false;
-      readonly code: string;
       readonly clientId: string;
       readonly redirectUri: string;
       readonly scope: string;
@@ -46,14 +47,13 @@ export type AuthorizationCode =
   | {
       /** 再利用検知用。交換時に発行した Refresh Token の系列を保持する */
       readonly used: true;
-      readonly code: string;
       readonly familyId: string;
     };
 
 export type RefreshTokenStatus = "active" | "rotated" | "revoked";
 
+/** キーは Token の SHA-256。値に Token そのものは持たない */
 export interface RefreshToken {
-  readonly token: string;
   readonly familyId: string;
   readonly clientId: string;
   readonly userId: string;
@@ -78,7 +78,7 @@ export interface AuthStores {
   readonly authorizationRequests: KeyValueStore<AuthorizationRequest>;
   readonly authorizationCodes: KeyValueStore<AuthorizationCode>;
   readonly refreshTokens: KeyValueStore<RefreshToken>;
-  /** familyId → その系列で発行した Refresh Token の集合。一括失効に使う */
+  /** familyId → その系列で発行した Refresh Token のキーの集合。一括失効に使う */
   readonly refreshTokenFamilies: SetStore;
   readonly csrfTokens: KeyValueStore<CsrfToken>;
   /** sid → Refresh Token 系列 ID の集合。Global Logout で一括失効する */

@@ -1,4 +1,4 @@
-import { toJwks, verifyJwt, MemoryKeyValueStore } from "@sandbox/shared";
+import { keyDigest, toJwks, verifyJwt, MemoryKeyValueStore } from "@sandbox/shared";
 import { beforeEach, describe, expect, test } from "vitest";
 import {
   ALICE_ID,
@@ -245,10 +245,10 @@ describe("SSO to tenant-b with an existing SSO session", () => {
     );
 
     expect(second.redirect.searchParams.get("error")).toBe("access_denied");
-    const session = await harness.deps.stores.ssoSessions.get(
-      first.cookie.replace(/.*sso_session=([^;]+).*/, "$1"),
-    );
-    expect(session).toBeDefined();
+    const rawCookie = first.cookie.replace(/.*sso_session=([^;]+).*/, "$1");
+    // ストアのキーは Cookie の値の SHA-256。生の値ではストアを引けない
+    expect(await harness.deps.stores.ssoSessions.get(rawCookie)).toBeUndefined();
+    expect(await harness.deps.stores.ssoSessions.get(keyDigest(rawCookie))).toBeDefined();
   });
 
   test("requires login again after SSO session idle timeout", async () => {
@@ -918,5 +918,183 @@ describe("service admin api and invitation", () => {
     expect(revoked.status).toBe(204);
     expect(flow.redirect.searchParams.get("error")).toBe("access_denied");
     expect(flow.redirect.searchParams.get("error_description")).toBe("no_membership");
+  });
+
+  test("revoking cuts the running session for that service immediately and notifies the client", async () => {
+    // Arrange: alice が tanaka.crm と tanaka.cms に入っている。Back-Channel の送信先を記録する
+    const received: string[] = [];
+    const withFetch = await createHarness({
+      fetch: async (url) => {
+        received.push(String(url));
+        return new Response(null, { status: 200 });
+      },
+    });
+    const crm = await runLoginFlow(withFetch, ALICE);
+    const crmTokens = await readTokenBody(
+      await exchangeCode(withFetch, {
+        code: crm.redirect.searchParams.get("code") ?? "",
+        codeVerifier: crm.codeVerifier,
+      }),
+    );
+    const cms = await runLoginFlow(
+      withFetch,
+      ALICE,
+      { clientId: "cms", redirectUri: TANAKA_CMS_REDIRECT, state: "s2", nonce: "n2" },
+      crm.cookie,
+    );
+    const cmsTokens = await readTokenBody(
+      await exchangeCode(withFetch, {
+        code: cms.redirect.searchParams.get("code") ?? "",
+        codeVerifier: cms.codeVerifier,
+        clientId: "cms",
+        redirectUri: TANAKA_CMS_REDIRECT,
+      }),
+    );
+
+    // Act: crm への割り当てを解除する
+    const revoked = await withFetch.app.request(`${ISSUER}/admin/service-members`, {
+      method: "DELETE",
+      headers: { Authorization: basicAuth("crm"), "Content-Type": "application/json" },
+      body: JSON.stringify({ tenant_id: TANAKA_ID, user_id: ALICE_ID }),
+    });
+    const crmRefresh = await refresh(withFetch, crmTokens.refresh_token);
+    const cmsRefresh = await refresh(withFetch, cmsTokens.refresh_token, "cms");
+    const portal = await withFetch.app.request(`${ISSUER}/api/portal`, {
+      headers: { Cookie: crm.cookie },
+    });
+
+    // Assert: crm の Refresh だけが失効し、cms と SSO Session は残る。crm には Back-Channel が届く
+    expect(revoked.status).toBe(204);
+    expect(crmRefresh.status).toBe(400);
+    expect(cmsRefresh.status).toBe(200);
+    expect(portal.status).toBe(200);
+    expect(received).toEqual(["http://crm.localhost:3001/auth/backchannel-logout"]);
+    expect(withFetch.audit.ofKind("service_member_revoked")).toHaveLength(1);
+  });
+});
+
+describe("sessions and audit", () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  test("records the session with the browser environment and audits login and environment changes", async () => {
+    const first = await runLoginFlow(harness, ALICE);
+    const { url } = authorizeUrl({ state: "s2", nonce: "n2" });
+    const res = await harness.app.request(url, {
+      headers: { Cookie: first.cookie, "User-Agent": "another-browser" },
+    });
+
+    const [record] = harness.sessions.all();
+    expect(res.headers.get("Location")).toContain("code=");
+    expect(record?.status).toBe("active");
+    expect(record?.userAgent).toBe("another-browser");
+    expect(harness.audit.ofKind("login_succeeded")).toHaveLength(1);
+    expect(harness.audit.ofKind("environment_changed")).toHaveLength(1);
+    expect(harness.audit.ofKind("environment_changed")[0]?.detail).toMatchObject({
+      previous: { userAgent: "" },
+      current: { userAgent: "another-browser" },
+    });
+  });
+
+  test("audits failed logins without the username", async () => {
+    const { url } = authorizeUrl();
+    const authorizeRes = await harness.app.request(url);
+    const rid =
+      new URL(`${ISSUER}${authorizeRes.headers.get("Location")}`).searchParams.get("rid") ?? "";
+    const { csrf, cookie } = await readLoginContext(harness, rid);
+
+    await harness.app.request(`${ISSUER}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      body: new URLSearchParams({ rid, csrf, username: "alice", password: "wrong" }).toString(),
+    });
+
+    const [event] = harness.audit.ofKind("login_failed");
+    expect(event?.detail).toEqual({ reason: "invalid_credentials" });
+    expect(JSON.stringify(event)).not.toContain("alice");
+  });
+
+  test("lists the user's sessions and lets them revoke another device", async () => {
+    // Arrange: 2 つの端末からログインしている
+    const first = await runLoginFlow(harness, ALICE);
+    const second = await runLoginFlow(harness, ALICE);
+
+    // Act
+    const listed = await harness.app.request(`${ISSUER}/api/sessions`, {
+      headers: { Cookie: first.cookie },
+    });
+    const listedBody = await readJson(listed);
+    const sessions = listedBody.sessions as Array<{
+      id: string;
+      current: boolean;
+      services: Array<{ client_id: string; tenant_slug: string }>;
+    }>;
+    const other = sessions.find((s) => !s.current);
+    const revoked = await harness.app.request(`${ISSUER}/sessions/revoke`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: cookieHeaderFrom(listed, first.cookie),
+      },
+      body: new URLSearchParams({
+        csrf: String(listedBody.csrfToken),
+        session_id: other?.id ?? "",
+      }).toString(),
+    });
+    const afterRevoke = await readJson(
+      await harness.app.request(`${ISSUER}/api/sessions`, { headers: { Cookie: first.cookie } }),
+    );
+    const secondAuthorize = await harness.app.request(authorizeUrl({ state: "s3" }).url, {
+      headers: { Cookie: second.cookie },
+    });
+
+    // Assert
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((s) => s.current)?.services).toEqual([
+      { client_id: "crm", name: "CRM", tenant_slug: "tanaka", tenant_name: "Tanaka Inc." },
+    ]);
+    expect(revoked.status).toBe(303);
+    expect(revoked.headers.get("Location")).toBe("/security");
+    expect((afterRevoke.sessions as unknown[]).length).toBe(1);
+    expect(secondAuthorize.headers.get("Location")).toMatch(/^\/login\?rid=/);
+    expect(harness.audit.ofKind("session_revoked")).toHaveLength(1);
+  });
+
+  test("does not let a user revoke someone else's session", async () => {
+    const alice = await runLoginFlow(harness, ALICE);
+    const bob = await runLoginFlow(
+      harness,
+      { username: "bob", password: "bob-password" },
+      {
+        redirectUri: SUZUKI_CRM_REDIRECT,
+      },
+    );
+    const bobSid = harness.sessions.all().find((s) => s.userId === "user-bob")?.id ?? "";
+    const listed = await harness.app.request(`${ISSUER}/api/sessions`, {
+      headers: { Cookie: alice.cookie },
+    });
+    const listedBody = await readJson(listed);
+
+    await harness.app.request(`${ISSUER}/sessions/revoke`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: cookieHeaderFrom(listed, alice.cookie),
+      },
+      body: new URLSearchParams({
+        csrf: String(listedBody.csrfToken),
+        session_id: bobSid,
+      }).toString(),
+    });
+    const bobStillIn = await harness.app.request(
+      authorizeUrl({ state: "s3", redirectUri: SUZUKI_CRM_REDIRECT }).url,
+      { headers: { Cookie: bob.cookie } },
+    );
+
+    expect(bobStillIn.headers.get("Location")).toContain("code=");
+    expect(harness.sessions.all().find((s) => s.id === bobSid)?.status).toBe("active");
   });
 });

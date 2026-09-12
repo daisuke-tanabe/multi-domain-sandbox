@@ -39,6 +39,10 @@ export class MemoryIdentityRepository implements IdentityRepository {
     return this.data.clients.find((client) => client.clientId === clientId);
   }
 
+  public async listClients(): Promise<ReadonlyArray<OidcClient>> {
+    return this.data.clients;
+  }
+
   public async findUserByCognitoSub(cognitoSub: string): Promise<User | undefined> {
     return [...this.users.values()].find((user) => user.cognitoSub === cognitoSub);
   }

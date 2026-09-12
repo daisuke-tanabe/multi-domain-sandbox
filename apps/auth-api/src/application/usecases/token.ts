@@ -12,14 +12,17 @@ import type { IdentityRepository } from "../ports/identity-repository.ts";
 import type { AuthorizationCode, RefreshToken } from "../ports/stores.ts";
 import { checkTenantAccess } from "./authorize.ts";
 import type { AuthDeps } from "../deps.ts";
+import { recordAudit } from "./audit.ts";
 import { issueTokens } from "./issue-tokens.ts";
 import {
   consumeRefreshToken,
   createRefreshTokenFamily,
+  describeRefreshTokenFamily,
   revokeRefreshTokenFamily,
   rotateRefreshToken,
 } from "./refresh-tokens.ts";
-import { loadSsoSession } from "./sso-session.ts";
+import { loadSsoSessionByKey } from "./sso-session.ts";
+import { keyOf } from "./store-keys.ts";
 
 export interface TokenResponse {
   readonly access_token: string;
@@ -81,13 +84,22 @@ export async function exchangeAuthorizationCode(
   if (input.code === undefined || input.code === "")
     return err({ kind: "invalid_grant", reason: "code_missing" });
 
-  const stored = await deps.stores.authorizationCodes.getAndDelete(input.code);
+  const codeKey = keyOf(input.code);
+  const stored = await deps.stores.authorizationCodes.getAndDelete(codeKey);
   if (stored === undefined)
     return err({ kind: "invalid_grant", reason: "code_unknown_or_expired" });
   if (stored.used) {
-    deps.logger.warn("authorization code reuse detected", { clientId: client.clientId });
+    const family = await describeRefreshTokenFamily(deps, stored.familyId);
     await revokeRefreshTokenFamily(deps, stored.familyId);
-    await rememberConsumedCode(deps, stored);
+    await rememberConsumedCode(deps, codeKey, stored);
+    await recordAudit(deps, {
+      kind: "authorization_code_reused",
+      userId: family?.userId ?? null,
+      sessionId: family?.sid ?? null,
+      tenantId: family?.tenantId ?? null,
+      clientId: client.clientId,
+      detail: { familyId: stored.familyId },
+    });
     return err({ kind: "invalid_grant", reason: "code_reused" });
   }
 
@@ -95,7 +107,7 @@ export async function exchangeAuthorizationCode(
   if (!validation.ok) return validation;
 
   const [session, user, tenant] = await Promise.all([
-    loadSsoSession(deps, stored.ssoSessionId),
+    loadSsoSessionByKey(deps, stored.ssoSessionId),
     deps.identity.findUserById(stored.userId),
     resolveTenant(deps, stored.tenantId),
   ]);
@@ -112,11 +124,7 @@ export async function exchangeAuthorizationCode(
     scope: stored.scope,
     authTime: stored.authTime,
   });
-  await rememberConsumedCode(deps, {
-    used: true,
-    code: stored.code,
-    familyId: refreshToken.familyId,
-  });
+  await rememberConsumedCode(deps, codeKey, { used: true, familyId: refreshToken.record.familyId });
 
   const tokens = await issueTokens(deps, {
     client,
@@ -131,7 +139,7 @@ export async function exchangeAuthorizationCode(
     clientId: client.clientId,
     userId: user.id,
   });
-  return ok(toResponse(tokens, refreshToken.token, stored.scope));
+  return ok(toResponse(tokens, refreshToken.value, stored.scope));
 }
 
 function validateCodeBinding(
@@ -154,13 +162,10 @@ function validateCodeBinding(
 
 function rememberConsumedCode(
   deps: AuthDeps,
+  codeKey: string,
   consumed: Extract<AuthorizationCode, { used: true }>,
 ): Promise<void> {
-  return deps.stores.authorizationCodes.set(
-    consumed.code,
-    consumed,
-    CONSUMED_CODE_RETENTION_SECONDS,
-  );
+  return deps.stores.authorizationCodes.set(codeKey, consumed, CONSUMED_CODE_RETENTION_SECONDS);
 }
 
 /**
@@ -179,21 +184,29 @@ export async function refreshAccessToken(
   if (consumed.kind === "unknown")
     return err({ kind: "invalid_grant", reason: "refresh_token_unknown_or_expired" });
   if (consumed.kind === "reused") {
-    deps.logger.warn("refresh token reuse detected", {
-      clientId: client.clientId,
-      familyId: consumed.token.familyId,
-    });
     await revokeRefreshTokenFamily(deps, consumed.token.familyId);
+    await recordAudit(deps, {
+      kind: "refresh_token_reused",
+      userId: consumed.token.userId,
+      sessionId: consumed.token.sid,
+      tenantId: consumed.token.tenantId,
+      clientId: client.clientId,
+      detail: { familyId: consumed.token.familyId, tokenClientId: consumed.token.clientId },
+    });
     return err({ kind: "invalid_grant", reason: "refresh_token_reused" });
   }
   const stored = consumed.token;
   if (stored.clientId !== client.clientId) {
     // 別 Client から提示された Token は漏洩とみなし、系列ごと失効させる
-    deps.logger.warn("refresh token presented by another client", {
-      clientId: client.clientId,
-      familyId: stored.familyId,
-    });
     await revokeRefreshTokenFamily(deps, stored.familyId);
+    await recordAudit(deps, {
+      kind: "refresh_token_client_mismatch",
+      userId: stored.userId,
+      sessionId: stored.sid,
+      tenantId: stored.tenantId,
+      clientId: client.clientId,
+      detail: { familyId: stored.familyId, tokenClientId: stored.clientId },
+    });
     return err({ kind: "invalid_grant", reason: "client_mismatch" });
   }
 
@@ -219,7 +232,7 @@ export async function refreshAccessToken(
     clientId: client.clientId,
     userId: user.id,
   });
-  return ok(toResponse(tokens, next.token, stored.scope));
+  return ok(toResponse(tokens, next.value, stored.scope));
 }
 
 /** Refresh 時に SSO Session の生存とテナントアクセスを再確認する */
@@ -229,7 +242,7 @@ async function validateRefreshContext(
   stored: RefreshToken,
 ): Promise<Result<{ user: User; tenant: Tenant }, TokenError>> {
   const [session, tenant] = await Promise.all([
-    loadSsoSession(deps, stored.ssoSessionId),
+    loadSsoSessionByKey(deps, stored.ssoSessionId),
     resolveTenant(deps, stored.tenantId),
   ]);
   if (session === undefined) return err({ kind: "invalid_grant", reason: "sso_session_expired" });
@@ -248,7 +261,7 @@ export async function revokeRefreshToken(
   tokenValue: string | undefined,
 ): Promise<void> {
   if (tokenValue === undefined || tokenValue === "") return;
-  const stored: RefreshToken | undefined = await deps.stores.refreshTokens.get(tokenValue);
+  const stored: RefreshToken | undefined = await deps.stores.refreshTokens.get(keyOf(tokenValue));
   if (stored === undefined || stored.clientId !== client.clientId) return;
   await revokeRefreshTokenFamily(deps, stored.familyId);
 }

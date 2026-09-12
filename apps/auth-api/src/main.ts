@@ -12,7 +12,9 @@ import {
 } from "@sandbox/shared";
 import { SdkCognitoAuthenticator } from "./infrastructure/cognito-sdk.ts";
 import { MockCognitoAuthenticator } from "./infrastructure/mock-cognito.ts";
+import { PgAuditRepository } from "./infrastructure/pg-audit-repository.ts";
 import { PgIdentityRepository } from "./infrastructure/pg-identity-repository.ts";
+import { PgSessionRepository } from "./infrastructure/pg-session-repository.ts";
 import { createAuthStores } from "./infrastructure/stores.ts";
 import { createAuthApp } from "./interface/http/app.ts";
 import { loadConfig } from "./config.ts";
@@ -55,13 +57,16 @@ function createCognitoAuthenticator() {
   );
 }
 
+const pool = createPool(config.DATABASE_URL, logger);
 const deps: AuthDeps = {
   issuer: config.ISSUER,
   clock: systemClock,
   stores: createAuthStores(
     createStoreFactory({ redisUrl: config.REDIS_URL, clock: systemClock, logger }),
   ),
-  identity: new PgIdentityRepository(createPool(config.DATABASE_URL, logger)),
+  identity: new PgIdentityRepository(pool),
+  sessions: new PgSessionRepository(pool),
+  audit: new PgAuditRepository(pool),
   cognito: createCognitoAuthenticator(),
   signingKey,
   encryptionKeys: [encryptionKey.value],

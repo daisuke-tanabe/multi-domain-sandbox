@@ -1,9 +1,12 @@
 import { decrypt, getErrorMessage, randomToken, signJwt } from "@sandbox/shared";
 import { BACKCHANNEL_TIMEOUT_MS, LOGOUT_TOKEN_TTL_SECONDS } from "../../domain/policy.ts";
+import type { OidcClient } from "../../domain/identity.ts";
+import type { RequestEnvironment, SessionRevokeReason } from "../../domain/session.ts";
 import type { SsoSession } from "../ports/stores.ts";
 import type { AuthDeps } from "../deps.ts";
-import { revokeRefreshTokenFamily } from "./refresh-tokens.ts";
-import { destroySsoSession, listAuthorizedClients } from "./sso-session.ts";
+import { recordAudit } from "./audit.ts";
+import { describeRefreshTokenFamily, revokeRefreshTokenFamily } from "./refresh-tokens.ts";
+import { destroySsoSession, findSsoSessionBySid, listAuthorizedClients } from "./sso-session.ts";
 
 interface BackchannelResult {
   readonly clientId: string;
@@ -31,13 +34,19 @@ export function issueLogoutToken(deps: AuthDeps, clientId: string, sid: string):
 }
 
 /**
- * Global Logout。docs/design/02-auth-sequences.md の 11 に対応する。
+ * SSO Session を失効させる。docs/design/02-auth-sequences.md の 11 に対応する。
  * 1. sid に紐付く Refresh Token 系列を全失効
  * 2. Cognito Refresh Token を失効
  * 3. SSO Session を削除
  * 4. code を発行した Client へ Back-Channel Logout を並列送信。失敗しても完了扱い
+ * 5. identity DB の記録を revoked にし、監査イベントを残す
  */
-export async function globalLogout(deps: AuthDeps, session: SsoSession): Promise<void> {
+export async function revokeSsoSession(
+  deps: AuthDeps,
+  session: SsoSession,
+  reason: SessionRevokeReason,
+  environment?: RequestEnvironment,
+): Promise<void> {
   const [families, authorizedClients] = await Promise.all([
     deps.stores.sidRefreshFamilies.members(session.sid),
     listAuthorizedClients(deps, session),
@@ -51,11 +60,74 @@ export async function globalLogout(deps: AuthDeps, session: SsoSession): Promise
   const notifications = await Promise.all(
     authorizedClients.map((clientId) => notifyClient(deps, clientId, session.sid)),
   );
-  deps.logger.info("global logout completed", {
+  await deps.sessions.markRevoked(session.sid, reason, deps.clock.nowSeconds());
+  await recordAudit(deps, {
+    kind: reason === "global_logout" ? "global_logout" : "session_revoked",
     userId: session.userId,
-    notified: notifications.filter((n) => n.ok).map((n) => n.clientId),
-    failed: notifications.filter((n) => !n.ok).map((n) => n.clientId),
+    sessionId: session.sid,
+    ip: environment?.ip ?? null,
+    userAgent: environment?.userAgent ?? null,
+    detail: {
+      reason,
+      notified: notifications.filter((n) => n.ok).map((n) => n.clientId),
+      failed: notifications.filter((n) => !n.ok).map((n) => n.clientId),
+    },
   });
+}
+
+/** 本人の操作による Global Logout */
+export function globalLogout(
+  deps: AuthDeps,
+  session: SsoSession,
+  environment: RequestEnvironment,
+): Promise<void> {
+  return revokeSsoSession(deps, session, "global_logout", environment);
+}
+
+/**
+ * sid を指定して失効させる。ポータルからの他端末の失効や管理操作で使う。
+ * 揮発ストアに既に無ければ DB の記録だけを revoked にする
+ */
+export async function revokeSessionBySid(
+  deps: AuthDeps,
+  sid: string,
+  reason: SessionRevokeReason,
+  environment?: RequestEnvironment,
+): Promise<void> {
+  const session = await findSsoSessionBySid(deps, sid);
+  if (session !== undefined) {
+    await revokeSsoSession(deps, session, reason, environment);
+    return;
+  }
+  await deps.sessions.markRevoked(sid, reason, deps.clock.nowSeconds());
+}
+
+/**
+ * 招待の解除で、そのサービスとテナントへのアクセスだけを即時に切る。
+ * 該当する Refresh Token 系列を失効させ、そのサービスへ Back-Channel Logout を送る。
+ * SSO Session は残し、他のサービスには影響させない
+ */
+export async function revokeClientAccess(
+  deps: AuthDeps,
+  userId: string,
+  client: OidcClient,
+  tenantId: string,
+): Promise<ReadonlyArray<string>> {
+  const sessions = await deps.sessions.listActiveByUser(userId);
+  const affected = sessions.filter((s) =>
+    s.clients.some((c) => c.oidcClientId === client.id && c.tenantId === tenantId),
+  );
+  for (const record of affected) {
+    const families = await deps.stores.sidRefreshFamilies.members(record.id);
+    for (const familyId of families) {
+      const described = await describeRefreshTokenFamily(deps, familyId);
+      if (described?.clientId === client.clientId && described.tenantId === tenantId) {
+        await revokeRefreshTokenFamily(deps, familyId);
+      }
+    }
+    await notifyClient(deps, client.clientId, record.id);
+  }
+  return affected.map((s) => s.id);
 }
 
 async function revokeCognitoTokens(deps: AuthDeps, session: SsoSession): Promise<void> {

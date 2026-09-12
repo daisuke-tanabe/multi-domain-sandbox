@@ -13,6 +13,7 @@ import {
   noStore,
   readCsrfCookie,
   readSsoCookie,
+  requestEnvironment,
   writeCsrfCookie,
 } from "./helpers.ts";
 
@@ -70,7 +71,7 @@ export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       }
 
       const session = await loadSsoSession(deps, readSsoCookie(c, policy));
-      if (session !== undefined) await globalLogout(deps, session);
+      if (session !== undefined) await globalLogout(deps, session, requestEnvironment(c));
       clearSsoCookie(c, policy);
       const params = new URLSearchParams();
       if (form.client_id !== undefined) params.set("client_id", form.client_id);

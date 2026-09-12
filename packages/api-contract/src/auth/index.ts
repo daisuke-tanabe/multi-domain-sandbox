@@ -49,6 +49,37 @@ export const logoutResponseSchema = z.object({
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>;
 
 /**
+ * ポータルの「セキュリティ」。本人のログイン中のセッションと MFA の登録状況
+ */
+export const sessionServiceSchema = z.object({
+  client_id: z.string(),
+  name: z.string(),
+  tenant_slug: z.string(),
+  tenant_name: z.string(),
+});
+
+export const sessionSchema = z.object({
+  /** ID Token の sid。Cookie の値ではない */
+  id: idSchema,
+  ip: z.string(),
+  user_agent: z.string(),
+  /** epoch 秒 */
+  created_at: z.number(),
+  last_seen_at: z.number(),
+  /** この画面を開いている端末のセッションか */
+  current: z.boolean(),
+  services: z.array(sessionServiceSchema),
+});
+export type Session = z.infer<typeof sessionSchema>;
+
+export const sessionsResponseSchema = z.object({
+  sessions: z.array(sessionSchema),
+  /** 失効フォームに入れる CSRF トークン */
+  csrfToken: z.string(),
+});
+export type SessionsResponse = z.infer<typeof sessionsResponseSchema>;
+
+/**
  * auth-api の管理 API /admin/service-members。サービスの api がサーバー間で呼ぶ
  */
 export const serviceMemberUserSchema = z.object({

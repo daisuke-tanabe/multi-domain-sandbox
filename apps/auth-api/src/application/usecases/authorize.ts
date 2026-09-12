@@ -1,11 +1,13 @@
 import { err, ok, randomToken, type AccessDeniedReason, type Result } from "@sandbox/shared";
 import { AUTHORIZATION_CODE_TTL_SECONDS } from "../../domain/policy.ts";
 import type { OidcClient, Tenant, User } from "../../domain/identity.ts";
+import type { RequestEnvironment } from "../../domain/session.ts";
 import type { IdentityRepository } from "../ports/identity-repository.ts";
 import type { AuthorizationCode, SsoSession } from "../ports/stores.ts";
 import type { ValidatedAuthorizationRequest } from "./authorization-request.ts";
 import type { AuthDeps } from "../deps.ts";
 import { touchSsoSession } from "./sso-session.ts";
+import { keyOf } from "./store-keys.ts";
 
 export type AccessCheckError = {
   readonly kind: "access_denied";
@@ -54,6 +56,7 @@ export async function authorizeWithSession(
   deps: AuthDeps,
   request: ValidatedAuthorizationRequest,
   session: SsoSession,
+  environment: RequestEnvironment,
 ): Promise<Result<IssuedCode, AccessCheckError>> {
   const access = await checkTenantAccess(
     deps.identity,
@@ -71,9 +74,9 @@ export async function authorizeWithSession(
     return access;
   }
 
+  const codeValue = randomToken();
   const code: AuthorizationCode = {
     used: false,
-    code: randomToken(),
     clientId: request.client.clientId,
     redirectUri: request.redirectUri,
     scope: request.scope,
@@ -85,12 +88,12 @@ export async function authorizeWithSession(
     ssoSessionId: session.id,
     authTime: session.authTime,
   };
-  await deps.stores.authorizationCodes.set(code.code, code, AUTHORIZATION_CODE_TTL_SECONDS);
-  await touchSsoSession(deps, session, request.client.clientId);
+  await deps.stores.authorizationCodes.set(keyOf(codeValue), code, AUTHORIZATION_CODE_TTL_SECONDS);
+  await touchSsoSession(deps, session, request.client, request.tenant.id, environment);
   deps.logger.info("authorization code issued", {
     clientId: request.client.clientId,
     tenant: request.tenant.slug,
     userId: session.userId,
   });
-  return ok({ code: code.code });
+  return ok({ code: codeValue });
 }
