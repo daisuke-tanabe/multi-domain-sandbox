@@ -1,13 +1,12 @@
 import type { ReactNode } from "react";
 import { NavLink, Outlet, useRouteLoaderData } from "react-router";
-import type { Me, SessionInfo } from "./api.ts";
+import type { AuthenticatedSession, MeResponse, SessionResponse } from "@sandbox/api-contract";
 import { loadMe, loadSession, redirectToLogin } from "./api.ts";
 
-export interface ShellData {
-  readonly session: SessionInfo;
-  /** ログアウト直後の画面だけ undefined */
-  readonly me: Me | undefined;
-}
+export type ShellData =
+  | { readonly session: AuthenticatedSession; readonly me: MeResponse }
+  /** Tenant Logout 直後の画面だけ */
+  | { readonly session: SessionResponse; readonly me: undefined };
 
 /**
  * ルートの clientLoader。未ログインなら BFF の /auth/login へ送る。
@@ -25,7 +24,7 @@ export async function loadShell(): Promise<ShellData> {
   return { session, me };
 }
 
-export function useShell(): { readonly session: SessionInfo; readonly me: Me } {
+export function useShell(): { readonly session: AuthenticatedSession; readonly me: MeResponse } {
   const data = useRouteLoaderData("root") as ShellData | undefined;
   if (data?.me === undefined) throw new Error("shell data is not loaded");
   return { session: data.session, me: data.me };
@@ -73,7 +72,7 @@ export function AppShell({ nav, children }: { nav: ReadonlyArray<NavItem>; child
             {me.user.email ?? me.user.id} / {me.role}
           </span>
           <form method="post" action={session.urls.logout} className="inline">
-            <input type="hidden" name="csrf" value={session.csrfToken ?? ""} />
+            <input type="hidden" name="csrf" value={session.csrfToken} />
             <button type="submit">ログアウト</button>
           </form>
           <a href={session.urls.globalLogout} className="muted">
@@ -86,7 +85,7 @@ export function AppShell({ nav, children }: { nav: ReadonlyArray<NavItem>; child
   );
 }
 
-function LoggedOut({ session }: { session: SessionInfo }) {
+function LoggedOut({ session }: { session: SessionResponse }) {
   return (
     <div className="shell">
       <h1>

@@ -1,17 +1,11 @@
-import { z } from "zod";
+import {
+  errorResponseSchema,
+  inviteServiceMemberResponseSchema,
+  type InviteServiceMemberInput,
+  type RevokeServiceMemberInput,
+} from "@sandbox/api-contract";
 import { err, getErrorMessage, ok, type FetchLike, type Result } from "@sandbox/shared";
 import type { AuthAdminClient, AuthAdminError, InvitedUser } from "../ports/auth-admin.ts";
-
-const invitedSchema = z.object({
-  user: z.object({
-    id: z.string(),
-    email: z.string(),
-    name: z.string().nullable(),
-    linked: z.boolean(),
-  }),
-});
-
-const errorSchema = z.object({ error: z.string() });
 
 export interface HttpAuthAdminClientOptions {
   /** auth-api の Back Channel URL。DNS に依存しない内部 URL */
@@ -37,7 +31,7 @@ export class HttpAuthAdminClient implements AuthAdminClient {
 
   private async call(
     method: "POST" | "DELETE",
-    body: Record<string, unknown>,
+    body: InviteServiceMemberInput | RevokeServiceMemberInput,
   ): Promise<Result<Response, AuthAdminError>> {
     try {
       const res = await this.options.fetch(`${this.options.baseUrl}/admin/service-members`, {
@@ -47,7 +41,7 @@ export class HttpAuthAdminClient implements AuthAdminClient {
         signal: AbortSignal.timeout(5_000),
       });
       if (res.ok) return ok(res);
-      const parsed = errorSchema.safeParse(await res.json().catch(() => undefined));
+      const parsed = errorResponseSchema.safeParse(await res.json().catch(() => undefined));
       const code = parsed.success ? parsed.data.error : `status ${res.status}`;
       switch (code) {
         case "tenant_not_found":
@@ -73,7 +67,7 @@ export class HttpAuthAdminClient implements AuthAdminClient {
       ...(input.name !== null && { name: input.name }),
     });
     if (!res.ok) return res;
-    const parsed = invitedSchema.safeParse(await res.value.json());
+    const parsed = inviteServiceMemberResponseSchema.safeParse(await res.value.json());
     if (!parsed.success) return err({ kind: "unavailable", reason: "malformed response" });
     const { user } = parsed.data;
     return ok({ userId: user.id, email: user.email, name: user.name, linked: user.linked });

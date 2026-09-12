@@ -1,10 +1,11 @@
 import { redirect } from "react-router";
+import { loginApiResponseSchema, type LoginContextResponse } from "@sandbox/api-contract";
 import { Notice } from "@sandbox/web-ui";
-import { ApiError, getJson, type LoginContext } from "../api.ts";
+import { ApiError, getJson } from "../api.ts";
 import type { Route } from "./+types/login";
 
 type LoginData =
-  | { readonly kind: "form"; readonly context: LoginContext }
+  | { readonly kind: "form"; readonly context: LoginContextResponse }
   | { readonly kind: "expired"; readonly message: string };
 
 /**
@@ -19,14 +20,12 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
     if (value !== null) params.set(key, value);
   }
   try {
-    const context = await getJson<LoginContext & { redirectTo?: string }>(
-      `/api/login?${params.toString()}`,
-    );
-    if (context.redirectTo !== undefined) throw redirect(context.redirectTo);
+    const context = await getJson(loginApiResponseSchema, `/api/login?${params.toString()}`);
+    if ("redirectTo" in context) throw redirect(context.redirectTo);
     return { kind: "form", context };
   } catch (error: unknown) {
-    if (error instanceof ApiError && error.body.error === "expired_request") {
-      return { kind: "expired", message: String(error.body.message ?? "") };
+    if (error instanceof ApiError && error.code === "expired_request") {
+      return { kind: "expired", message: error.message };
     }
     throw error;
   }

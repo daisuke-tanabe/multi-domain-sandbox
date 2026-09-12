@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import type { LogoutResponse } from "@sandbox/api-contract";
 import { expandRedirectUriTemplate, type CookiePolicy } from "@sandbox/shared";
 import { issueCsrfToken, verifyCsrfToken } from "../usecases/csrf.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
@@ -38,11 +39,15 @@ export function logoutRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
     const session = await loadSsoSession(deps, readSsoCookie(c, policy));
     if (session === undefined) {
       clearSsoCookie(c, policy);
-      return c.json({ authenticated: false, returnTo });
+      return c.json({ authenticated: false, returnTo } satisfies LogoutResponse);
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
-    return c.json({ authenticated: true, csrfToken: csrf.formToken, returnTo });
+    return c.json({
+      authenticated: true,
+      csrfToken: csrf.formToken,
+      returnTo,
+    } satisfies LogoutResponse);
   });
 
   app.post(

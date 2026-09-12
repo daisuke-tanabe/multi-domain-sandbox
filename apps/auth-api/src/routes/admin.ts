@@ -1,6 +1,15 @@
 import { Hono, type Context } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import {
+  idSchema,
+  inviteServiceMemberInputSchema,
+  revokeServiceMemberInputSchema,
+  type InviteServiceMemberResponse,
+  type ServiceMember as ServiceMemberJson,
+  type ServiceMemberUser,
+  type ServiceMembersResponse,
+} from "@sandbox/api-contract";
 import type { ServiceMember, User } from "../ports/identity-repository.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
 import {
@@ -11,20 +20,9 @@ import {
 } from "../usecases/service-members.ts";
 import { clientAuth, type ClientEnv } from "./client-auth.ts";
 
-const tenantId = z.string().min(1).max(64);
+const tenantId: z.ZodString = idSchema;
 
-const inviteSchema = z.object({
-  tenant_id: tenantId,
-  email: z.string().email().max(254),
-  name: z.string().trim().min(1).max(100).optional(),
-});
-
-const revokeSchema = z.object({
-  tenant_id: tenantId,
-  user_id: z.string().min(1),
-});
-
-function toUserJson(user: User) {
+function toUserJson(user: User): ServiceMemberUser {
   return {
     id: user.id,
     email: user.email,
@@ -34,7 +32,7 @@ function toUserJson(user: User) {
   };
 }
 
-function toMemberJson(member: ServiceMember) {
+function toMemberJson(member: ServiceMember): ServiceMemberJson {
   return { ...toUserJson(member.user), status: member.status };
 }
 
@@ -62,12 +60,12 @@ export function adminRoutes(deps: AuthDeps): Hono<ClientEnv> {
     if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
     const result = await listServiceMembers(deps, c.get("client"), parsed.data);
     if (!result.ok) return respondError(c, result.error);
-    return c.json({ members: result.value.map(toMemberJson) });
+    return c.json({ members: result.value.map(toMemberJson) } satisfies ServiceMembersResponse);
   });
 
   app.post(
     "/admin/service-members",
-    zValidator("json", inviteSchema, (result, c) => {
+    zValidator("json", inviteServiceMemberInputSchema, (result, c) => {
       if (!result.success) return c.json({ error: "invalid_request" }, 400);
       return undefined;
     }),
@@ -79,13 +77,13 @@ export function adminRoutes(deps: AuthDeps): Hono<ClientEnv> {
         name: body.name ?? null,
       });
       if (!result.ok) return respondError(c, result.error);
-      return c.json({ user: toUserJson(result.value) }, 201);
+      return c.json({ user: toUserJson(result.value) } satisfies InviteServiceMemberResponse, 201);
     },
   );
 
   app.delete(
     "/admin/service-members",
-    zValidator("json", revokeSchema, (result, c) => {
+    zValidator("json", revokeServiceMemberInputSchema, (result, c) => {
       if (!result.success) return c.json({ error: "invalid_request" }, 400);
       return undefined;
     }),

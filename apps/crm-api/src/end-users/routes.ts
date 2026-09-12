@@ -1,18 +1,15 @@
 import { Hono, type Context } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { ulid } from "ulid";
-import { z } from "zod";
+import {
+  endUserInputSchema,
+  endUserPatchSchema,
+  type EndUser as EndUserJson,
+  type EndUserResponse,
+  type EndUsersResponse,
+} from "@sandbox/api-contract";
 import { requirePermission, type ApiEnv } from "@sandbox/api-core";
 import type { EndUser, EndUserRepository } from "./repository.ts";
-
-const inputSchema = z.object({
-  name: z.string().trim().min(1).max(100),
-  email: z.string().email().max(254),
-  phone: z.string().trim().min(1).max(32),
-  note: z.string().max(1000).default(""),
-});
-
-const patchSchema = inputSchema.partial();
 
 /** メールは先頭 1 文字とドメイン、電話は末尾 4 桁だけ残す */
 export function mask(user: EndUser): EndUser {
@@ -23,7 +20,7 @@ export function mask(user: EndUser): EndUser {
   return { ...user, email: maskedEmail, phone: maskedPhone };
 }
 
-function toJson(user: EndUser, unmasked: boolean) {
+function toJson(user: EndUser, unmasked: boolean): EndUserJson {
   const shown = unmasked ? user : mask(user);
   return {
     id: shown.id,
@@ -47,20 +44,25 @@ export function endUserRoutes(repo: EndUserRepository): Hono<ApiEnv> {
     const ctx = c.get("tenantContext");
     const unmasked = ctx.permissions.has("end_users:unmask");
     const rows = await repo.list(ctx.tenantId);
-    return c.json({ end_users: rows.map((u) => toJson(u, unmasked)), masked: !unmasked });
+    return c.json({
+      end_users: rows.map((u) => toJson(u, unmasked)),
+      masked: !unmasked,
+    } satisfies EndUsersResponse);
   });
 
   app.get("/v1/end-users/:id", requirePermission("end_users:read"), async (c) => {
     const ctx = c.get("tenantContext");
     const user = await repo.findById(ctx.tenantId, c.req.param("id"));
     if (user === undefined) return c.json({ error: "not_found" }, 404);
-    return c.json({ end_user: toJson(user, ctx.permissions.has("end_users:unmask")) });
+    return c.json({
+      end_user: toJson(user, ctx.permissions.has("end_users:unmask")),
+    } satisfies EndUserResponse);
   });
 
   app.post(
     "/v1/end-users",
     requirePermission("end_users:create"),
-    zValidator("json", inputSchema, invalid),
+    zValidator("json", endUserInputSchema, invalid),
     async (c) => {
       const ctx = c.get("tenantContext");
       const created = await repo.create(ctx.tenantId, ulid(), c.req.valid("json"));
@@ -71,7 +73,7 @@ export function endUserRoutes(repo: EndUserRepository): Hono<ApiEnv> {
   app.patch(
     "/v1/end-users/:id",
     requirePermission("end_users:update"),
-    zValidator("json", patchSchema, invalid),
+    zValidator("json", endUserPatchSchema, invalid),
     async (c) => {
       const ctx = c.get("tenantContext");
       const updated = await repo.update(ctx.tenantId, c.req.param("id"), c.req.valid("json"));

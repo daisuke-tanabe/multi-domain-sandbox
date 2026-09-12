@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { PortalResponse } from "@sandbox/api-contract";
 import type { CookiePolicy } from "@sandbox/shared";
 import type { AuthDeps } from "../usecases/deps.ts";
 import { loadSsoSession } from "../usecases/sso-session.ts";
@@ -35,7 +36,7 @@ export function portalRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
           loginUrl: `${service.origin}/auth/login`,
         })),
       })),
-    });
+    } satisfies PortalResponse);
   });
 
   return app;

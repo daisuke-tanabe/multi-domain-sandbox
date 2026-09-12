@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hono/node-server": "catalog:",
+    "@sandbox/api-contract": "workspace:*",
     "@sandbox/oidc-client": "workspace:*",
     "@sandbox/shared": "workspace:*",
     "hono": "catalog:",

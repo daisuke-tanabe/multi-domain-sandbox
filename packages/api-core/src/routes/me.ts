@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { MeResponse } from "@sandbox/api-contract";
 import type { ApiEnv } from "../auth/middleware.ts";
 import { allPermissions, type ServiceDefinition } from "../service-definition.ts";
 
@@ -17,10 +18,10 @@ export function meRoutes(definition: ServiceDefinition): Hono<ApiEnv> {
       permissions: [...ctx.permissions].sort(),
       service: {
         clientId: ctx.clientId,
-        roles: definition.roles,
-        permissions: allPermissions(definition),
+        roles: [...definition.roles],
+        permissions: [...allPermissions(definition)],
       },
-    });
+    } satisfies MeResponse);
   });
 
   return app;

@@ -1188,6 +1188,7 @@ iframe 内から親ページのログイン状態を推測する仕組みは持�
 | `apps/auth-api/src/usecases` | Auth Server の判定ロジック。契約とサービスへの割り当ての確認順序はここ |
 | `packages/web-core` | crm-web / cms-web が共有する BFF 実装。Host からのテナント解決、`/session`、`/api/*` の中継と CSRF 検証、SPA の配信と CSP、エラー画面。`src/spa.ts` に静的配信と開発時の中継 |
 | `packages/web-ui` | crm-web / cms-web が共有する React コード。`api.ts` の `/session` `/api/*` の呼び出しと 401 での再ログイン、`shell.tsx` のルート clientLoader と共通の枠、`members-page.tsx` の管理アカウント画面 |
+| `packages/api-contract` | HTTP 境界の zod スキーマと型。api-core の `/v1/me` `/v1/members`、crm の end-users、cms の posts、auth-api の `/api/*` と `/admin/service-members`、BFF の `/session`。サーバーは zValidator と `satisfies` で、SPA は受信時の parse で同じスキーマを使う |
 | `apps/crm-web/app` `apps/cms-web/app` | React Router v8 の SPA。`root.tsx` `routes.ts` と、CRM はエンドユーザー、CMS は投稿の画面。`react-router.config.ts` は `ssr: false` |
 | `packages/api-core/src/usecases/resolve-tenant-context.ts` `packages/api-core/src/service-definition.ts` | API 側の Host → aud 確認、Token 検証、自サービス DB の members の取得と既定の役割での作成、役割の既定に `permission_overrides` を重ねる権限の確定。`ServiceDefinition` で役割と権限の語彙を宣言する。`auth/middleware.ts` は結果を HTTP に写像するだけ |
 | `packages/api-core/src/routes/members.ts` `packages/api-core/src/adapters/auth-admin-client.ts` | 管理アカウントの一覧、招待、役割変更、権限の上書き、削除。招待と削除は Auth Server の管理 API を client_secret_basic で呼ぶ |

@@ -10,6 +10,7 @@
     "typecheck": "react-router typegen && tsc -p tsconfig.app.json"
   },
   "dependencies": {
+    "@sandbox/api-contract": "workspace:*",
     "@sandbox/web-ui": "workspace:*",
     "isbot": "^5",
     "react": "catalog:",

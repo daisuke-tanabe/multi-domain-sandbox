@@ -16,6 +16,7 @@ apps/crm-web          <tenant>.crm.sandbox.com。CRM の Web。React Router の 
 apps/crm-api          api.crm.sandbox.com。CRM の Resource Server。definition.ts に役割と権限、end-users/ にエンドユーザーの routes と repository
 apps/cms-web          <tenant>.cms.sandbox.com。CMS の Web。crm-web と同じ構成
 apps/cms-api          api.cms.sandbox.com。CMS の Resource Server。definition.ts に役割と権限、posts/ に投稿の routes と repository
+packages/api-contract HTTP のリクエストとレスポンスの zod スキーマと型。サーバーの入力検証と SPA の型、フォーム検証、受信検証で同じものを使う。依存は zod だけ
 packages/shared       Result 型、ストア抽象と StoreFactory、暗号、JWT / JWKS 取得、Cookie、ロガー、環境変数、pg、識別子の enum、セッション期限、SPA の配信 (spa.ts)
 packages/oidc-client  *-web 向け OIDC Client 共通モジュール。/auth/* とセッション
 packages/web-core     apps/*-web の BFF 本体。/auth/* の受け口、/session、/api/* の中継、SPA の配信、エラー画面、設定スキーマ、起動関数を持つ
@@ -120,6 +121,18 @@ auth の画面は `apps/auth-web` の React Router SPA で描き、auth-api が�
 - `/authorize` の不正な redirect_uri、CSRF 不一致、入力不正、404、500 は auth-api の `views/pages.ts` の最小 HTML で返す。SPA へリダイレクトして運ばない
 - SPA 向け JSON は `/api/` 配下に置き、`Cache-Control: no-store` を付ける。`/api/login` と `/api/logout` は `/login` `/logout` と同じレート制限にかける
 - 共通の React コードは `packages/web-ui` から `styles.css` と `Notice` だけを使う。BFF 向けの `api.ts` と `loadShell` は使わない
+
+## API 契約
+
+HTTP 境界の形は `packages/api-contract` の zod スキーマで 1 か所に定める。サーバーとクライアントで別々に型を書かない。
+
+- 置き場所は経路の持ち主ごとに分ける。`core` は api-core の `/v1/me` と `/v1/members`、`crm` と `cms` はサービス固有の資源、`auth` は auth-api の SPA 向け `/api/*` と管理 API、`web` は BFF の `/session`。共通のエラー応答は `common`
+- 命名は `<名前>Schema` と `<名前>` 型の対。リクエストは `<資源>InputSchema` と `<資源>PatchSchema`、レスポンスは `<資源>ResponseSchema` のように用途を末尾に付ける。JSON のキーは snake_case のまま
+- サーバーは zValidator にこのスキーマを渡す。役割名や権限名のようにサービス定義で決まる制約は、契約では `z.string()` にしてサーバー側で `refine` を重ねる
+- サーバーのレスポンスは契約の型で `satisfies` し、余計なキーや欠けたキーをコンパイル時に検出する
+- SPA は契約の型で API 呼び出しを書き、レスポンスは受信時に契約のスキーマで検証する。フォームの検証は同じ入力スキーマを react-hook-form の resolver に渡す
+- 契約パッケージは zod 以外に依存しない。Hono や React の型を持ち込まない
+- 契約を変えるときはサーバー、SPA、テストを同じコミットで直す
 
 ## レイヤー規約
 

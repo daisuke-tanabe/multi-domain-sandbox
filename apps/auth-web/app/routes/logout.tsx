@@ -1,18 +1,19 @@
-import { getJson, type LogoutView } from "../api.ts";
+import { logoutResponseSchema, type LogoutResponse } from "@sandbox/api-contract";
+import { getJson } from "../api.ts";
 import type { Route } from "./+types/logout";
 
 /**
  * Global Logout。/logout?client_id=&tenant=。
  * SSO Session があれば確認フォーム、なければ完了画面。POST 後は auth-api がここへ戻す。
  */
-export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LogoutView> {
+export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LogoutResponse> {
   const url = new URL(request.url);
   const params = new URLSearchParams();
   for (const key of ["client_id", "tenant"]) {
     const value = url.searchParams.get(key);
     if (value !== null) params.set(key, value);
   }
-  return getJson<LogoutView>(`/api/logout?${params.toString()}`);
+  return getJson(logoutResponseSchema, `/api/logout?${params.toString()}`);
 }
 
 export default function Logout({ loaderData, params: _params }: Route.ComponentProps) {

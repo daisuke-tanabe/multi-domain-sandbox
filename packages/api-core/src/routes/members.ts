@@ -1,6 +1,18 @@
 import { Hono, type Context } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import {
+  inviteMemberInputSchema,
+  memberPatchSchema,
+  permissionOverrideSchema,
+  permissionOverridesInputSchema,
+  type InviteMemberResponse,
+  type Member as MemberJson,
+  type MemberDetailResponse,
+  type MemberResponse,
+  type MembersResponse,
+  type PermissionOverridesResponse,
+} from "@sandbox/api-contract";
 import type { Logger } from "@sandbox/shared";
 import { requirePermission, type ApiEnv } from "../auth/middleware.ts";
 import type { AuthAdminClient, AuthAdminError } from "../ports/auth-admin.ts";
@@ -19,7 +31,7 @@ export interface MemberRoutesDeps {
   readonly logger: Logger;
 }
 
-function toJson(member: Member) {
+function toJson(member: Member): MemberJson {
   return {
     user_id: member.userId,
     email: member.email,
@@ -50,25 +62,23 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
   const { definition, members, authAdmin, logger } = deps;
 
+  // 契約は役割名と権限名を文字列にしている。サービス定義で決まる制約はここで重ねる
   const roleSchema = z.string().refine((value) => isRole(definition, value), "unknown role");
-  const overrideSchema = z.object({
+  const overrideSchema = permissionOverrideSchema.extend({
     permission: z.string().refine((value) => isPermission(definition, value), "unknown permission"),
-    effect: z.enum(["allow", "deny"]),
   });
-  const inviteSchema = z.object({
-    email: z.string().email().max(254),
-    name: z.string().trim().min(1).max(100).optional(),
-    role: roleSchema,
+  const inviteSchema = inviteMemberInputSchema.extend({ role: roleSchema });
+  const patchSchema = memberPatchSchema.extend({ role: roleSchema });
+  const permissionsSchema = permissionOverridesInputSchema.extend({
+    overrides: z.array(overrideSchema).max(50),
   });
-  const patchSchema = z.object({ role: roleSchema });
-  const permissionsSchema = z.object({ overrides: z.array(overrideSchema).max(50) });
   const invalid = (result: { success: boolean }, c: Context) =>
     result.success ? undefined : c.json({ error: "invalid_request" }, 400);
 
   app.get("/v1/members", requirePermission("members:read"), async (c) => {
     const ctx = c.get("tenantContext");
     const list = await members.list(ctx.tenantId);
-    return c.json({ members: list.map(toJson) });
+    return c.json({ members: list.map(toJson) } satisfies MembersResponse);
   });
 
   app.get("/v1/members/:userId", requirePermission("members:read"), async (c) => {
@@ -78,9 +88,9 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
     const overrides = await members.listOverrides(ctx.tenantId, member.userId);
     return c.json({
       member: toJson(member),
-      overrides,
+      overrides: [...overrides],
       permissions: [...resolvePermissions(definition, member.role, overrides)].sort(),
-    });
+    } satisfies MemberDetailResponse);
   });
 
   app.post(
@@ -106,7 +116,10 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
         status: "active",
       });
       logger.info("member invited", { tenantId: ctx.tenantId, userId: member.userId });
-      return c.json({ member: toJson(member), linked: invited.value.linked }, 201);
+      return c.json(
+        { member: toJson(member), linked: invited.value.linked } satisfies InviteMemberResponse,
+        201,
+      );
     },
   );
 
@@ -119,7 +132,7 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
       const existing = await members.find(ctx.tenantId, c.req.param("userId"));
       if (existing === undefined) return c.json({ error: "not_found" }, 404);
       const member = await members.upsert({ ...existing, role: c.req.valid("json").role });
-      return c.json({ member: toJson(member) });
+      return c.json({ member: toJson(member) } satisfies MemberResponse);
     },
   );
 
@@ -136,7 +149,7 @@ export function memberRoutes(deps: MemberRoutesDeps): Hono<ApiEnv> {
       return c.json({
         overrides,
         permissions: [...resolvePermissions(definition, existing.role, overrides)].sort(),
-      });
+      } satisfies PermissionOverridesResponse);
     },
   );
 

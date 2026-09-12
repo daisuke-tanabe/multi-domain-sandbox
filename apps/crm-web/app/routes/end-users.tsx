@@ -1,19 +1,16 @@
 import { useState, type FormEvent } from "react";
 import { useRevalidator } from "react-router";
-import { api, describeError, Notice, usePermissions } from "@sandbox/web-ui";
+import {
+  endUserResponseSchema,
+  endUsersResponseSchema,
+  type EndUser,
+  type EndUserInput,
+} from "@sandbox/api-contract";
+import { api, apiVoid, describeError, Notice, usePermissions } from "@sandbox/web-ui";
 import type { Route } from "./+types/end-users";
 
-interface EndUser {
-  readonly id: string;
-  readonly name: string;
-  readonly email: string;
-  readonly phone: string;
-  readonly note: string;
-  readonly masked: boolean;
-}
-
 export async function clientLoader() {
-  return api<{ end_users: EndUser[]; masked: boolean }>("/v1/end-users");
+  return api(endUsersResponseSchema, "/v1/end-users");
 }
 
 export default function EndUsers({ loaderData }: Route.ComponentProps) {
@@ -36,16 +33,18 @@ export default function EndUsers({ loaderData }: Route.ComponentProps) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    const json = {
+    const json: EndUserInput = {
       name: String(data.get("name") ?? ""),
       email: String(data.get("email") ?? ""),
       phone: String(data.get("phone") ?? ""),
       note: String(data.get("note") ?? ""),
     };
     if (editing === undefined) {
-      await run(() => api("/v1/end-users", { method: "POST", json }));
+      await run(() => api(endUserResponseSchema, "/v1/end-users", { method: "POST", json }));
     } else {
-      await run(() => api(`/v1/end-users/${editing.id}`, { method: "PATCH", json }));
+      await run(() =>
+        api(endUserResponseSchema, `/v1/end-users/${editing.id}`, { method: "PATCH", json }),
+      );
       setEditing(undefined);
     }
     form.reset();
@@ -87,7 +86,7 @@ export default function EndUsers({ loaderData }: Route.ComponentProps) {
                   <button
                     type="button"
                     onClick={() =>
-                      void run(() => api(`/v1/end-users/${user.id}`, { method: "DELETE" }))
+                      void run(() => apiVoid(`/v1/end-users/${user.id}`, { method: "DELETE" }))
                     }
                   >
                     削除

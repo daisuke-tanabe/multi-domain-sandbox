@@ -31,6 +31,7 @@ Cognito をユーザー認証基盤とし、auth.sandbox.com を独立した Ope
 | `apps/cms-api` | CMS の Resource Server。`definition.ts` に役割と権限、`posts/` に投稿の CRUD | http://api.cms.localhost:3004 |
 | `packages/web-core` | `apps/*-web` の BFF 本体。`/auth/*` の受け口、SPA に状態を渡す `/session`、API への中継 `/api/*`、SPA の配信、エラー画面、設定スキーマ `config.ts`、起動関数 `start.ts`、テストを持つ。Token をブラウザへ出さない | |
 | `packages/web-ui` | `apps/*-web` が共有する React コード。BFF との通信 `api.ts`、ルートの clientLoader と共通の枠 `shell.tsx`、CRM と CMS で同じ管理アカウント画面 `members-page.tsx`、`styles.css` | |
+| `packages/api-contract` | HTTP のリクエストとレスポンスの zod スキーマと型。サーバーの zValidator、SPA の型と受信検証、フォーム検証で同じスキーマを使う。`core` `crm` `cms` `auth` `web` に分け、依存は zod だけ | |
 | `packages/api-core` | `apps/*-api` のフレームワーク。`ServiceDefinition` で役割と権限を宣言させ、Token 検証、自サービス DB の member 行の解決、権限の確定、`/v1/me`、管理アカウントの `/v1/members`、`MemberRepository`、auth-api の管理 API を呼ぶ `AuthAdminClient`、RLS 用の `withTenant`、設定スキーマ、起動関数を持つ。auth-api は使わない | |
 | `packages/shared` | Result 型、KV ストアと StoreFactory、PKCE、AES-GCM、secret の SHA-256 ハッシュ、redirect_uri テンプレート、JWT と JWKS 取得、Cookie、ロガー、環境変数の検証、pg 接続、識別子の enum、セッション期限、OIDC のワイヤ契約、SPA の配信と CSP `spa.ts`。web-core と auth-api が同じ `mountSpa` を使う | |
 | `packages/oidc-client` | Tenant Web Application 向け OIDC Client 共通モジュール | |

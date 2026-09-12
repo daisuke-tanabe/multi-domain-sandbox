@@ -11,6 +11,7 @@ import {
   type OidcProvider,
   type RenderError,
 } from "@sandbox/oidc-client";
+import type { SessionResponse } from "@sandbox/api-contract";
 import { mountSpa, spaCsp, timingSafeEqualString, type SpaOptions } from "@sandbox/shared";
 import { errorPage, type PageLabels } from "./views/pages.ts";
 
@@ -86,13 +87,15 @@ export function createWebCoreApp(options: WebCoreAppOptions): Hono<OidcEnv> {
         globalLogout: globalLogoutUrl.toString(),
       },
     };
-    if (session === undefined) return c.json({ ...base, authenticated: false });
+    if (session === undefined) {
+      return c.json({ ...base, authenticated: false } satisfies SessionResponse);
+    }
     return c.json({
       ...base,
       authenticated: true,
       user: { id: session.userId, email: session.email, name: session.name },
       csrfToken: session.csrfToken,
-    });
+    } satisfies SessionResponse);
   });
 
   // API への中継。ブラウザは Token を持たない。書き込みは CSRF トークンを要求する

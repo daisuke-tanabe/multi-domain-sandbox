@@ -1,19 +1,16 @@
 import { useState, type FormEvent } from "react";
 import { useRevalidator } from "react-router";
-import { api, describeError, Notice, usePermissions, useShell } from "@sandbox/web-ui";
+import {
+  postResponseSchema,
+  postsResponseSchema,
+  type Post,
+  type PostInput,
+} from "@sandbox/api-contract";
+import { api, apiVoid, describeError, Notice, usePermissions, useShell } from "@sandbox/web-ui";
 import type { Route } from "./+types/posts";
 
-interface Post {
-  readonly id: string;
-  readonly title: string;
-  readonly body: string;
-  readonly author_id: string;
-  readonly created_at: string;
-  readonly updated_at: string;
-}
-
 export async function clientLoader() {
-  return api<{ posts: Post[] }>("/v1/posts");
+  return api(postsResponseSchema, "/v1/posts");
 }
 
 export default function Posts({ loaderData }: Route.ComponentProps) {
@@ -37,11 +34,16 @@ export default function Posts({ loaderData }: Route.ComponentProps) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    const json = { title: String(data.get("title") ?? ""), body: String(data.get("body") ?? "") };
+    const json: PostInput = {
+      title: String(data.get("title") ?? ""),
+      body: String(data.get("body") ?? ""),
+    };
     if (editing === undefined) {
-      await run(() => api("/v1/posts", { method: "POST", json }));
+      await run(() => api(postResponseSchema, "/v1/posts", { method: "POST", json }));
     } else {
-      await run(() => api(`/v1/posts/${editing.id}`, { method: "PATCH", json }));
+      await run(() =>
+        api(postResponseSchema, `/v1/posts/${editing.id}`, { method: "PATCH", json }),
+      );
       setEditing(undefined);
     }
     form.reset();
@@ -69,7 +71,7 @@ export default function Posts({ loaderData }: Route.ComponentProps) {
           {permissions.has("posts:delete") && (
             <button
               type="button"
-              onClick={() => void run(() => api(`/v1/posts/${post.id}`, { method: "DELETE" }))}
+              onClick={() => void run(() => apiVoid(`/v1/posts/${post.id}`, { method: "DELETE" }))}
             >
               削除
             </button>

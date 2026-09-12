@@ -1,14 +1,15 @@
 import { redirect } from "react-router";
-import { ApiError, getJson, type PortalView } from "../api.ts";
+import { portalResponseSchema, type PortalResponse } from "@sandbox/api-contract";
+import { ApiError, getJson } from "../api.ts";
 import type { Route } from "./+types/portal";
 
 /**
  * ポータル。テナントごとに、入れるサービスの入口を並べる。役割はサービス側が持つのでここには出ない。
  * SSO Session がなければ rid なしのログイン画面へ送る。
  */
-export async function clientLoader(): Promise<PortalView> {
+export async function clientLoader(): Promise<PortalResponse> {
   try {
-    return await getJson<PortalView>("/api/portal");
+    return await getJson(portalResponseSchema, "/api/portal");
   } catch (error: unknown) {
     if (error instanceof ApiError && error.status === 401) throw redirect("/login");
     throw error;

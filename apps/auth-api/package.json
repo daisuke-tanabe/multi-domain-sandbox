@@ -16,6 +16,7 @@
     "@aws-sdk/client-cognito-identity-provider": "catalog:",
     "@hono/node-server": "catalog:",
     "@hono/zod-validator": "catalog:",
+    "@sandbox/api-contract": "workspace:*",
     "@sandbox/shared": "workspace:*",
     "cognito-srp-helper": "catalog:",
     "hono": "catalog:",

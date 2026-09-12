@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import type { LoginContextResponse, LoginRedirectResponse } from "@sandbox/api-contract";
 import type { CookiePolicy } from "@sandbox/shared";
 import { issueCsrfToken, verifyCsrfToken } from "../usecases/csrf.ts";
 import type { AuthDeps } from "../usecases/deps.ts";
@@ -92,7 +93,7 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
     } else {
       // rid なしはポータル用ログイン。既に SSO Session があればポータルへ
       const session = await loadSsoSession(deps, readSsoCookie(c, policy));
-      if (session !== undefined) return c.json({ redirectTo: "/" });
+      if (session !== undefined) return c.json({ redirectTo: "/" } satisfies LoginRedirectResponse);
     }
     const csrf = await issueCsrfToken(deps);
     writeCsrfCookie(c, policy, csrf.cookieValue);
@@ -101,7 +102,7 @@ export function loginRoutes(deps: AuthDeps, policy: CookiePolicy): Hono {
       rid,
       csrfToken: csrf.formToken,
       ...(isLoginErrorKind(errorKind) && { errorMessage: loginErrorMessage(errorKind) }),
-    });
+    } satisfies LoginContextResponse);
   });
 
   app.post(
